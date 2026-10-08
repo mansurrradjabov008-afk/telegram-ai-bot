@@ -1,0 +1,15 @@
+[Unit]
+Description=Antigravity Telegram AI Executive Butler 24/7 Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/telegram_ai_butler
+ExecStart=/usr/bin/python3 /opt/telegram_ai_butler/main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/telegram_ai_butler/.env
+
+[Install]
+WantedBy=multi-user.target

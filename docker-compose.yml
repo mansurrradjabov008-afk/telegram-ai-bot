@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  butler:
+    build: .
+    container_name: antigravity_telegram_butler
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
