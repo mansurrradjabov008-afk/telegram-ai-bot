@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     )
 
     @property
+    def owner_id_effective(self) -> int:
+        return self.OWNER_ID if self.OWNER_ID is not None else self.ADMIN_USER_ID
+
+    @property
     def db_file_path(self) -> Path:
         path = self.BASE_DIR / self.DATABASE_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,3 +55,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

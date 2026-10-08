@@ -3,7 +3,7 @@ Asynchronous Database Manager and CRUD operations for Telegram AI Butler.
 """
 
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import aiosqlite
 from .connection import get_db
 from .models import Contact, ScheduledTask, ConversationMessage, MonitoredSource, Draft, SchemaVersion
@@ -87,6 +87,7 @@ class DatabaseManager:
                     m = r["mode"]
                     if m in counts:
                         counts[m] = r["cnt"]
+        counts["total"] = counts["auto"] + counts["draft"] + counts["mute"]
         return counts
 
     async def update_addressing_style(self, user_id: int, addressing_style: str) -> bool:
@@ -297,7 +298,7 @@ class DatabaseManager:
         source_message_id: int,
         incoming_text: str,
         proposed_reply: str,
-        expires_at: str,
+        expires_at: Optional[str] = None,
         contact_username: Optional[str] = None,
         contact_user_id: Optional[int] = None,
         is_sensitive: bool = False,
@@ -306,10 +307,14 @@ class DatabaseManager:
         """
         Creates a new pending draft.
         Enforces duplicate draft protection via DB unique index.
+        Defaults expires_at to 24 hours from creation if not explicitly specified.
         Returns the created Draft object, or None if a duplicate draft already exists.
         """
         if contact_username and contact_username.startswith("@"):
             contact_username = contact_username[1:]
+
+        if expires_at is None:
+            expires_at = (datetime.now() + timedelta(hours=24)).isoformat()
 
         query = """
         INSERT INTO drafts (

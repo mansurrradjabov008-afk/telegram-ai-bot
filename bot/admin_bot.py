@@ -144,8 +144,27 @@ async def safe_reply_or_send_long(
             await message.answer(c.strip(), reply_markup=markup, parse_mode="HTML")
 
 
+USERNAME_REGEX = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+
+
+def normalize_and_validate_username(raw: str) -> Optional[str]:
+    """
+    Normalizes (strip '@', lowercase) and validates against ^[A-Za-z][A-Za-z0-9_]{4,31}$.
+    Returns lowercase username string if valid, None if invalid.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    cleaned = raw.strip()
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    if USERNAME_REGEX.match(cleaned):
+        return cleaned.lower()
+    return None
+
+
 class ReplyState(StatesGroup):
     waiting_for_custom_reply = State()
+    waiting_for_draft_edit = State()
 
 
 class AdminBotService:
@@ -163,7 +182,7 @@ class AdminBotService:
         self.scheduler_service = scheduler_service
         self.digest_service = digest_service
         self.token = token or settings.ADMIN_BOT_TOKEN
-        self.admin_id = admin_id or settings.ADMIN_USER_ID
+        self.admin_id = admin_id if admin_id is not None else settings.owner_id_effective
 
         self.bot = Bot(token=self.token) if self.token and not self.token.startswith("1234567890:") else None
         self.dp = Dispatcher(storage=MemoryStorage())
@@ -176,7 +195,11 @@ class AdminBotService:
         self._userbot_send_fn = fn
 
     def _is_admin(self, user_id: int) -> bool:
-        return self.admin_id == 0 or user_id == self.admin_id
+        """Owner-only check comparing numeric Telegram ID with owner ID. Returns False if unconfigured or mismatched."""
+        effective_id = self.admin_id if self.admin_id is not None else settings.owner_id_effective
+        if not effective_id:
+            return False
+        return user_id == effective_id
 
     def _setup_handlers(self):
         dp = self.dp
@@ -184,25 +207,28 @@ class AdminBotService:
         @dp.message(CommandStart())
         async def cmd_start(message: types.Message):
             if not self._is_admin(message.from_user.id):
-                return await safe_reply(message, "⛔ Ruxsat berilmagan.")
+                return
 
             text = (
                 "👑 <b>Salom, Xo'jayin! Antigravity AI Butler Kokpiti tayyor.</b>\n\n"
                 "Men sizning shaxsiy profilingizni to'liq boshqaruvchi markazman.\n\n"
                 "📌 <b>Asosiy buyruqlar:</b>\n"
-                "• <code>/crm @username [rol] [ko'rsatma]</code> — Kontakt munosabatini va doimiy uslubini belgilash\n"
-                "• <code>/contacts</code> — Barcha eslab qolingan kontaktlarni ko'rish\n"
+                "• <code>/mode @username auto|draft|mute</code> — Kontakt avtonomiya rejimini belgilash\n"
+                "• <code>/contacts</code> — Saqlangan kontaktlar va ularning rejimlari\n"
+                "• <code>/drafts</code> — Kutilayotgan qoralamalar ro'yxati va tasdiqlash\n"
+                "• <code>/crm @username [rol] [ko'rsatma]</code> — Kontakt munosabatini belgilash\n"
                 "• <code>/schedule @username HH:MM Matn</code> — Belgilangan vaqtga xabar rejalashtirish\n"
                 "• <code>/tasks</code> — Kutilayotgan rejalashtirilgan xabarlar\n"
-                "• <code>/digest</code> — Kanallar va guruhlardan eng so'nggi xulosalar\n"
-                "• <code>/status</code> — Tizim holati va sozlamalar"
+                "• <code>/digest</code> — Kanallar va guruhlardan xulosalar\n"
+                "• <code>/status</code> — Tizim holati va avtonomiya hisoboti"
             )
             builder = InlineKeyboardBuilder()
             builder.button(text="📰 Executive Digest", callback_data="digest:open")
             builder.button(text="📋 Kontaktlar", callback_data="menu:contacts")
+            builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
             builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
             builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-            builder.adjust(2, 2)
+            builder.adjust(2, 3)
             await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.message(Command("status"))
@@ -215,6 +241,10 @@ class AdminBotService:
             model_str = html.escape(settings.GEMINI_MODEL)
             tz_str = html.escape(settings.TIMEZONE)
 
+            mode_counts = await self.db_manager.get_mode_counts()
+            pending_drafts = await self.db_manager.count_pending_drafts()
+            total_contacts = mode_counts.get("total", mode_counts.get("auto", 0) + mode_counts.get("draft", 0) + mode_counts.get("mute", 0))
+
             status_text = (
                 "⚡ <b>ANTIGRAVITY BUTLER TIZIM HOLATI:</b>\n\n"
                 f"• <b>AI Modeli:</b> <code>{model_str}</code>\n"
@@ -222,9 +252,12 @@ class AdminBotService:
                 f"• <b>Vaqt mintaqasi:</b> <code>{tz_str}</code>\n"
                 f"• <b>Telegram Profil:</b> <code>{phone_str}</code>\n"
                 "• <b>Kontaktlar filtri:</b> 🛡 Faol (Faqat /contacts dagi insonlar)\n"
+                f"• <b>Avtonomiya rejimlari:</b> ⚡ auto: {mode_counts.get('auto', 0)} | 📝 draft: {mode_counts.get('draft', 0)} | 🔇 mute: {mode_counts.get('mute', 0)} (Jami: {total_contacts})\n"
+                f"• <b>Kutilayotgan qoralamalar:</b> <code>{pending_drafts}</code> ta\n"
                 "• <b>Holat:</b> Barcha xizmatlar 100% faol."
             )
             await safe_reply(message, status_text, parse_mode="HTML")
+
 
         async def _execute_digest(target_msg: types.Message, is_callback: bool = False, force_recent: bool = False):
             if not self.digest_service:
@@ -302,6 +335,17 @@ class AdminBotService:
             target = target_user.replace("@", "").strip()
             instruction = instruction_text.strip()
 
+            if not target.isdigit():
+                normalized = normalize_and_validate_username(target)
+                if not normalized:
+                    return await safe_reply(
+                        msg_obj,
+                        "❌ <b>Noto'g'ri username formati!</b>\n"
+                        "Username 5-32 belgidan iborat bo'lishi va harf bilan boshlanishi kerak (masalan: <code>@foydalanuvchi</code>).",
+                        parse_mode="HTML",
+                    )
+                target = normalized
+
             # 1. Determine addressing style ('siz' vs 'sen')
             lower_inst = instruction.lower()
             if forced_style in ["siz", "sen"]:
@@ -329,6 +373,7 @@ class AdminBotService:
 
             existing = await self.db_manager.get_contact_by_username(target)
             user_id = existing.user_id if existing else abs(hash(target)) % 1000000000
+            mode = existing.mode if existing else "draft"
 
             await self.db_manager.upsert_contact(
                 user_id=user_id,
@@ -336,12 +381,20 @@ class AdminBotService:
                 full_name=existing.full_name if existing else target,
                 relationship_type=role,
                 addressing_style=addressing,
+                mode=mode,
                 custom_instructions=instruction,
             )
 
             safe_target = html.escape(target)
             safe_instruction = html.escape(instruction)
             safe_role_label = html.escape(role_label)
+
+            mode_labels = {
+                "auto": "⚡ auto (Avtomatik javob)",
+                "draft": "📝 draft (Qoralama / Tasdiq bilan)",
+                "mute": "🔇 mute (Ovozsiz)",
+            }
+            mode_badge = mode_labels.get(mode, f"<code>{mode}</code>")
 
             if addressing == "sen":
                 style_badge = "🟢 <b>SEN (Sensirash / Yaqin do'st)</b>"
@@ -364,6 +417,7 @@ class AdminBotService:
                 msg_obj,
                 f"✨ <b>CRM PROFILI SOZLANDI, XO'JAYIN!</b>\n\n"
                 f"👤 <b>Kontakt:</b> <code>@{safe_target}</code>\n"
+                f"⚙️ <b>Avtonomiya rejimi:</b> {mode_badge}\n"
                 f"🗣 <b>Murojaat shakli:</b> {style_badge}\n"
                 f"🎭 <b>Munosabat:</b> <code>{safe_role_label}</code>\n"
                 f"📜 <b>Ko'rsatma:</b> <i>\"{safe_instruction}\"</i>\n\n"
@@ -418,6 +472,104 @@ class AdminBotService:
                 await _apply_contact_instruction(message, target, instruction, forced_style=forced_style)
             else:
                 await _apply_contact_instruction(message, target, "Samimiy, do'stona muloqot")
+
+        @dp.message(Command("mode"))
+        async def cmd_mode(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+
+            text_after = message.text[len("/mode"):].strip()
+            if not text_after:
+                contacts = await self.db_manager.list_contacts()
+                lines = [
+                    "⚙️ <b>AVTONOMIYA REJIMLARI BOSHQARUVI:</b>\n",
+                    "📌 <b>Foydalanish:</b>",
+                    "• <code>/mode @username auto|draft|mute</code>\n",
+                    "💡 <b>Rejimlar:</b>",
+                    "• ⚡ <b>auto</b> — Bot avtomatik javob beradi (xavfli mavzulardan tashqari)",
+                    "• 📝 <b>draft</b> — Bot javob tayyorlaydi, lekin faqat siz tasdiqlagach yuboriladi",
+                    "• 🔇 <b>mute</b> — Bot bu kontaktni to'liq e'tiborsiz qoldiradi\n",
+                    "📋 <b>Hozirgi kontaktlar rejimlari:</b>",
+                ]
+                if not contacts:
+                    lines.append("<i>Hozircha kontaktlar mavjud emas.</i>")
+                else:
+                    for c in contacts:
+                        uname = f"@{c.username}" if c.username else c.full_name
+                        safe_uname = html.escape(uname)
+                        mode = getattr(c, "mode", "draft") or "draft"
+                        if mode == "auto":
+                            badge = "⚡ auto (Avtomatik)"
+                        elif mode == "mute":
+                            badge = "🔇 mute (Ovozsiz)"
+                        else:
+                            badge = "📝 draft (Qoralama)"
+                        lines.append(f"• <b>{safe_uname}</b>: <code>{badge}</code>")
+
+                builder = InlineKeyboardBuilder()
+                builder.button(text="📋 Barcha kontaktlar", callback_data="crm:refresh")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 1)
+
+                return await safe_reply(message, "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+            parts = text_after.split()
+            if len(parts) < 2:
+                return await safe_reply(
+                    message,
+                    "⚠️ <b>Noto'g'ri format.</b>\n"
+                    "Foydalanish: <code>/mode @username auto|draft|mute</code>\n"
+                    "Misol: <code>/mode @ali auto</code>",
+                    parse_mode="HTML",
+                )
+
+            raw_username, raw_mode = parts[0], parts[1].lower()
+            normalized_username = normalize_and_validate_username(raw_username)
+            if not normalized_username:
+                return await safe_reply(
+                    message,
+                    "❌ <b>Noto'g'ri username formati!</b>\n"
+                    "Username 5-32 belgidan iborat bo'lishi va harf bilan boshlanishi kerak (masalan: <code>@foydalanuvchi</code>).",
+                    parse_mode="HTML",
+                )
+
+            if raw_mode not in ("auto", "draft", "mute"):
+                return await safe_reply(
+                    message,
+                    "⚠️ <b>Noto'g'ri rejim!</b>\n"
+                    "Mavjud rejimlar: <code>auto</code>, <code>draft</code>, <code>mute</code>.",
+                    parse_mode="HTML",
+                )
+
+            contact = await self.db_manager.get_contact_by_username(normalized_username)
+            if not contact:
+                return await safe_reply(
+                    message,
+                    f"❌ <code>@{normalized_username}</code> kontaktlar ro'yxatida topilmadi.\n"
+                    f"Uni avval <code>/crm @{normalized_username} [ko'rsatma]</code> orqali qo'shing.",
+                    parse_mode="HTML",
+                )
+
+            await self.db_manager.update_contact_mode_by_username(normalized_username, raw_mode)
+
+            mode_labels = {
+                "auto": "⚡ auto (Avtomatik javob)",
+                "draft": "📝 draft (Qoralama / Tasdiq kerak)",
+                "mute": "🔇 mute (Ovozsiz / E'tiborsiz)",
+            }
+            label = mode_labels.get(raw_mode, raw_mode)
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="📋 Kontaktlar ro'yxati", callback_data="crm:refresh")
+            builder.adjust(1)
+
+            await safe_reply(
+                message,
+                f"✅ <code>@{normalized_username}</code> rejimi o'zgartirildi: <b>{label}</b>.",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML",
+            )
+
 
         async def _schedule_via_ai(msg_obj: types.Message, raw_text: str) -> bool:
             """Uses AI to parse natural language scheduling request and registers task."""
@@ -502,7 +654,7 @@ class AdminBotService:
                 await _apply_contact_instruction(message, target, instruction)
 
         async def _render_contacts_list(target_msg: types.Message, is_callback: bool = False):
-            """Renders rich contacts list with addressing style badges and instant toggle buttons."""
+            """Renders rich contacts list with addressing style badges, autonomy mode badges and instant toggle buttons."""
             contacts = await self.db_manager.list_contacts()
             if not contacts:
                 empty_text = (
@@ -510,7 +662,8 @@ class AdminBotService:
                     "<i>Hozircha CRM xotirasida hech qanday kontakt saqlanmagan.</i>\n\n"
                     "💡 <b>Yangi kontakt va uslub belgilash:</b>\n"
                     "• <code>/crm @username siz [ko'rsatma]</code> — SIZLASH (hurmat bilan)\n"
-                    "• <code>/crm @username sen [ko'rsatma]</code> — SENSIRASH (yaqin do'st)\n\n"
+                    "• <code>/crm @username sen [ko'rsatma]</code> — SENSIRASH (yaqin do'st)\n"
+                    "• <code>/mode @username auto|draft|mute</code> — Avtonomiya rejimi\n\n"
                     "<i>Yoki tabiiy tilda yozing:</i>\n"
                     "• <code>@umid_namozov ni senla, bu mening yaqin do'stim</code>\n"
                     "• <code>@davron_aka ni sizla, hurmatli inson</code>"
@@ -525,7 +678,7 @@ class AdminBotService:
 
             lines = [
                 f"📋 <b>SAQLANGAN KONTAKTLAR ({len(contacts)} ta):</b>\n"
-                f"🛡 <i>Xavfsizlik: Bot FAQAT shu ro'yxatdagi insonlargagina avtomatik javob beradi. Boshqa barcha xabarlar sizga to'g'ridan-to'g'ri yetkaziladi.</i>\n"
+                f"🛡 <i>Xavfsizlik: Bot FAQAT shu ro'yxatdagi insonlargagina avtomatik yoki tasdiq bilan javob beradi. Boshqa barcha xabarlar sizga to'g'ridan-to'g'ri yetkaziladi.</i>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
             ]
             builder = InlineKeyboardBuilder()
@@ -535,6 +688,7 @@ class AdminBotService:
                 safe_uname = html.escape(uname)
                 target_user = c.username or str(c.user_id)
                 style = getattr(c, "addressing_style", "siz") or "siz"
+                mode = getattr(c, "mode", "draft") or "draft"
                 safe_rel = html.escape(c.relationship_type or "general")
                 safe_instr = html.escape(c.custom_instructions or "N/A")
 
@@ -547,19 +701,45 @@ class AdminBotService:
                     switch_btn = f"🔄 'SEN' ga o'tkazish"
                     switch_to = "sen"
 
+                if mode == "auto":
+                    mode_badge = "⚡ <b>auto (Avtomatik javob)</b>"
+                elif mode == "mute":
+                    mode_badge = "🔇 <b>mute (Ovozsiz)</b>"
+                else:
+                    mode_badge = "📝 <b>draft (Qoralama / Tasdiq)</b>"
+
                 lines.append(
                     f"👤 <b>{safe_uname}</b>\n"
+                    f"⚙️ Rejim: {mode_badge}\n"
                     f"🗣 Murojaat: {style_badge}\n"
                     f"🎭 Munosabat: <code>{safe_rel}</code>\n"
                     f"📜 Ko'rsatma: <i>\"{safe_instr}\"</i>\n"
                 )
+                # Row 1: SIZ/SEN switch and Delete
                 builder.button(text=f"{switch_btn} ({safe_uname})", callback_data=f"crm_style:{target_user}:{switch_to}")
                 builder.button(text=f"🗑 O'chirish ({safe_uname})", callback_data=f"crm_del:{target_user}")
+
+                # Row 2: Mode quick toggle buttons
+                builder.button(
+                    text="✅ ⚡ Auto" if mode == "auto" else "⚡ Auto",
+                    callback_data=f"crm_mode:{target_user}:auto",
+                )
+                builder.button(
+                    text="✅ 📝 Draft" if mode == "draft" else "📝 Draft",
+                    callback_data=f"crm_mode:{target_user}:draft",
+                )
+                builder.button(
+                    text="✅ 🔇 Mute" if mode == "mute" else "🔇 Mute",
+                    callback_data=f"crm_mode:{target_user}:mute",
+                )
 
             builder.button(text="🔄 Yangilash", callback_data="crm:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
-            adjust_layout = [2] * len(contacts) + [2]
+            adjust_layout = []
+            for _ in contacts:
+                adjust_layout.extend([2, 3])
+            adjust_layout.append(2)
             builder.adjust(*adjust_layout)
 
             content = "\n".join(lines)
@@ -567,6 +747,7 @@ class AdminBotService:
                 await target_msg.edit_text(content, reply_markup=builder.as_markup(), parse_mode="HTML")
             else:
                 await safe_reply(target_msg, content, reply_markup=builder.as_markup(), parse_mode="HTML")
+
 
         @dp.message(Command("contacts"))
         async def cmd_contacts(message: types.Message):
@@ -745,6 +926,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("escalate_"))
         async def handle_escalation_callbacks(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
             data_parts = callback.data.split(":")
             action = data_parts[0]  # escalate_send, escalate_custom, escalate_ignore
             esc_id = data_parts[1]
@@ -793,6 +976,8 @@ class AdminBotService:
 
         @dp.message(ReplyState.waiting_for_custom_reply)
         async def process_custom_reply(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
             data = await state.get_data()
             esc_id = data.get("esc_id")
             item = self._pending_escalations.get(esc_id)
@@ -821,6 +1006,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("esc_crm_add:"))
         async def handle_esc_crm_add(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             esc_id = callback.data.split(":")[1]
             item = self._pending_escalations.get(esc_id)
             if not item:
@@ -845,6 +1032,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("esc_crm_save:"))
         async def handle_esc_crm_save(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             parts = callback.data.split(":")
             esc_id = parts[1]
             style = parts[2]
@@ -868,6 +1057,7 @@ class AdminBotService:
                 username=username,
                 relationship_type=role,
                 addressing_style=style,
+                mode="draft",
                 custom_instructions=instruction,
             )
 
@@ -881,6 +1071,7 @@ class AdminBotService:
             safe_peer = html.escape(peer)
             await callback.message.edit_text(
                 f"✨ <b>{safe_name} ({safe_peer}) muvaffaqiyatli /contacts ro'yxatiga qo'shildi!</b>\n\n"
+                f"⚙️ <b>Avtonomiya rejimi:</b> 📝 <b>draft (Qoralama / Tasdiq bilan)</b>\n"
                 f"🗣 <b>Murojaat uslubi:</b> <code>{style_name}</code>\n"
                 f"🛡 <b>Endi bot bu inson bilan keyingi safar avtomatik suhbatlasha oladi!</b>\n\n"
                 f"<i>Kelgan oxirgi xabarga javob yuborasizmi?</i>",
@@ -891,6 +1082,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("esc_back:"))
         async def handle_esc_back(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             esc_id = callback.data.split(":")[1]
             item = self._pending_escalations.get(esc_id)
             if not item:
@@ -918,6 +1111,7 @@ class AdminBotService:
             )
             await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
             await callback.answer()
+
 
         @dp.message(F.text & ~F.text.startswith("/"))
         async def handle_fallback_natural_text(message: types.Message, state: FSMContext):
@@ -950,6 +1144,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("digest:"))
         async def handle_digest_callbacks(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             action = callback.data.split(":")[1]
             if action == "open":
                 await callback.answer("Digest yuklanmoqda...")
@@ -978,6 +1174,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("menu:"))
         async def handle_menu_callbacks(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             action = callback.data.split(":")[1]
             if action == "main":
                 await callback.answer()
@@ -985,8 +1183,10 @@ class AdminBotService:
                     "👑 <b>Salom, Xo'jayin! Antigravity AI Butler Kokpiti:</b>\n\n"
                     "Sizning shaxsiy profilingizni to'liq boshqaruvchi markaz.\n\n"
                     "📌 <b>Asosiy buyruqlar:</b>\n"
+                    "• <code>/mode @username auto|draft|mute</code> — Kontakt avtonomiya rejimini belgilash\n"
+                    "• <code>/contacts</code> — Saqlangan kontaktlar va ularning rejimlari\n"
+                    "• <code>/drafts</code> — Kutilayotgan qoralamalar ro'yxati va tasdiqlash\n"
                     "• <code>/crm @username [rol] [ko'rsatma]</code> — Kontakt uslubini belgilash\n"
-                    "• <code>/contacts</code> — Saqlangan kontaktlar\n"
                     "• <code>/schedule @username HH:MM Matn</code> — Xabar rejalashtirish\n"
                     "• <code>/tasks</code> — Kutilayotgan rejalashtirilgan xabarlar\n"
                     "• <code>/digest</code> — Kanallar va guruhlardan xulosalar\n"
@@ -995,13 +1195,17 @@ class AdminBotService:
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📰 Executive Digest", callback_data="digest:open")
                 builder.button(text="📋 Kontaktlar", callback_data="menu:contacts")
+                builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
                 builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
                 builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-                builder.adjust(2, 2)
+                builder.adjust(2, 3)
                 await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
             elif action == "contacts":
                 await callback.answer()
                 await _render_contacts_list(callback.message, is_callback=True)
+            elif action == "drafts":
+                await callback.answer()
+                await _render_drafts_list(callback.message, is_callback=True)
             elif action == "tasks":
                 await callback.answer()
                 await _render_tasks_list(callback.message, is_callback=True)
@@ -1011,6 +1215,11 @@ class AdminBotService:
                 phone_str = html.escape(settings.TELEGRAM_PHONE_NUMBER or "Faol")
                 model_str = html.escape(settings.GEMINI_MODEL)
                 tz_str = html.escape(settings.TIMEZONE)
+
+                mode_counts = await self.db_manager.get_mode_counts()
+                pending_drafts = await self.db_manager.count_pending_drafts()
+                total_contacts = mode_counts.get("total", mode_counts.get("auto", 0) + mode_counts.get("draft", 0) + mode_counts.get("mute", 0))
+
                 text = (
                     "⚡ <b>ANTIGRAVITY BUTLER TIZIM HOLATI:</b>\n\n"
                     f"• <b>AI Modeli:</b> <code>{model_str}</code>\n"
@@ -1018,6 +1227,8 @@ class AdminBotService:
                     f"• <b>Vaqt mintaqasi:</b> <code>{tz_str}</code>\n"
                     f"• <b>Telegram Profil:</b> <code>{phone_str}</code>\n"
                     "• <b>Kontaktlar filtri:</b> 🛡 Faol (Faqat /contacts dagi insonlar)\n"
+                    f"• <b>Avtonomiya rejimlari:</b> ⚡ auto: {mode_counts.get('auto', 0)} | 📝 draft: {mode_counts.get('draft', 0)} | 🔇 mute: {mode_counts.get('mute', 0)} (Jami: {total_contacts})\n"
+                    f"• <b>Kutilayotgan qoralamalar:</b> <code>{pending_drafts}</code> ta\n"
                     "• <b>Holat:</b> Barcha xizmatlar 100% faol."
                 )
                 builder = InlineKeyboardBuilder()
@@ -1026,6 +1237,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("crm_style:"))
         async def handle_crm_style_toggle(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             parts = callback.data.split(":")
             username = parts[1]
             new_style = parts[2]
@@ -1041,6 +1254,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("crm_del:"))
         async def handle_crm_delete(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             username = callback.data.split(":")[1]
             contact = await self.db_manager.get_contact_by_username(username)
             if contact:
@@ -1052,11 +1267,50 @@ class AdminBotService:
 
         @dp.callback_query(F.data == "crm:refresh")
         async def handle_crm_refresh(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             await callback.answer("Kontaktlar yangilandi")
+            await _render_contacts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("crm_mode:"))
+        async def handle_crm_mode_toggle(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            target_user = parts[1]
+            new_mode = parts[2]
+
+            if new_mode not in ("auto", "draft", "mute"):
+                return await callback.answer("Noto'g'ri rejim.", show_alert=True)
+
+            if target_user.isdigit():
+                contact = await self.db_manager.get_contact_by_id(int(target_user))
+                if contact:
+                    if contact.mode == new_mode:
+                        return await callback.answer("Allaqachon ushbu rejimda.")
+                    await self.db_manager.update_contact_mode(contact.user_id, new_mode)
+            else:
+                contact = await self.db_manager.get_contact_by_username(target_user)
+                if contact:
+                    if contact.mode == new_mode:
+                        return await callback.answer("Allaqachon ushbu rejimda.")
+                    await self.db_manager.update_contact_mode_by_username(target_user, new_mode)
+
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+
+            mode_labels = {
+                "auto": "⚡ auto (Avtomatik)",
+                "draft": "📝 draft (Qoralama)",
+                "mute": "🔇 mute (Ovozsiz)",
+            }
+            await callback.answer(f"✅ @{contact.username or target_user} rejimi {mode_labels.get(new_mode, new_mode)} ga o'zgartirildi!")
             await _render_contacts_list(callback.message, is_callback=True)
 
         @dp.callback_query(F.data.startswith("task_send:"))
         async def handle_task_send_now(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             task_id = int(callback.data.split(":")[1])
             success = await self.scheduler_service.execute_now(task_id)
             if success:
@@ -1067,6 +1321,8 @@ class AdminBotService:
 
         @dp.callback_query(F.data.startswith("task_cancel:"))
         async def handle_task_cancel(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             task_id = int(callback.data.split(":")[1])
             await self.scheduler_service.cancel_task(task_id)
             await callback.answer(f"🛑 #{task_id} vazifa bekor qilindi!", show_alert=True)
@@ -1074,13 +1330,181 @@ class AdminBotService:
 
         @dp.callback_query(F.data == "task_hist:open")
         async def handle_task_history_open(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             await callback.answer()
             await _render_task_history(callback.message, is_callback=True)
 
         @dp.callback_query(F.data == "tasks:refresh")
         async def handle_tasks_refresh(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
             await callback.answer("Vazifalar ro'yxati yangilandi")
             await _render_tasks_list(callback.message, is_callback=True)
+
+        # ------------------ DRAFTS FLOW (PHASE 2 & 3) ------------------
+        async def _render_drafts_list(target_msg: types.Message, is_callback: bool = False):
+            """Renders pending unexpired drafts with quick action buttons."""
+            await self.db_manager.expire_old_drafts()
+            drafts = await self.db_manager.list_pending_drafts(limit=10)
+
+            if not drafts:
+                empty_text = (
+                    "📝 <b>KUTILAYOTGAN QORALAMALAR:</b>\n\n"
+                    "<i>Hozircha tasdiq kutayotgan qoralamalar yo'q.</i>\n\n"
+                    "💡 <b>Qoralama qanday hosil bo'ladi?</b>\n"
+                    "• <code>draft</code> rejimdagi kontaktlardan xabar kelganda\n"
+                    "• <code>auto</code> rejimdagi kontakt xabarida nozik/xavfli mavzu (to'lov, karta, uchrashuv) aniqlanganda"
+                )
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔄 Yangilash", callback_data="drafts:refresh")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(2)
+                if is_callback:
+                    await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                else:
+                    await safe_reply(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                return
+
+            lines = [f"📝 <b>KUTILAYOTGAN QORALAMALAR ({len(drafts)} ta):</b>\n━━━━━━━━━━━━━━━━━━━━\n"]
+            builder = InlineKeyboardBuilder()
+
+            for d in drafts:
+                contact_str = f"@{d.contact_username}" if d.contact_username else str(d.contact_user_id or "Noma'lum")
+                safe_contact = html.escape(contact_str)
+                safe_incoming = html.escape(d.incoming_text[:150] + ("..." if len(d.incoming_text) > 150 else ""))
+                safe_reply_text = html.escape(d.proposed_reply[:200] + ("..." if len(d.proposed_reply) > 200 else ""))
+
+                sens_badge = ""
+                if d.is_sensitive:
+                    sens_reason = html.escape(d.sensitive_reason or "Nozik mavzu")
+                    sens_badge = f"\n⚠️ <b>Muhim - tasdiq kerak!</b> (Sabab: <i>{sens_reason}</i>)"
+
+                lines.append(
+                    f"📌 <b>Qoralama #{d.id}</b>{sens_badge}\n"
+                    f"👤 <b>Kimdan:</b> <code>{safe_contact}</code>\n"
+                    f"📩 <b>Kelgan xabar:</b> <i>\"{safe_incoming}\"</i>\n"
+                    f"💡 <b>Tavsiya etilgan javob:</b>\n<code>{safe_reply_text}</code>\n"
+                )
+
+                builder.button(text=f"✅ Yuborish #{d.id}", callback_data=f"draft_send:{d.id}")
+                builder.button(text=f"✍️ Tahrirlash #{d.id}", callback_data=f"draft_edit:{d.id}")
+                builder.button(text=f"❌ Rad #{d.id}", callback_data=f"draft_reject:{d.id}")
+
+            builder.button(text="🔄 Yangilash", callback_data="drafts:refresh")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+
+            adjust_layout = [3] * len(drafts) + [2]
+            builder.adjust(*adjust_layout)
+
+            content = "\n".join(lines)
+            if is_callback:
+                await target_msg.edit_text(content, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply_or_send_long(target_msg, content, reply_markup=builder.as_markup())
+
+        @dp.message(Command("drafts"))
+        async def cmd_drafts(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_drafts_list(message, is_callback=False)
+
+        @dp.callback_query(F.data == "drafts:refresh")
+        async def handle_drafts_refresh(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer("Qoralamalar yangilandi")
+            await _render_drafts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("draft_reject:"))
+        async def handle_draft_reject(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            draft_id = int(callback.data.split(":")[1])
+            success = await self.db_manager.resolve_draft_atomic(draft_id, "rejected")
+            if not success:
+                return await callback.answer("Allaqachon bajarilgan.", show_alert=True)
+            await callback.answer(f"❌ #{draft_id} qoralama rad etildi!", show_alert=True)
+            await _render_drafts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("draft_send:"))
+        async def handle_draft_send(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            draft_id = int(callback.data.split(":")[1])
+            draft = await self.db_manager.get_draft_by_id(draft_id)
+            if not draft or not draft.is_pending:
+                return await callback.answer("Allaqachon bajarilgan yoki muddati o'tgan.", show_alert=True)
+
+            success = await self.db_manager.resolve_draft_atomic(draft_id, "sent")
+            if not success:
+                return await callback.answer("Allaqachon bajarilgan.", show_alert=True)
+
+            if self._userbot_send_fn:
+                peer = f"@{draft.contact_username}" if draft.contact_username else (draft.contact_user_id or "")
+                if peer:
+                    await self._userbot_send_fn(peer, draft.proposed_reply)
+
+            await callback.answer(f"✅ #{draft_id} qoralama yuborildi!", show_alert=True)
+            await _render_drafts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("draft_edit:"))
+        async def handle_draft_edit(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            draft_id = int(callback.data.split(":")[1])
+            draft = await self.db_manager.get_draft_by_id(draft_id)
+            if not draft or not draft.is_pending:
+                return await callback.answer("Allaqachon bajarilgan yoki muddati o'tgan.", show_alert=True)
+
+            await state.set_state(ReplyState.waiting_for_draft_edit)
+            await state.update_data(draft_id=draft_id, created_ts=datetime.now().timestamp())
+            await callback.message.reply(
+                f"✍️ <b>Qoralama #{draft_id} uchun yangi javob matnini yozing:</b>\n\n"
+                f"<i>(Bekor qilish uchun <code>/cancel</code> deb yozing; vaqt limiti 5 daqiqa)</i>",
+                parse_mode="HTML",
+            )
+            await callback.answer()
+
+        @dp.message(ReplyState.waiting_for_draft_edit)
+        async def process_draft_edit_message(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+
+            if message.text and message.text.strip().lower() == "/cancel":
+                await state.clear()
+                return await safe_reply(message, "🛑 Qoralamani tahrirlash bekor qilindi.")
+
+            data = await state.get_data()
+            created_ts = data.get("created_ts", 0)
+            if datetime.now().timestamp() - created_ts > 300:
+                await state.clear()
+                return await safe_reply(message, "⚠️ Tahrirlash vaqti tugadi (5 daqiqa). Qaytadan urinib ko'ring.")
+
+            draft_id = data.get("draft_id")
+            new_text = message.text.strip() if message.text else ""
+            if not new_text:
+                return await safe_reply(message, "⚠️ Xabar matni bo'sh bo'lishi mumkin emas.")
+
+            success = await self.db_manager.resolve_draft_atomic(draft_id, "edited_sent", edited_reply=new_text)
+            await state.clear()
+            if not success:
+                return await safe_reply(message, "⚠️ Qoralama allaqachon ko'rib chiqilgan yoki eskirgan.")
+
+            draft = await self.db_manager.get_draft_by_id(draft_id)
+            if self._userbot_send_fn and draft:
+                peer = f"@{draft.contact_username}" if draft.contact_username else (draft.contact_user_id or "")
+                if peer:
+                    await self._userbot_send_fn(peer, new_text)
+
+            safe_text = html.escape(new_text)
+            await safe_reply(
+                message,
+                f"✅ <b>Tahrirlangan javob muvaffaqiyatli yuborildi! (Qoralama #{draft_id})</b>\n\n"
+                f"💬 <b>Matn:</b> <i>\"{safe_text}\"</i>",
+                parse_mode="HTML",
+            )
+
 
     async def notify_boss_escalation(
         self,
