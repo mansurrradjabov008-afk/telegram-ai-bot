@@ -27,8 +27,10 @@ class Settings(BaseSettings):
     DATABASE_PATH: str = "data/butler.db"
     TIMEZONE: str = "Asia/Tashkent"
     AUTO_REPLY_ENABLED: bool = True
-    HUMAN_DELAY_MIN: int = 2
-    HUMAN_DELAY_MAX: int = 5
+    HUMAN_DELAY_MIN: int = 3
+    HUMAN_DELAY_MAX: int = 8
+    DEBOUNCE_WINDOW_SECONDS: float = 8.0
+    DRAFT_EXPIRY_HOURS: int = 24
 
     # Autonomy modes & Owner ID
     MIGRATE_EXISTING_TO: str = "draft"

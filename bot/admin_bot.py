@@ -21,6 +21,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import settings
 from database.crud import DatabaseManager
+from database.models import Draft
 from services.ai_engine import AIEngine
 from services.scheduler_service import SchedulerService
 from services.digest_service import DigestService
@@ -187,12 +188,17 @@ class AdminBotService:
         self.bot = Bot(token=self.token) if self.token and not self.token.startswith("1234567890:") else None
         self.dp = Dispatcher(storage=MemoryStorage())
         self._userbot_send_fn: Optional[Callable] = None
+        self._manual_reply_check_fn: Optional[Callable] = None
         self._pending_escalations: Dict[str, Dict[str, Any]] = {}
 
         self._setup_handlers()
 
     def set_userbot_sender(self, fn: Callable):
         self._userbot_send_fn = fn
+
+    def set_manual_reply_checker(self, fn: Callable):
+        self._manual_reply_check_fn = fn
+
 
     def _is_admin(self, user_id: int) -> bool:
         """Owner-only check comparing numeric Telegram ID with owner ID. Returns False if unconfigured or mismatched."""
@@ -1434,19 +1440,49 @@ class AdminBotService:
             draft_id = int(callback.data.split(":")[1])
             draft = await self.db_manager.get_draft_by_id(draft_id)
             if not draft or not draft.is_pending:
-                return await callback.answer("Allaqachon bajarilgan yoki muddati o'tgan.", show_alert=True)
+                return await callback.answer("Allaqachon bajarilgan.", show_alert=True)
+
+            # Expiration check (24 hours)
+            now_iso = datetime.now().isoformat()
+            if draft.expires_at <= now_iso:
+                await self.db_manager.resolve_draft_atomic(draft.id, "expired")
+                return await callback.answer("⚠️ Qoralama muddati tugagan (24 soat). Yuborib bo'lmaydi.", show_alert=True)
+
+            # Check if owner already replied manually
+            if self._manual_reply_check_fn and (draft.contact_user_id or draft.contact_username):
+                target_peer = draft.contact_user_id or f"@{draft.contact_username}"
+                replied_manually = await self._manual_reply_check_fn(target_peer, draft.source_message_id)
+                if replied_manually:
+                    await self.db_manager.resolve_draft_atomic(draft.id, "superseded")
+                    try:
+                        await callback.message.edit_text(
+                            f"ℹ️ <b>Siz allaqachon bu kontaktga o'zingiz qo'lda yozgansiz!</b>\n"
+                            f"Qoralama #{draft.id} avtomatik bekor qilindi (status: superseded).",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                    return await callback.answer("Siz allaqachon javob bergansiz (superseded).", show_alert=True)
 
             success = await self.db_manager.resolve_draft_atomic(draft_id, "sent")
             if not success:
                 return await callback.answer("Allaqachon bajarilgan.", show_alert=True)
 
             if self._userbot_send_fn:
-                peer = f"@{draft.contact_username}" if draft.contact_username else (draft.contact_user_id or "")
+                peer = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "")
                 if peer:
                     await self._userbot_send_fn(peer, draft.proposed_reply)
 
             await callback.answer(f"✅ #{draft_id} qoralama yuborildi!", show_alert=True)
-            await _render_drafts_list(callback.message, is_callback=True)
+            try:
+                safe_reply_prev = html.escape(draft.proposed_reply)
+                await callback.message.edit_text(
+                    f"✅ <b>Qoralama #{draft_id} profilingiz nomidan yuborildi!</b>\n\n"
+                    f"💬 <b>Matn:</b> <i>\"{safe_reply_prev}\"</i>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                await _render_drafts_list(callback.message, is_callback=True)
 
         @dp.callback_query(F.data.startswith("draft_edit:"))
         async def handle_draft_edit(callback: types.CallbackQuery, state: FSMContext):
@@ -1456,6 +1492,11 @@ class AdminBotService:
             draft = await self.db_manager.get_draft_by_id(draft_id)
             if not draft or not draft.is_pending:
                 return await callback.answer("Allaqachon bajarilgan yoki muddati o'tgan.", show_alert=True)
+
+            now_iso = datetime.now().isoformat()
+            if draft.expires_at <= now_iso:
+                await self.db_manager.resolve_draft_atomic(draft.id, "expired")
+                return await callback.answer("⚠️ Qoralama muddati tugagan (24 soat).", show_alert=True)
 
             await state.set_state(ReplyState.waiting_for_draft_edit)
             await state.update_data(draft_id=draft_id, created_ts=datetime.now().timestamp())
@@ -1486,14 +1527,38 @@ class AdminBotService:
             if not new_text:
                 return await safe_reply(message, "⚠️ Xabar matni bo'sh bo'lishi mumkin emas.")
 
+            draft = await self.db_manager.get_draft_by_id(draft_id)
+            if not draft or not draft.is_pending:
+                await state.clear()
+                return await safe_reply(message, "⚠️ Qoralama allaqachon ko'rib chiqilgan yoki eskirgan.")
+
+            now_iso = datetime.now().isoformat()
+            if draft.expires_at <= now_iso:
+                await self.db_manager.resolve_draft_atomic(draft.id, "expired")
+                await state.clear()
+                return await safe_reply(message, "⚠️ Qoralama muddati tugagan (24 soat).")
+
+            # Check if owner already replied manually before sending edited reply
+            if self._manual_reply_check_fn and (draft.contact_user_id or draft.contact_username):
+                target_peer = draft.contact_user_id or f"@{draft.contact_username}"
+                replied_manually = await self._manual_reply_check_fn(target_peer, draft.source_message_id)
+                if replied_manually:
+                    await self.db_manager.resolve_draft_atomic(draft.id, "superseded")
+                    await state.clear()
+                    return await safe_reply(
+                        message,
+                        f"ℹ️ <b>Siz allaqachon bu kontaktga o'zingiz qo'lda yozgansiz!</b>\n"
+                        f"Qoralama #{draft.id} bekor qilindi (status: superseded).",
+                        parse_mode="HTML",
+                    )
+
             success = await self.db_manager.resolve_draft_atomic(draft_id, "edited_sent", edited_reply=new_text)
             await state.clear()
             if not success:
                 return await safe_reply(message, "⚠️ Qoralama allaqachon ko'rib chiqilgan yoki eskirgan.")
 
-            draft = await self.db_manager.get_draft_by_id(draft_id)
-            if self._userbot_send_fn and draft:
-                peer = f"@{draft.contact_username}" if draft.contact_username else (draft.contact_user_id or "")
+            if self._userbot_send_fn:
+                peer = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "")
                 if peer:
                     await self._userbot_send_fn(peer, new_text)
 
@@ -1504,6 +1569,50 @@ class AdminBotService:
                 f"💬 <b>Matn:</b> <i>\"{safe_text}\"</i>",
                 parse_mode="HTML",
             )
+
+    async def send_draft_for_approval(self, draft: Draft):
+        """Sends interactive draft approval request to Boss with inline action buttons."""
+        if not self.bot or not self.admin_id:
+            logger.info(f"Draft #{draft.id} approval notification: {draft.proposed_reply}")
+            return
+
+        contact_str = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "Noma'lum")
+        safe_contact = html.escape(contact_str)
+        safe_incoming = html.escape(draft.incoming_text)
+        safe_reply_text = html.escape(draft.proposed_reply)
+
+        if draft.is_sensitive:
+            sens_reason = html.escape(draft.sensitive_reason or "Nozik mavzu aniqlandi")
+            header = "⚠️ <b>MUHIM - TASDIQ KERAK!</b>"
+            notice = f"🔒 <b>Sabab:</b> <i>{sens_reason}</i>\n<i>Xavfsizlik qoidasiga ko'ra, xabar avtomatik yuborilmadi.</i>"
+        else:
+            header = "📝 <b>YANGI QORALAMA JAVOB TAYYORLANDI</b>"
+            notice = "<i>Ushbu kontakt <code>draft</code> rejimida. Javob sizning tasdig'ingizdan so'ng yuboriladi.</i>"
+
+        text = (
+            f"{header}\n\n"
+            f"👤 <b>Kontakt:</b> <code>{safe_contact}</code>\n"
+            f"📩 <b>Kelgan xabar:</b> <i>\"{safe_incoming}\"</i>\n\n"
+            f"💡 <b>Tavsiya etilgan AI javobi:</b>\n"
+            f"<code>{safe_reply_text}</code>\n\n"
+            f"{notice}\n\n"
+            "Nima qilamiz, Xo'jayin?"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Yuborish", callback_data=f"draft_send:{draft.id}")
+        builder.button(text="✍️ Tahrirlash", callback_data=f"draft_edit:{draft.id}")
+        builder.button(text="❌ Rad etish", callback_data=f"draft_reject:{draft.id}")
+        builder.adjust(3)
+
+        await safe_send(
+            bot=self.bot,
+            chat_id=self.admin_id,
+            text=text,
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
+        )
+
 
 
     async def notify_boss_escalation(
