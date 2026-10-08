@@ -28,6 +28,7 @@ from services.digest_service import DigestService
 from services.schedule_parser import (
     parse_schedule_intent_hybrid,
     parse_deterministic_schedule,
+    extract_peer_and_text_without_time,
     clean_target_peer,
     clean_message_text,
     ScheduleParseResult,
@@ -276,6 +277,20 @@ class AdminBotService:
                 "• <b>Holat:</b> Barcha xizmatlar 100% faol."
             )
             await safe_reply(message, status_text, parse_mode="HTML")
+
+        @dp.message(Command("restart"))
+        async def cmd_restart(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await safe_reply(
+                message,
+                "🔄 <b>Antigravity Butler qayta yuklanmoqda...</b>\n\n"
+                "<i>Watchdog jarayoni 5 soniya ichida botni eng so'nggi yangilangan kod bilan qayta ishga tushiradi.</i>",
+                parse_mode="HTML",
+            )
+            import os
+            await asyncio.sleep(1.0)
+            os._exit(0)
 
 
         async def _execute_digest(target_msg: types.Message, is_callback: bool = False, force_recent: bool = False):
@@ -655,7 +670,7 @@ class AdminBotService:
                 await safe_reply(message, "ℹ️ Hozirda hech qanday faol jarayon yo'q.", parse_mode="HTML")
 
         @dp.message(Command("schedule"))
-        async def cmd_schedule(message: types.Message):
+        async def cmd_schedule(message: types.Message, state: FSMContext):
             if not self._is_admin(message.from_user.id):
                 return
 
@@ -688,6 +703,31 @@ class AdminBotService:
 
             handled = await _schedule_and_respond(message, text_after_cmd)
             if not handled:
+                # Check if user provided peer + message, but omitted time!
+                partial = extract_peer_and_text_without_time(text_after_cmd)
+                if partial:
+                    target_peer, msg_text = partial
+                    await state.update_data(target_peer=target_peer, message_text=msg_text)
+                    await state.set_state(ScheduleWizardState.waiting_for_time)
+
+                    builder = InlineKeyboardBuilder()
+                    builder.button(text="❌ Bekor qilish", callback_data="wizard:cancel")
+                    builder.adjust(1)
+
+                    return await safe_reply(
+                        message,
+                        f"👤 <b>Kimga:</b> <code>{html.escape(target_peer)}</code>\n"
+                        f"💬 <b>Xabar matni:</b> <i>\"{html.escape(msg_text)}\"</i>\n\n"
+                        "🕒 <b>Qaysi vaqtda yuborilsin?</b>\n\n"
+                        "Iltimos, xabar yuborilishi kerak bo'lgan vaqtni kiriting:\n"
+                        "• <code>22:45</code> (Bugun yoki ertaga)\n"
+                        "• <code>10 daqiqadan keyin</code>\n"
+                        "• <code>Ertaga soat 09:00 da</code>\n\n"
+                        "<i>Bekor qilish uchun /cancel yozing yoki tugmani bosing.</i>",
+                        reply_markup=builder.as_markup(),
+                        parse_mode="HTML",
+                    )
+
                 builder = InlineKeyboardBuilder()
                 builder.button(text="✍️ Bosqichma-bosqich kiritish", callback_data="schedule:wizard")
                 builder.button(text="⏳ Barcha vazifalar", callback_data="tasks:refresh")
@@ -775,6 +815,7 @@ class AdminBotService:
                 return
             data = await state.get_data()
             target_peer = data.get("target_peer", "@contact")
+            existing_msg_text = data.get("message_text")
 
             time_input = (message.text or "").strip()
             test_phrase = f"{target_peer} {time_input} test_vazifa"
@@ -799,6 +840,37 @@ class AdminBotService:
 
             tz = pytz.timezone(settings.TIMEZONE)
             formatted_human = format_task_time_human(parsed.run_at.isoformat(), tz)
+
+            if existing_msg_text:
+                await state.clear()
+                try:
+                    task = await self.scheduler_service.schedule_message(
+                        target_peer=target_peer,
+                        message_text=existing_msg_text,
+                        run_at=parsed.run_at,
+                    )
+                    safe_target = html.escape(target_peer)
+                    safe_msg = html.escape(existing_msg_text)
+                    builder = InlineKeyboardBuilder()
+                    builder.button(text=f"🚀 Hozir yuborish #{task.id}", callback_data=f"task_send:{task.id}")
+                    builder.button(text=f"❌ Bekor qilish #{task.id}", callback_data=f"task_cancel:{task.id}")
+                    builder.button(text="⏳ Barcha vazifalar", callback_data="tasks:refresh")
+                    builder.adjust(2, 1)
+
+                    return await safe_reply(
+                        message,
+                        f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
+                        f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
+                        f"🕒 <b>Vaqti:</b> <code>{formatted_human}</code>\n"
+                        f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
+                        f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>",
+                        reply_markup=builder.as_markup(),
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.error(f"Error creating wizard scheduled task: {e}", exc_info=True)
+                    return await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(str(e))}", parse_mode="HTML")
+
             await state.update_data(run_at_iso=parsed.run_at.isoformat(), human_time=formatted_human)
             await state.set_state(ScheduleWizardState.waiting_for_text)
 

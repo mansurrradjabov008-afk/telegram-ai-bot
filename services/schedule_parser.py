@@ -53,8 +53,13 @@ def clean_message_text(text: str) -> str:
     # Strip leading connectors: "da ", "ga "
     cleaned = re.sub(r"^(?:da\s+|ga\s+|в\s+)", "", cleaned, flags=re.IGNORECASE).strip()
 
-    # Strip Uzbek suffixes: "... deb yoz", "... deb jo'nat", "... deb xabar yoz", "... deb"
-    suffix_pattern = r"\s+deb(?:\s+(?:xabar\s+)?(?:yoz(?:ing)?|jo['`’‘]nat(?:ing)?|yubor(?:ing)?))?\.?$"
+    # Strip Uzbek suffixes: "... deb yoz", "... deb jo'nat", "... deb xabar yoz", "... deb", "... deb yozib quy/qo'y/qoy"
+    suffix_pattern = (
+        r"\s+deb(?:\s+(?:xabar\s+)?"
+        r"(?:yoz(?:ib\s+(?:qo['`’‘]?y|quy|qoy|tashla))?|yoz(?:ing)?|"
+        r"jo['`’‘]nat(?:ib\s+(?:yubor|qo['`’‘]?y|quy))?|jo['`’‘]nat(?:ing)?|"
+        r"yubor(?:ib\s+(?:qo['`’‘]?y|quy))?|yubor(?:ing)?))?\.?$"
+    )
     cleaned = re.sub(suffix_pattern, "", cleaned, flags=re.IGNORECASE).strip()
 
     # Strip Russian suffixes: "... напиши", "... отправь"
@@ -65,6 +70,23 @@ def clean_message_text(text: str) -> str:
         cleaned = cleaned[1:-1].strip()
 
     return cleaned
+
+
+def extract_peer_and_text_without_time(text: str) -> Optional[Tuple[str, str]]:
+    """
+    Extracts target peer and message text when user provides recipient and text but forgets the time.
+    Example: '/schedule @sah_60 uqi gandon deb yozib quy' -> ('@sah_60', 'uqi gandon')
+    """
+    if not text:
+        return None
+    s = re.sub(r"^/schedule(?:@[a-zA-Z0-9_]+)?\s+", "", text.strip(), flags=re.IGNORECASE).strip()
+    parts = s.split(maxsplit=1)
+    if len(parts) >= 2 and _is_peer_token(parts[0]):
+        peer = clean_target_peer(parts[0])
+        msg = clean_message_text(parts[1])
+        if msg:
+            return peer, msg
+    return None
 
 
 def _is_peer_token(token: str) -> bool:

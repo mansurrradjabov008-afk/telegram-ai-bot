@@ -275,6 +275,7 @@ async def bot_service(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_cmd_schedule_empty_shows_hub(bot_service):
     service, mock_sched, manager = bot_service
+    fsm, storage = make_mock_fsm()
 
     msg = MagicMock()
     msg.from_user = MagicMock()
@@ -285,7 +286,7 @@ async def test_cmd_schedule_empty_shows_hub(bot_service):
     # Find cmd_schedule by name
     handler = next((h.callback for h in service.dp.message.handlers if h.callback.__name__ == "cmd_schedule"), None)
     assert handler is not None
-    await handler(msg)
+    await handler(msg, fsm)
 
     # Check response text
     msg.reply.assert_called_once()
@@ -302,6 +303,7 @@ async def test_cmd_schedule_empty_shows_hub(bot_service):
 @pytest.mark.asyncio
 async def test_cmd_schedule_with_arguments_schedules_immediately(bot_service):
     service, mock_sched, manager = bot_service
+    fsm, storage = make_mock_fsm()
 
     msg = MagicMock()
     msg.from_user = MagicMock()
@@ -312,7 +314,7 @@ async def test_cmd_schedule_with_arguments_schedules_immediately(bot_service):
     # Find cmd_schedule by name
     handler = next((h.callback for h in service.dp.message.handlers if h.callback.__name__ == "cmd_schedule"), None)
     assert handler is not None
-    await handler(msg)
+    await handler(msg, fsm)
 
     # Scheduler service must have been called
     mock_sched.schedule_message.assert_called_once()
@@ -325,6 +327,47 @@ async def test_cmd_schedule_with_arguments_schedules_immediately(bot_service):
     reply_text = msg.reply.call_args[0][0]
     assert "VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI" in reply_text
     assert "#77" in reply_text
+
+
+@pytest.mark.asyncio
+async def test_cmd_schedule_missing_time_prompts_and_completes_when_time_entered(bot_service):
+    service, mock_sched, manager = bot_service
+    fsm, storage = make_mock_fsm()
+
+    # User screenshot exact phrase: /schedule @sah_60 uqi gandon deb yozib quy
+    msg = MagicMock()
+    msg.from_user = MagicMock()
+    msg.from_user.id = 7992504344
+    msg.text = "/schedule @sah_60 uqi gandon deb yozib quy"
+    msg.reply = AsyncMock()
+
+    cmd_handler = next((h.callback for h in service.dp.message.handlers if h.callback.__name__ == "cmd_schedule"), None)
+    assert cmd_handler is not None
+    await cmd_handler(msg, fsm)
+
+    # Peer and message text are captured into state, prompting for time
+    assert storage.get("state") == ScheduleWizardState.waiting_for_time
+    assert storage["data"]["target_peer"] == "@sah_60"
+    assert storage["data"]["message_text"] == "uqi gandon"
+    assert "Qaysi vaqtda yuborilsin?" in msg.reply.call_args[0][0]
+
+    # User then enters time: "22:45"
+    time_msg = MagicMock()
+    time_msg.from_user = MagicMock()
+    time_msg.from_user.id = 7992504344
+    time_msg.text = "22:45"
+    time_msg.reply = AsyncMock()
+
+    time_handler = next((h.callback for h in service.dp.message.handlers if h.callback.__name__ == "process_wizard_time"), None)
+    assert time_handler is not None
+    await time_handler(time_msg, fsm)
+
+    # Task is scheduled immediately without requiring message re-entry!
+    assert storage.get("state") is None
+    mock_sched.schedule_message.assert_called_once()
+    assert mock_sched.schedule_message.call_args[1]["target_peer"] == "@sah_60"
+    assert mock_sched.schedule_message.call_args[1]["message_text"] == "uqi gandon"
+    assert "VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI" in time_msg.reply.call_args[0][0]
 
 
 @pytest.mark.asyncio
