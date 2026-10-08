@@ -88,3 +88,109 @@ async def test_conversation_history(temp_db: DatabaseManager):
     assert len(history) == 2
     assert history[0].role == "contact"
     assert history[1].role == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_contact_autonomy_modes(temp_db: DatabaseManager):
+    """Test contact mode defaults, updates, CHECK constraints, and counts."""
+    # 1. New contact defaults to 'draft'
+    contact = await temp_db.upsert_contact(user_id=201, full_name="Vali", username="vali")
+    assert contact.mode == "draft"
+
+    # 2. Update mode by user_id
+    ok = await temp_db.update_contact_mode(user_id=201, mode="auto")
+    assert ok is True
+    updated = await temp_db.get_contact_by_id(201)
+    assert updated.mode == "auto"
+
+    # 3. Update mode by username
+    ok = await temp_db.update_contact_mode_by_username(username="@vali", mode="mute")
+    assert ok is True
+    updated = await temp_db.get_contact_by_username("vali")
+    assert updated.mode == "mute"
+
+    # 4. Invalid mode raises ValueError
+    with pytest.raises(ValueError):
+        await temp_db.update_contact_mode(user_id=201, mode="invalid")
+
+    # 5. DB-level CHECK constraint rejects invalid mode on raw SQL
+    async with get_db(temp_db.db_path) as db:
+        with pytest.raises(aiosqlite.IntegrityError):
+            await db.execute("INSERT INTO contacts (user_id, full_name, mode) VALUES (202, 'Gani', 'invalid')")
+
+    # 6. Mode counts
+    counts = await temp_db.get_mode_counts()
+    assert counts["mute"] == 1
+    assert counts["auto"] == 0
+    assert counts["draft"] == 0
+
+
+@pytest.mark.asyncio
+async def test_drafts_lifecycle_and_constraints(temp_db: DatabaseManager):
+    """Test draft creation, unique duplicate protection, atomic resolution, and expiration."""
+    from datetime import datetime, timedelta
+
+    exp_future = (datetime.now() + timedelta(hours=24)).isoformat()
+    exp_past = (datetime.now() - timedelta(hours=1)).isoformat()
+
+    # 1. Create draft
+    draft = await temp_db.create_draft(
+        source_message_id=9001,
+        incoming_text="Qachon uchrashamiz?",
+        proposed_reply="Ertaga soat 15:00 da.",
+        expires_at=exp_future,
+        contact_username="davron_aka",
+        contact_user_id=301,
+        is_sensitive=True,
+        sensitive_reason="meeting_time",
+    )
+    assert draft is not None
+    assert draft.id is not None
+    assert draft.status == "pending"
+    assert draft.is_sensitive is True
+    assert draft.sensitive_reason == "meeting_time"
+
+    # 2. Duplicate draft on same (contact_user_id, source_message_id) is blocked
+    dup = await temp_db.create_draft(
+        source_message_id=9001,
+        incoming_text="Qachon uchrashamiz?",
+        proposed_reply="Boshqa taklif.",
+        expires_at=exp_future,
+        contact_username="davron_aka",
+        contact_user_id=301,
+    )
+    assert dup is None
+
+    # 3. List and count pending drafts
+    pending = await temp_db.list_pending_drafts()
+    assert len(pending) == 1
+    assert pending[0].id == draft.id
+    cnt = await temp_db.count_pending_drafts()
+    assert cnt == 1
+
+    # 4. Atomic resolution - first press succeeds
+    resolved = await temp_db.resolve_draft_atomic(draft.id, "sent")
+    assert resolved is True
+
+    # 5. Atomic resolution - second press fails (double-press protection)
+    second_press = await temp_db.resolve_draft_atomic(draft.id, "sent")
+    assert second_press is False
+
+    # Status is now 'sent'
+    updated_draft = await temp_db.get_draft_by_id(draft.id)
+    assert updated_draft.status == "sent"
+
+    # 6. Create expired draft and test expire_old_drafts
+    exp_draft = await temp_db.create_draft(
+        source_message_id=9002,
+        incoming_text="Eski xabar",
+        proposed_reply="Eski javob",
+        expires_at=exp_past,
+        contact_user_id=302,
+    )
+    assert exp_draft is not None
+    expired_count = await temp_db.expire_old_drafts()
+    assert expired_count == 1
+
+    expired_record = await temp_db.get_draft_by_id(exp_draft.id)
+    assert expired_record.status == "expired"

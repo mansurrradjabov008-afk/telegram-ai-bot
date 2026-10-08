@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     HUMAN_DELAY_MIN: int = 2
     HUMAN_DELAY_MAX: int = 5
 
+    # Autonomy modes & Owner ID
+    MIGRATE_EXISTING_TO: str = "draft"
+    OWNER_ID: Optional[int] = None
+
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent
 

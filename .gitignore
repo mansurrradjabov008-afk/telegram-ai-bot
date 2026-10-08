@@ -5,4 +5,5 @@ __pycache__/
 *.zip
 .env
 data/*.session*
-data/*.db-backup*
+data/*.db.backup*
+data/*backup*
