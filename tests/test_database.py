@@ -9,6 +9,7 @@ import aiosqlite
 
 from database.connection import init_db, get_db
 from database.crud import DatabaseManager
+from config import settings
 
 
 @pytest_asyncio.fixture
@@ -194,3 +195,62 @@ async def test_drafts_lifecycle_and_constraints(temp_db: DatabaseManager):
 
     expired_record = await temp_db.get_draft_by_id(exp_draft.id)
     assert expired_record.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_migration_idempotent_and_data_preserved(tmp_path: Path):
+    """
+    Tests migration safety:
+    1. Legacy database without 'mode' column and with existing contact data.
+    2. Runs init_db to execute migration.
+    3. Confirms data is preserved and mode defaults to MIGRATE_EXISTING_TO ('draft').
+    4. Runs init_db a second time (idempotency test).
+    5. Confirms schema and data integrity remains unaffected.
+    """
+    from unittest.mock import patch
+    legacy_db_path = tmp_path / "legacy_migration.db"
+
+    # Step 1: Create legacy DB schema without mode column
+    async with aiosqlite.connect(legacy_db_path) as db:
+        await db.execute("""
+        CREATE TABLE contacts (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT NOT NULL,
+            relationship_type TEXT DEFAULT 'general'
+        );
+        """)
+        await db.execute(
+            "INSERT INTO contacts (user_id, username, full_name, relationship_type) VALUES (?, ?, ?, ?)",
+            (888, "legacy_boss", "Legacy User", "vip_client"),
+        )
+        await db.commit()
+
+    # Step 2: Run migration via init_db with MIGRATE_EXISTING_TO='draft'
+    with patch.object(settings, "MIGRATE_EXISTING_TO", "draft"):
+        await init_db(legacy_db_path)
+
+    mgr = DatabaseManager(db_path=legacy_db_path)
+
+    # Step 3: Verify data preserved and mode migrated
+    contact = await mgr.get_contact_by_id(888)
+    assert contact is not None
+    assert contact.username == "legacy_boss"
+    assert contact.full_name == "Legacy User"
+    assert contact.relationship_type == "vip_client"
+    assert contact.mode == "draft"
+
+    # Schema version 3 recorded
+    v = await mgr.get_schema_version()
+    assert v >= 3
+
+    # Step 4: Run init_db a SECOND time (idempotency check)
+    with patch.object(settings, "MIGRATE_EXISTING_TO", "draft"):
+        await init_db(legacy_db_path)
+
+    # Step 5: Data still preserved, no errors
+    contact_after = await mgr.get_contact_by_id(888)
+    assert contact_after is not None
+    assert contact_after.username == "legacy_boss"
+    assert contact_after.mode == "draft"
+

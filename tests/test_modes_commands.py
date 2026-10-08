@@ -284,3 +284,169 @@ async def test_draft_atomic_resolve_and_double_press_protection(test_db: Databas
     # Also rejecting already sent draft MUST fail
     res3 = await test_db.resolve_draft_atomic(draft.id, "rejected")
     assert res3 is False
+
+
+@pytest.mark.asyncio
+async def test_draft_approve_send_and_double_press_callbacks(admin_service: AdminBotService, test_db: DatabaseManager):
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock()
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="davron_aka",
+        contact_user_id=111,
+        source_message_id=701,
+        incoming_text="Qachon uchrashamiz?",
+        proposed_reply="Ertaga 15:00 da.",
+    )
+
+    send_handler = None
+    for h in admin_service.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_draft_send":
+            send_handler = h.callback
+            break
+
+    assert send_handler is not None
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = owner_id
+    fake_cb.data = f"draft_send:{draft.id}"
+    fake_cb.answer = AsyncMock()
+    fake_cb.message = MagicMock()
+    fake_cb.message.edit_text = AsyncMock()
+
+    # 1. First click: approves and sends
+    await send_handler(fake_cb)
+
+    assert userbot_send_mock.await_count == 1
+    userbot_send_mock.assert_awaited_with("@davron_aka", "Ertaga 15:00 da.")
+    fake_cb.answer.assert_awaited()
+    assert "yuborildi" in fake_cb.answer.await_args[0][0].lower()
+
+    # Draft status is updated to sent
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "sent"
+
+    # 2. Second click (double-press protection): must answer "Allaqachon bajarilgan"
+    fake_cb.answer.reset_mock()
+    await send_handler(fake_cb)
+    assert userbot_send_mock.await_count == 1  # Not sent again!
+    assert "allaqachon bajarilgan" in fake_cb.answer.await_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_draft_reject_callback(admin_service: AdminBotService, test_db: DatabaseManager):
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock()
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="davron_aka",
+        contact_user_id=111,
+        source_message_id=702,
+        incoming_text="Hisob raqamingizni bering",
+        proposed_reply="Mana hisob...",
+        is_sensitive=True,
+    )
+
+    reject_handler = None
+    for h in admin_service.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_draft_reject":
+            reject_handler = h.callback
+            break
+
+    assert reject_handler is not None
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = owner_id
+    fake_cb.data = f"draft_reject:{draft.id}"
+    fake_cb.answer = AsyncMock()
+    fake_cb.message = MagicMock()
+    fake_cb.message.edit_text = AsyncMock()
+
+    await reject_handler(fake_cb)
+
+    assert userbot_send_mock.await_count == 0  # Nothing sent
+    fake_cb.answer.assert_awaited()
+    assert "rad etildi" in fake_cb.answer.await_args[0][0].lower()
+
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_draft_expired_cannot_be_sent(admin_service: AdminBotService, test_db: DatabaseManager):
+    from datetime import datetime, timedelta
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock()
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    # Draft with past expiration
+    exp_past = (datetime.now() - timedelta(hours=2)).isoformat()
+    draft = await test_db.create_draft(
+        contact_username="davron_aka",
+        contact_user_id=111,
+        source_message_id=703,
+        incoming_text="Eski xabar",
+        proposed_reply="Eski javob",
+        expires_at=exp_past,
+    )
+
+    send_handler = None
+    for h in admin_service.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_draft_send":
+            send_handler = h.callback
+            break
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = owner_id
+    fake_cb.data = f"draft_send:{draft.id}"
+    fake_cb.answer = AsyncMock()
+
+    await send_handler(fake_cb)
+
+    # Not sent
+    assert userbot_send_mock.await_count == 0
+    assert "muddati tugagan" in fake_cb.answer.await_args[0][0].lower()
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_draft_superseded_if_owner_replied_manually(admin_service: AdminBotService, test_db: DatabaseManager):
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock()
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    # Mock manual reply checker: owner ALREADY replied manually to this contact
+    admin_service.set_manual_reply_checker(AsyncMock(return_value=True))
+
+    draft = await test_db.create_draft(
+        contact_username="davron_aka",
+        contact_user_id=111,
+        source_message_id=704,
+        incoming_text="Salom!",
+        proposed_reply="Assalomu alaykum!",
+    )
+
+    send_handler = None
+    for h in admin_service.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_draft_send":
+            send_handler = h.callback
+            break
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = owner_id
+    fake_cb.data = f"draft_send:{draft.id}"
+    fake_cb.answer = AsyncMock()
+    fake_cb.message = MagicMock()
+    fake_cb.message.edit_text = AsyncMock()
+
+    await send_handler(fake_cb)
+
+    # Not sent, cancelled as superseded
+    assert userbot_send_mock.await_count == 0
+    assert "superseded" in fake_cb.answer.await_args[0][0].lower()
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "superseded"
+
