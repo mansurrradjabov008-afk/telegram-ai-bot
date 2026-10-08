@@ -25,6 +25,13 @@ from database.models import Draft
 from services.ai_engine import AIEngine
 from services.scheduler_service import SchedulerService
 from services.digest_service import DigestService
+from services.schedule_parser import (
+    parse_schedule_intent_hybrid,
+    parse_deterministic_schedule,
+    clean_target_peer,
+    clean_message_text,
+    ScheduleParseResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +173,12 @@ def normalize_and_validate_username(raw: str) -> Optional[str]:
 class ReplyState(StatesGroup):
     waiting_for_custom_reply = State()
     waiting_for_draft_edit = State()
+
+
+class ScheduleWizardState(StatesGroup):
+    waiting_for_peer = State()
+    waiting_for_time = State()
+    waiting_for_text = State()
 
 
 class AdminBotService:
@@ -577,33 +590,27 @@ class AdminBotService:
             )
 
 
-        async def _schedule_via_ai(msg_obj: types.Message, raw_text: str) -> bool:
-            """Uses AI to parse natural language scheduling request and registers task."""
+        async def _schedule_and_respond(msg_obj: types.Message, raw_text: str) -> bool:
+            """Parses schedule request via hybrid parser and creates scheduled task."""
             tz = pytz.timezone(settings.TIMEZONE)
-            now = datetime.now(tz)
-
-            parsed = await self.ai_engine.parse_schedule_intent(raw_text, now, settings.TIMEZONE)
-            if not parsed or not parsed.get("is_schedule"):
+            parsed = await parse_schedule_intent_hybrid(raw_text, self.ai_engine, settings.TIMEZONE)
+            if not parsed or not parsed.is_schedule:
                 return False
 
-            target_peer = parsed["target_peer"]
-            scheduled_iso = parsed["scheduled_iso"]
-            msg_text = parsed["message_text"]
+            target_peer = parsed.target_peer
+            run_at = parsed.run_at
+            msg_text = parsed.message_text
 
             try:
-                target_dt = datetime.fromisoformat(scheduled_iso)
-                if target_dt.tzinfo is None:
-                    target_dt = tz.localize(target_dt)
-
                 task = await self.scheduler_service.schedule_message(
                     target_peer=target_peer,
                     message_text=msg_text,
-                    run_at=target_dt,
+                    run_at=run_at,
                 )
 
                 safe_target = html.escape(target_peer)
                 safe_msg = html.escape(msg_text)
-                formatted_time = format_task_time_human(scheduled_iso, tz)
+                formatted_time = format_task_time_human(run_at.isoformat(), tz)
 
                 builder = InlineKeyboardBuilder()
                 builder.button(text=f"🚀 Hozir yuborish #{task.id}", callback_data=f"task_send:{task.id}")
@@ -613,7 +620,7 @@ class AdminBotService:
 
                 await safe_reply(
                     msg_obj,
-                    f"⏰ <b>AI VAZIFANI REJALASHTIRDI! (ID #{task.id})</b>\n\n"
+                    f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
                     f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
                     f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
                     f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
@@ -623,41 +630,238 @@ class AdminBotService:
                 )
                 return True
             except Exception as e:
-                logger.error(f"Error scheduling via AI: {e}", exc_info=True)
+                logger.error(f"Error creating scheduled task: {e}", exc_info=True)
                 await safe_reply(msg_obj, f"❌ Rejalashtirishda xatolik: {html.escape(str(e))}", parse_mode="HTML")
                 return True
 
-        @dp.message(F.text.regexp(r"(?i)(?:^|.*?)@([a-zA-Z0-9_]{3,32})\s+(.+)"))
-        async def handle_natural_crm_or_schedule(message: types.Message):
+        @dp.message(Command("cancel"))
+        async def cmd_cancel(message: types.Message, state: FSMContext):
             if not self._is_admin(message.from_user.id):
                 return
-            if message.text.startswith("/") and not message.text.startswith("/crm"):
+            current_state = await state.get_state()
+            if current_state:
+                await state.clear()
+                builder = InlineKeyboardBuilder()
+                builder.button(text="⏰ Rejadagi vazifalar", callback_data="tasks:refresh")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 1)
+                await safe_reply(
+                    message,
+                    "🚫 <b>Faol jarayon bekor qilindi.</b>",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+            else:
+                await safe_reply(message, "ℹ️ Hozirda hech qanday faol jarayon yo'q.", parse_mode="HTML")
+
+        @dp.message(Command("schedule"))
+        async def cmd_schedule(message: types.Message):
+            if not self._is_admin(message.from_user.id):
                 return
 
-            # 1. Check if this is a scheduling request
-            lower_text = message.text.lower()
-            schedule_triggers = ["ertaga", "bugun", "soat", "da ", "keyin", "rejalashtir", "yubor", "jo'nat", "eslat", "minut", "daqiq"]
-            if any(tr in lower_text for tr in schedule_triggers):
-                handled = await _schedule_via_ai(message, message.text)
-                if handled:
-                    return
+            raw = (message.text or "").strip()
+            parts = raw.split(maxsplit=1)
+            text_after_cmd = parts[1].strip() if len(parts) > 1 else ""
 
-            # 2. Check if this is a CRM instruction via AI parser
-            crm_parsed = await self.ai_engine.parse_crm_intent(message.text)
-            if crm_parsed and crm_parsed.get("is_crm") and crm_parsed.get("username"):
-                return await _apply_contact_instruction(
+            if not text_after_cmd:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="✍️ Yangi vazifa rejalashtirish", callback_data="schedule:wizard")
+                builder.button(text="⏳ Kutilayotgan vazifalar", callback_data="tasks:refresh")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 2)
+
+                return await safe_reply(
                     message,
-                    crm_parsed["username"],
-                    crm_parsed.get("custom_instructions", message.text),
-                    forced_style=crm_parsed.get("addressing_style"),
+                    "⏰ <b>VAZIFALARNI REJALASHTIRISH MARKAZI:</b>\n\n"
+                    "Quyidagi usullardan biri orqali xabar yuborishni rejalashtirishingiz mumkin:\n\n"
+                    "⚡ <b>1. Tezkor format:</b>\n"
+                    "• <code>/schedule @username 22:30 Xabar matni</code>\n"
+                    "• <code>/schedule @username 15 daqiqadan keyin Xabar matni</code>\n\n"
+                    "🧠 <b>2. Tabiiy tilda (AI tushunadi):</b>\n"
+                    "• <code>/schedule Ertaga soat 10 da @ali ga 'salom' deb yoz</code>\n"
+                    "• <code>/schedule 30 minutdan keyin @umid ga loyiha tayyor deb jo'nat</code>\n\n"
+                    "✍️ <b>3. Bosqichma-bosqich qulay usta:</b>\n"
+                    "Quyidagi <b>'✍️ Yangi vazifa rejalashtirish'</b> tugmasini bosing.",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
                 )
 
-            # 3. Fallback regex match
-            match = re.search(r"(?i)@([a-zA-Z0-9_]{3,32})\s+(.+)", message.text)
-            if match:
-                target = match.group(1)
-                instruction = match.group(2)
-                await _apply_contact_instruction(message, target, instruction)
+            handled = await _schedule_and_respond(message, text_after_cmd)
+            if not handled:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="✍️ Bosqichma-bosqich kiritish", callback_data="schedule:wizard")
+                builder.button(text="⏳ Barcha vazifalar", callback_data="tasks:refresh")
+                builder.adjust(1, 1)
+
+                await safe_reply(
+                    message,
+                    "⚠️ <b>Rejalashtirish parametrlarini aniqlab bo'lmadi.</b>\n\n"
+                    "Iltimos, vaqt yoki qabul qiluvchini to'g'ri ko'rsating. Masalan:\n"
+                    "• <code>/schedule @username 22:30 Matn</code>\n"
+                    "• <code>/schedule @username 15 daqiqadan keyin Matn</code>\n"
+                    "• <code>/schedule Ertaga soat 10:00 da @ali ga salom deb yoz</code>\n\n"
+                    "Yoki quyidagi tugma orqali bosqichma-bosqich kiriting:",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+
+        @dp.callback_query(F.data == "schedule:wizard")
+        async def handle_schedule_wizard_start(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await state.set_state(ScheduleWizardState.waiting_for_peer)
+            await callback.answer()
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Bekor qilish", callback_data="wizard:cancel")
+            builder.adjust(1)
+
+            text = (
+                "✍️ <b>YANGI VAZIFA REJALASHTIRISH (1/3)</b>\n\n"
+                "👤 <b>Xabar kimga yuboriladi?</b>\n"
+                "Foydalanuvchi nomini (<code>@username</code>), telefon raqami yoki ID sini yozing:\n"
+                "<i>(Masalan: <code>@sah_60</code> yoki <code>@ali</code>)</i>\n\n"
+                "<i>Bekor qilish uchun /cancel yozing yoki tugmani bosing.</i>"
+            )
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data == "wizard:cancel")
+        async def handle_wizard_cancel_cb(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await state.clear()
+            await callback.answer("Bekor qilindi")
+            builder = InlineKeyboardBuilder()
+            builder.button(text="⏳ Kutilayotgan vazifalar", callback_data="tasks:refresh")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(1, 1)
+            await callback.message.edit_text(
+                "🚫 <b>Vazifa rejalashtirish bekor qilindi.</b>",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML",
+            )
+
+        @dp.message(ScheduleWizardState.waiting_for_peer)
+        async def process_wizard_peer(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+            raw_peer = (message.text or "").strip()
+            if not raw_peer:
+                return await safe_reply(message, "⚠️ Iltimos, foydalanuvchi nomini kiriting (masalan: <code>@ali</code>).", parse_mode="HTML")
+
+            target_peer = clean_target_peer(raw_peer)
+            await state.update_data(target_peer=target_peer)
+            await state.set_state(ScheduleWizardState.waiting_for_time)
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Bekor qilish", callback_data="wizard:cancel")
+            builder.adjust(1)
+
+            text = (
+                f"👤 <b>Qabul qiluvchi:</b> <code>{html.escape(target_peer)}</code>\n\n"
+                "🕒 <b>2/3-BOSQICH: Qaysi vaqtda yuborilsin?</b>\n\n"
+                "Vaqtni quyidagi ko'rinishlardan birida yozing:\n"
+                "• <code>22:30</code> (Bugun yoki ertaga)\n"
+                "• <code>15 daqiqadan keyin</code>\n"
+                "• <code>1 soatdan keyin</code>\n"
+                "• <code>Ertaga soat 10:00 da</code>\n"
+                "• <code>2026-10-09 14:00</code>"
+            )
+            await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(ScheduleWizardState.waiting_for_time)
+        async def process_wizard_time(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+            data = await state.get_data()
+            target_peer = data.get("target_peer", "@contact")
+
+            time_input = (message.text or "").strip()
+            test_phrase = f"{target_peer} {time_input} test_vazifa"
+            parsed = await parse_schedule_intent_hybrid(test_phrase, self.ai_engine, settings.TIMEZONE)
+            if not parsed or not parsed.is_schedule:
+                parsed = await parse_schedule_intent_hybrid(time_input, self.ai_engine, settings.TIMEZONE)
+
+            if not parsed or not parsed.is_schedule:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="❌ Bekor qilish", callback_data="wizard:cancel")
+                builder.adjust(1)
+                return await safe_reply(
+                    message,
+                    "⚠️ <b>Vaqt formatini tushunib bo'lmadi.</b>\n\n"
+                    "Iltimos, qaytadan yozing. Masalan:\n"
+                    "• <code>22:30</code>\n"
+                    "• <code>15 daqiqadan keyin</code>\n"
+                    "• <code>Ertaga soat 09:00 da</code>",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+
+            tz = pytz.timezone(settings.TIMEZONE)
+            formatted_human = format_task_time_human(parsed.run_at.isoformat(), tz)
+            await state.update_data(run_at_iso=parsed.run_at.isoformat(), human_time=formatted_human)
+            await state.set_state(ScheduleWizardState.waiting_for_text)
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Bekor qilish", callback_data="wizard:cancel")
+            builder.adjust(1)
+
+            text = (
+                f"👤 <b>Kimga:</b> <code>{html.escape(target_peer)}</code>\n"
+                f"⏰ <b>Vaqti:</b> <code>{formatted_human}</code>\n\n"
+                "💬 <b>3/3-BOSQICH: Xabar matnini kiriting:</b>\n\n"
+                "Yuborilishi kerak bo'lgan matnni yozib jo'nating:"
+            )
+            await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(ScheduleWizardState.waiting_for_text)
+        async def process_wizard_text(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+            msg_text = (message.text or "").strip()
+            if not msg_text:
+                return await safe_reply(message, "⚠️ Xabar matni bo'sh bo'lishi mumkin emas. Matnni yozing:")
+
+            data = await state.get_data()
+            target_peer = data.get("target_peer")
+            run_at_iso = data.get("run_at_iso")
+            await state.clear()
+
+            tz = pytz.timezone(settings.TIMEZONE)
+            run_at = datetime.fromisoformat(run_at_iso)
+            if run_at.tzinfo is None:
+                run_at = tz.localize(run_at)
+
+            try:
+                task = await self.scheduler_service.schedule_message(
+                    target_peer=target_peer,
+                    message_text=msg_text,
+                    run_at=run_at,
+                )
+
+                safe_target = html.escape(target_peer)
+                safe_msg = html.escape(msg_text)
+                formatted_time = format_task_time_human(run_at.isoformat(), tz)
+
+                builder = InlineKeyboardBuilder()
+                builder.button(text=f"🚀 Hozir yuborish #{task.id}", callback_data=f"task_send:{task.id}")
+                builder.button(text=f"❌ Bekor qilish #{task.id}", callback_data=f"task_cancel:{task.id}")
+                builder.button(text="⏳ Barcha vazifalar", callback_data="tasks:refresh")
+                builder.adjust(2, 1)
+
+                await safe_reply(
+                    message,
+                    f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
+                    f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
+                    f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
+                    f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
+                    f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"Error creating wizard scheduled task: {e}", exc_info=True)
+                await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(str(e))}", parse_mode="HTML")
 
         async def _render_contacts_list(target_msg: types.Message, is_callback: bool = False):
             """Renders rich contacts list with addressing style badges, autonomy mode badges and instant toggle buttons."""
@@ -761,75 +965,32 @@ class AdminBotService:
                 return
             await _render_contacts_list(message, is_callback=False)
 
-        @dp.message(Command("schedule"))
-        async def cmd_schedule(message: types.Message):
+        @dp.message(F.text & ~F.text.startswith("/") & F.text.regexp(r"(?i)(?:^|.*?)@([a-zA-Z0-9_]{3,32})\s+(.+)"))
+        async def handle_natural_crm_or_schedule(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
 
-            text_after_cmd = message.text[len("/schedule"):].strip()
-            if not text_after_cmd:
-                return await safe_reply(
+            # 1. Check if this is a scheduling request
+            handled = await _schedule_and_respond(message, message.text)
+            if handled:
+                return
+
+            # 2. Check if this is a CRM instruction via AI parser
+            crm_parsed = await self.ai_engine.parse_crm_intent(message.text)
+            if crm_parsed and crm_parsed.get("is_crm") and crm_parsed.get("username"):
+                return await _apply_contact_instruction(
                     message,
-                    "ℹ️ <b>Vazifa rejalashtirish (AI & Classic):</b>\n\n"
-                    "💡 <b>1. Tabiiy tilda (AI avtomatik tushunadi):</b>\n"
-                    "• <code>/schedule Ertaga soat 10 da @umid_namozov ga 'salom' deb yoz</code>\n"
-                    "• <code>/schedule 15 daqiqadan keyin @ali ga 'hujjatlar tayyor' deb jo'nat</code>\n\n"
-                    "⚡ <b>2. Standart formatda:</b>\n"
-                    "• <code>/schedule @username HH:MM Matn</code>\n"
-                    "<i>(Masalan: <code>/schedule @ali 18:30 Uchrashamizmi?</code>)</i>",
-                    parse_mode="HTML",
+                    crm_parsed["username"],
+                    crm_parsed.get("custom_instructions", message.text),
+                    forced_style=crm_parsed.get("addressing_style"),
                 )
 
-            # Check classic format: @username HH:MM Text
-            parts = text_after_cmd.split(maxsplit=2)
-            if len(parts) >= 3 and re.match(r"^\d{1,2}:\d{2}$", parts[1]) and (parts[0].startswith("@") or parts[0].isdigit() or parts[0].startswith("+")):
-                target = parts[0]
-                time_str = parts[1]
-                msg_text = parts[2]
-                try:
-                    hour, minute = map(int, time_str.split(":"))
-                    tz = pytz.timezone(settings.TIMEZONE)
-                    now = datetime.now(tz)
-                    target_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                    if target_dt <= now:
-                        target_dt += timedelta(days=1)
-
-                    task = await self.scheduler_service.schedule_message(
-                        target_peer=target,
-                        message_text=msg_text,
-                        run_at=target_dt,
-                    )
-                    safe_target = html.escape(target)
-                    safe_msg = html.escape(msg_text)
-                    formatted_time = format_task_time_human(target_dt.isoformat(), tz)
-
-                    builder = InlineKeyboardBuilder()
-                    builder.button(text=f"🚀 Hozir yuborish #{task.id}", callback_data=f"task_send:{task.id}")
-                    builder.button(text=f"❌ Bekor qilish #{task.id}", callback_data=f"task_cancel:{task.id}")
-                    builder.button(text="⏳ Barcha vazifalar", callback_data="tasks:refresh")
-                    builder.adjust(2, 1)
-
-                    return await safe_reply(
-                        message,
-                        f"⏰ <b>Xabar muvaffaqiyatli rejalashtirildi! (ID #{task.id})</b>\n\n"
-                        f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
-                        f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
-                        f"💬 <b>Xabar:</b> <i>\"{safe_msg}\"</i>",
-                        reply_markup=builder.as_markup(),
-                        parse_mode="HTML",
-                    )
-                except Exception as e:
-                    logger.warning(f"Classic schedule parse failed, trying AI: {e}")
-
-            # AI Parser fallback for natural language
-            handled = await _schedule_via_ai(message, text_after_cmd)
-            if not handled:
-                await safe_reply(
-                    message,
-                    "⚠️ <i>Xabar rejalashtirish tafsilotlarini tushunib bo'lmadi.</i>\n\n"
-                    "Misol: <code>/schedule Ertaga soat 10 da @ali ga salom deb yoz</code>",
-                    parse_mode="HTML"
-                )
+            # 3. Fallback regex match
+            match = re.search(r"(?i)@([a-zA-Z0-9_]{3,32})\s+(.+)", message.text)
+            if match:
+                target = match.group(1)
+                instruction = match.group(2)
+                await _apply_contact_instruction(message, target, instruction)
 
         async def _render_tasks_list(target_msg: types.Message, is_callback: bool = False):
             """Renders pending tasks list with clean human-readable dates and action buttons."""
@@ -847,10 +1008,11 @@ class AdminBotService:
                     "• <code>/schedule @username 14:00 Matn</code>"
                 )
                 builder = InlineKeyboardBuilder()
+                builder.button(text="✍️ Yangi vazifa rejalashtirish", callback_data="schedule:wizard")
                 builder.button(text="📜 Bajarilganlar tarixi", callback_data="task_hist:open")
                 builder.button(text="🔄 Yangilash", callback_data="tasks:refresh")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1, 2)
+                builder.adjust(1, 1, 2)
                 if is_callback:
                     await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 else:
@@ -874,11 +1036,12 @@ class AdminBotService:
                 builder.button(text=f"🚀 Yuborish #{t.id}", callback_data=f"task_send:{t.id}")
                 builder.button(text=f"❌ Bekor #{t.id}", callback_data=f"task_cancel:{t.id}")
 
+            builder.button(text="✍️ Yangi vazifa qo'shish", callback_data="schedule:wizard")
             builder.button(text="📜 Tarix", callback_data="task_hist:open")
             builder.button(text="🔄 Yangilash", callback_data="tasks:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
-            adjust_pattern = [2] * len(tasks) + [2, 1]
+            adjust_pattern = [2] * len(tasks) + [1, 1, 2]
             builder.adjust(*adjust_pattern)
 
             content = "\n".join(lines)
@@ -1127,12 +1290,9 @@ class AdminBotService:
             if current_state:
                 return
 
-            lower = message.text.lower()
-            schedule_triggers = ["ertaga", "bugun", "soat", "rejalashtir", "yubor", "jo'nat", "eslat", "daqiq", "minut"]
-            if any(tr in lower for tr in schedule_triggers):
-                handled = await _schedule_via_ai(message, message.text)
-                if handled:
-                    return
+            handled = await _schedule_and_respond(message, message.text)
+            if handled:
+                return
 
             text = (
                 "👑 <b>Xo'jayin, yangi buyruq kutmoqdaman.</b>\n\n"
