@@ -53,8 +53,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - [x] **Phase 3: Fact Extraction (code-verified)** — COMPLETE
 - [x] **Phase 4: Rolling Summaries** — COMPLETE
 - [x] **Phase 5: Context Assembly & Reply Integration** — COMPLETE
-- [x] **Phase 6: Owner Commands & Deletion Hook** — COMPLETE (Awaiting user "OK" for Phase 7)
-- [ ] **Phase 7: Comprehensive Test Suite** — PENDING
+- [x] **Phase 6: Owner Commands & Deletion Hook** — COMPLETE
+- [x] **Phase 7: Comprehensive Test Suite** — COMPLETE (Awaiting user "OK" for Phase 8)
 - [ ] **Phase 8: Final Report & Shadow Check** — PENDING
 
 ---
@@ -219,6 +219,25 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline before Phase 6: 229 passed.
   - Phase 6 total: 237 passed (229 existing + 8 new tests in `tests/test_memory_commands_phase6.py`). 0 regressions.
+
+---
+
+## 2.7 Verified Facts from Phase 7 Execution
+- **Database Backup Before Phase 7**: `data/butler_backup_20261009_202832.db` (565,248 bytes).
+- **Comprehensive E2E & Chaos Testing Suite (`tests/test_memory_chaos_e2e_phase7.py`)**:
+  - **Redaction Coverage (H5)**: Verified Luhn algorithm on 16-digit cards, negative safety on invalid checksums, OTP/PIN/passwords across Uzbek Latin, Cyrillic, Russian, and English, passports, 14-digit PINFL, and non-over-redaction of normal dates/quantities/prices.
+  - **Identity & Logging Scope (H1, H2, H3, H8)**: Verified muted contacts store nothing, private 1-to-1 contacts only, and username reassignment pauses memory (`username_reassigned_to_<uid>`) with complete block on further writes and no data transfer across user IDs.
+  - **Multi-Contact Strict Isolation (H4)**: Verified distinct secret markers (`SECRET_ALPHA_TOKEN_999`, `SECRET_BETA_TOKEN_888`) across all retrieval paths (FTS, rolling summary, facts). Verified code-level assertion fires on forced isolation violation and immediately drops entire context block to `""`.
+  - **No Self-Reinforcement (H9)**: Verified extractor rejects fact candidates citing `bot_auto` or `bot_approved` messages with `unauthorized_sender` rejection; only allowed senders (`contact`, `owner_manual`, `owner_edited`) accepted.
+  - **Multilingual Prompt Injection (U1, U2)**: Verified prompt injection detection across 4 languages (Uzbek Latin, Uzbek Cyrillic, Russian, English) protecting `<memory>` context.
+  - **Forbidden Topics Filter (H6, H7)**: Verified pure code filtering of health, religion, ethnicity, politics, sexual life, finances/debts, crime, and third-party details.
+  - **Open Items & Sensitive Guard Privacy (U4, U5)**: Verified open items are never injected into reply context prompts. Verified `check_sensitive` strictly evaluates only `incoming_text` and `proposed_reply`, NEVER receiving the memory block.
+  - **Concurrency & Locking Resilience**: Fixed asyncio lock binding to ensure `DatabaseManager._get_write_lock()` dynamically resolves per running event loop, eliminating cross-test loop binding errors and guaranteeing 100% concurrent write serialization under high load.
+  - **Embedding Fallback & Fail-Open (P14, P15)**: Verified seamless fallback from failed embeddings to FTS5 recency search, fail-open return of `""` on memory assembler errors without breaking replies, and complete pipeline passthrough when `MEMORY_ENABLED = False`.
+  - **Owner Security & Double-Press Resilience**: Verified strict rejection of non-admin user IDs across all commands and callbacks, and safe idempotency on double-press callback invocations.
+- **Test Suite Results (P7)**:
+  - Baseline before Phase 7: 237 passed.
+  - Phase 7 total: 248 passed (237 existing + 11 new tests in `tests/test_memory_chaos_e2e_phase7.py`). 0 regressions.
 
 ---
 

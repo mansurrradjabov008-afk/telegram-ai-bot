@@ -32,7 +32,20 @@ from services.memory_redactor import redact_text
 
 
 class DatabaseManager:
-    _write_lock = asyncio.Lock()
+    _locks_by_loop: Dict[Any, asyncio.Lock] = {}
+
+    def _get_write_lock(self) -> asyncio.Lock:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.Lock()
+        if loop not in self._locks_by_loop:
+            self._locks_by_loop[loop] = asyncio.Lock()
+        return self._locks_by_loop[loop]
+
+    @property
+    def _write_lock(self) -> asyncio.Lock:
+        return self._get_write_lock()
 
     def __init__(self, db_path=None):
         self.db_path = db_path
@@ -43,7 +56,7 @@ class DatabaseManager:
         Provides a centralized serialized SQLite write transaction protected by asyncio.Lock.
         Guarantees zero database-is-locked errors under high write concurrency.
         """
-        async with self._write_lock:
+        async with self._get_write_lock():
             async with get_db(self.db_path) as db:
                 yield db
                 await db.commit()
