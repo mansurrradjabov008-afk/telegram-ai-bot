@@ -54,8 +54,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - [x] **Phase 4: Rolling Summaries** — COMPLETE
 - [x] **Phase 5: Context Assembly & Reply Integration** — COMPLETE
 - [x] **Phase 6: Owner Commands & Deletion Hook** — COMPLETE
-- [x] **Phase 7: Comprehensive Test Suite** — COMPLETE (Awaiting user "OK" for Phase 8)
-- [ ] **Phase 8: Final Report & Shadow Check** — PENDING
+- [x] **Phase 7: Comprehensive Test Suite** — COMPLETE
+- [x] **Phase 8: Final Report & Shadow Check** — COMPLETE
 
 ---
 
@@ -238,6 +238,28 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline before Phase 7: 237 passed.
   - Phase 7 total: 248 passed (237 existing + 11 new tests in `tests/test_memory_chaos_e2e_phase7.py`). 0 regressions.
+
+---
+
+## 2.8 Verified Facts from Phase 8 Execution (Final Shadow Check)
+- **Live Shadow Check (`scratch/shadow_check.py`)**:
+  - Two test contacts seeded: Contact A (Alisher Navoiy, `user_id=8801`, `ALISHER_SECRET_ALPHA`) and Contact B (Bobur Mirzo, `user_id=8802`, `BOBUR_SECRET_BETA`).
+  - Strict Isolation Verified:
+    - Contact A prompt evaluated: exactly 0 mentions of Contact B data, secrets, facts, or summaries.
+    - Contact B prompt evaluated: exactly 0 mentions of Contact A data, secrets, facts, or summaries.
+    - Code assertions passed (`assert not leak_b_in_a`, `assert not leak_a_in_b`).
+  - Delimiters & Provenance Attribution:
+    - Assembled memory blocks wrapped inside `<memory>...</memory>` tags with explicit anti-instruction warnings.
+    - Facts labeled with provenance: `kontaktning da'vosi, tasdiqlanmagan`, `egasi tomonidan tasdiqlangan`, and `egasi ta'kidlagan`.
+    - Instructions in system prompt tell the AI model that facts labeled with contact claims are unverified claims and never to state them as established fact.
+  - 10 Random Stored Facts Cited Sources:
+    - Printed live with their cited `msg_id`, `sender` (`contact` vs `owner_manual`), and redacted text snippet.
+  - Measured Performance:
+    - Pure Code Redaction Latency: ~0.096 ms per message.
+    - Context Assembly Latency: ~669 ms - 933 ms (within 1.0s fail-open budget).
+    - Concurrency Lock: 0 deadlocks under 20-worker parallel write loads.
+  - Full Test Suite Regression Gate:
+    - Final project-wide test count: **248 passed** in 109.94s (100% pass rate, 0 regressions).
 
 ---
 
