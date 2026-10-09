@@ -293,11 +293,134 @@ class AdminBotService:
             os._exit(0)
 
 
+        async def _render_digest_sources(target_msg: types.Message, is_callback: bool = False):
+            if not self.digest_service:
+                text = "❌ <b>Digest xizmati ulanmagan.</b>"
+                if is_callback:
+                    return await target_msg.edit_text(text, parse_mode="HTML")
+                return await safe_reply(target_msg, text, parse_mode="HTML")
+
+            sources = await self.digest_service.list_sources_summary()
+            if not sources:
+                empty_text = (
+                    "📋 <b>KUZATILAYOTGAN MANBALAR RO'YXATI (DIGEST SOURCES):</b>\n\n"
+                    "<i>Hozircha hech qanday manba qo'shilmagan.</i>\n\n"
+                    "💡 <b>Manba qo'shish:</b>\n"
+                    "• <code>/digest add @kanal_nomi</code>\n"
+                    "• <code>/digest add https://t.me/kanal_nomi</code>\n\n"
+                    "🔒 <i>Eslatma: Shaxsiy yozishmalar (1-ga-1 chat) aslo qo'shilmaydi. Faqat kanal va guruhlar.</i>"
+                )
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔄 Yangilash", callback_data="digest_sources:list")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 1)
+                if is_callback:
+                    return await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                return await safe_reply(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+            lines = [
+                f"📋 <b>KUZATILAYOTGAN MANBALAR (Jami: {len(sources)} ta):</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+            ]
+            builder = InlineKeyboardBuilder()
+
+            for s in sources:
+                type_badge = "📢 Kanal" if s["peer_type"] == "channel" else "👥 Guruh"
+                uname = f"@{s['username']}" if s["username"] else f"ID: {s['peer_id']}"
+                safe_title = html.escape(s["title"])
+                safe_uname = html.escape(uname)
+                post_count = s["post_count"]
+
+                lines.append(
+                    f"• <b>{safe_title}</b> [{type_badge}]\n"
+                    f"  🔗 <code>{safe_uname}</code> | 📝 Postlar: <b>{post_count}</b> ta\n"
+                )
+                del_id = s["username"] or str(s["peer_id"])
+                builder.button(text=f"🗑 O'chirish ({safe_uname})", callback_data=f"digest_src_del:{del_id}")
+
+            builder.button(text="🔄 Yangilash", callback_data="digest_sources:list")
+            builder.button(text="📰 Yangi Digest", callback_data="digest:open")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(*([1] * len(sources) + [2, 1]))
+
+            content = "\n".join(lines)
+            content += (
+                "\n💡 <b>Boshqarish:</b>\n"
+                "• <code>/digest add @kanal</code> — Yangi kanal/guruh qo'shish\n"
+                "• <code>/digest remove @kanal</code> — Manbani ro'yxatdan o'chirish"
+            )
+
+            if is_callback:
+                await target_msg.edit_text(content, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, content, reply_markup=builder.as_markup(), parse_mode="HTML")
+
         async def _execute_digest(target_msg: types.Message, is_callback: bool = False, force_recent: bool = False):
             if not self.digest_service:
                 return await safe_reply(target_msg, "❌ <b>Digest xizmati ulanmagan.</b>", parse_mode="HTML")
 
-            loading_text = "⏳ <i>Kanallar va guruhlardagi so'nggi xabarlar jamlanmoqda va AI tahlil qilmoqda...</i>"
+            # Check feature flag: if V2 disabled, run legacy V1
+            if not getattr(settings, "DIGEST_V2_ENABLED", True):
+                loading_text = "⏳ <i>Kanallar va guruhlardagi so'nggi xabarlar jamlanmoqda va AI tahlil qilmoqda...</i>"
+                if is_callback:
+                    try:
+                        await target_msg.edit_text(loading_text, parse_mode="HTML")
+                        active_msg = target_msg
+                    except Exception:
+                        active_msg = await target_msg.answer(loading_text, parse_mode="HTML")
+                else:
+                    active_msg = await target_msg.reply(loading_text, parse_mode="HTML")
+
+                try:
+                    summary, count = await self.digest_service.generate_digest(force_recent=force_recent)
+                    if not summary or count == 0:
+                        empty_text = (
+                            "ℹ️ <b>Hozircha yangi tahlil qilinadigan xabarlar yo'q!</b>\n\n"
+                            "Telegram akkauntingiz a'zo bo'lgan kanallar va guruhlardan yangi xabarlar kelishi bilan avtomatik jamlanadi va tahlil qilinadi."
+                        )
+                        builder = InlineKeyboardBuilder()
+                        builder.button(text="📊 Statistika", callback_data="digest:stats")
+                        builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                        builder.adjust(2)
+                        if is_callback:
+                            await active_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        else:
+                            await safe_reply(active_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        return
+
+                    formatted = markdown_to_telegram_html(summary)
+                    builder = InlineKeyboardBuilder()
+                    builder.button(text="🔄 Yangilash", callback_data="digest:refresh")
+                    builder.button(text="📊 Statistika", callback_data="digest:stats")
+                    builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                    builder.adjust(2, 1)
+
+                    full_report = (
+                        f"📰 <b>KUNLIK EXECUTIVE DIGEST</b> (<i>{count} ta post tahlili</i>)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"{formatted}"
+                    )
+
+                    if is_callback and len(full_report) <= 4000:
+                        try:
+                            await active_msg.edit_text(full_report, reply_markup=builder.as_markup(), parse_mode="HTML")
+                            return
+                        except Exception:
+                            pass
+
+                    await safe_reply_or_send_long(active_msg, full_report, reply_markup=builder.as_markup())
+
+                except Exception as e:
+                    logger.error(f"Digest generation failed: {e}", exc_info=True)
+                    err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+                    if is_callback:
+                        await active_msg.edit_text(err_text, parse_mode="HTML")
+                    else:
+                        await safe_reply(active_msg, err_text, parse_mode="HTML")
+                return
+
+            # Smart Digest V2 execution (Phase 1: Collection pipeline)
+            loading_text = "⏳ <i>Kuzatilayotgan manbalardan yangi postlar yig'ilmoqda (Smart Digest V2)...</i>"
             if is_callback:
                 try:
                     await target_msg.edit_text(loading_text, parse_mode="HTML")
@@ -308,47 +431,62 @@ class AdminBotService:
                 active_msg = await target_msg.reply(loading_text, parse_mode="HTML")
 
             try:
-                summary, count = await self.digest_service.generate_digest(force_recent=force_recent)
-                if not summary or count == 0:
+                stats = await self.digest_service.collect_new_posts(trigger="manual")
+                total = stats.get("total_collected", 0)
+                sources_cnt = stats.get("sources_count", 0)
+                purged = stats.get("purged_old_posts", 0)
+                errors = stats.get("errors", [])
+
+                if sources_cnt == 0:
                     empty_text = (
-                        "ℹ️ <b>Hozircha yangi tahlil qilinadigan xabarlar yo'q!</b>\n\n"
-                        "Telegram akkauntingiz a'zo bo'lgan kanallar va guruhlardan yangi xabarlar kelishi bilan avtomatik jamlanadi va tahlil qilinadi."
+                        "ℹ️ <b>Kuzatiladigan manbalar mavjud emas!</b>\n\n"
+                        "Smart Digest V2 xabarlarni faqat siz ko'rsatgan kanallar va guruhlardan yig'adi.\n\n"
+                        "Qo'shish: <code>/digest add @kanal</code>"
                     )
                     builder = InlineKeyboardBuilder()
-                    builder.button(text="📊 Statistika", callback_data="digest:stats")
+                    builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
                     builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                    builder.adjust(2)
+                    builder.adjust(1, 1)
                     if is_callback:
                         await active_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                     else:
                         await safe_reply(active_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                     return
 
-                formatted = markdown_to_telegram_html(summary)
+                err_lines = ""
+                if errors:
+                    err_lines = f"\n⚠️ <b>Muammoli manbalar ({len(errors)} ta):</b>\n"
+                    for err in errors[:3]:
+                        err_lines += f"• {html.escape(err.get('title', 'Noma'))}: <code>{html.escape(err.get('error', ''))}</code>\n"
+
+                report = (
+                    "📰 <b>SMART DIGEST V2 — XABARLAR YIG'ISH JARAYONI</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📊 <b>Kuzatilgan manbalar:</b> <code>{sources_cnt}</code> ta\n"
+                    f"📥 <b>Yangi yig'ilgan postlar:</b> <code>{total}</code> ta\n"
+                    f"🗑 <b>Tozalangan eski postlar:</b> <code>{purged}</code> ta\n"
+                    f"{err_lines}\n"
+                    "🔒 <i>Barcha postlar bazada xavfsiz saqlandi (Phase 1). Shaxsiy chatlar o'qilmaydi.</i>"
+                )
+
                 builder = InlineKeyboardBuilder()
-                builder.button(text="🔄 Yangilash", callback_data="digest:refresh")
-                builder.button(text="📊 Statistika", callback_data="digest:stats")
+                builder.button(text="🔄 Qayta yig'ish", callback_data="digest:refresh")
+                builder.button(text="📋 Manbalar", callback_data="digest_sources:list")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
                 builder.adjust(2, 1)
 
-                full_report = (
-                    f"📰 <b>KUNLIK EXECUTIVE DIGEST</b> (<i>{count} ta post tahlili</i>)\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"{formatted}"
-                )
-
-                if is_callback and len(full_report) <= 4000:
+                if is_callback and len(report) <= 4000:
                     try:
-                        await active_msg.edit_text(full_report, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        await active_msg.edit_text(report, reply_markup=builder.as_markup(), parse_mode="HTML")
                         return
                     except Exception:
                         pass
 
-                await safe_reply_or_send_long(active_msg, full_report, reply_markup=builder.as_markup())
+                await safe_reply_or_send_long(active_msg, report, reply_markup=builder.as_markup())
 
             except Exception as e:
-                logger.error(f"Digest generation failed: {e}", exc_info=True)
-                err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+                logger.error(f"Smart Digest V2 collection failed: {e}", exc_info=True)
+                err_text = f"❌ <b>Xabarlarni yig'ishda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
                 if is_callback:
                     await active_msg.edit_text(err_text, parse_mode="HTML")
                 else:
@@ -358,6 +496,48 @@ class AdminBotService:
         async def cmd_digest(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
+
+            raw_text = (message.text or "").strip()
+            parts = raw_text.split(maxsplit=2)
+            subcmd = parts[1].lower() if len(parts) > 1 else ""
+
+            if subcmd == "sources":
+                await _render_digest_sources(message, is_callback=False)
+                return
+            elif subcmd == "add":
+                if len(parts) < 3:
+                    return await safe_reply(
+                        message,
+                        "⚠️ <b>Qo'shish uchun manba ko'rsating.</b>\n"
+                        "Foydalanish: <code>/digest add @kanal</code> yoki <code>/digest add https://t.me/kanal</code>",
+                        parse_mode="HTML",
+                    )
+                target = parts[2].strip()
+                loading_msg = await safe_reply(message, "⏳ <i>Manba tekshirilmoqda va ulanmoqda...</i>", parse_mode="HTML")
+                client = self.digest_service.get_client() if self.digest_service else None
+                success, resp_text, source = await self.digest_service.resolve_and_add_source(client, target)
+                builder = InlineKeyboardBuilder()
+                builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 1)
+                await loading_msg.edit_text(resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                return
+            elif subcmd == "remove":
+                if len(parts) < 3:
+                    return await safe_reply(
+                        message,
+                        "⚠️ <b>O'chirish uchun manba ko'rsating.</b>\n"
+                        "Foydalanish: <code>/digest remove @kanal</code>",
+                        parse_mode="HTML",
+                    )
+                target = parts[2].strip()
+                success, resp_text = await self.digest_service.remove_source(target)
+                builder = InlineKeyboardBuilder()
+                builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 1)
+                return await safe_reply(message, resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
             await _execute_digest(message, is_callback=False)
 
         async def _apply_contact_instruction(
@@ -1391,6 +1571,9 @@ class AdminBotService:
             elif action == "refresh":
                 await callback.answer("Qayta tahlil qilinmoqda...")
                 await _execute_digest(callback.message, is_callback=True, force_recent=True)
+            elif action == "sources":
+                await callback.answer()
+                await _render_digest_sources(callback.message, is_callback=True)
             elif action == "stats":
                 await callback.answer()
                 stats = await self.digest_service.get_stats() if self.digest_service else {}
@@ -1406,9 +1589,29 @@ class AdminBotService:
                 )
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📰 Yangi Digest", callback_data="digest:open")
+                builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1)
+                builder.adjust(2, 1)
                 await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data == "digest_sources:list")
+        async def handle_digest_sources_list(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer()
+            await _render_digest_sources(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("digest_src_del:"))
+        async def handle_digest_source_delete(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            target_id = callback.data.split(":", 1)[1]
+            if self.digest_service:
+                success, resp_text = await self.digest_service.remove_source(target_id)
+                await callback.answer("Manba o'chirildi!" if success else "Topilmadi", show_alert=True)
+            else:
+                await callback.answer("Xizmat topilmadi")
+            await _render_digest_sources(callback.message, is_callback=True)
 
         @dp.callback_query(F.data.startswith("menu:"))
         async def handle_menu_callbacks(callback: types.CallbackQuery):

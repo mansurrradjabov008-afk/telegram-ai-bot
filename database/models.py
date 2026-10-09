@@ -77,3 +77,52 @@ class MonitoredSource:
     is_active: bool = True
     keywords: Optional[str] = None  # comma-separated keywords
     created_at: Optional[str] = None
+
+
+@dataclass
+class DigestSource:
+    peer_id: int
+    title: str
+    username: Optional[str] = None
+    peer_type: str = "channel"  # channel or group
+    is_active: bool = True
+    added_at: Optional[str] = None
+
+
+@dataclass
+class DigestPost:
+    chat_id: int
+    message_id: int
+    chat_title: str
+    text: str
+    id: Optional[int] = None
+    chat_username: Optional[str] = None
+    original_source: Optional[str] = None
+    posted_at: Optional[str] = None
+    link: Optional[str] = None
+    normalized_hash: Optional[str] = None
+    fetched_at: Optional[str] = None
+    spam_score: float = 0.0
+    spam_reasons: Optional[str] = None
+    topic: Optional[str] = None
+    importance: int = 1
+    status: str = "new"  # new, filtered, classified, included, discarded
+    discard_reason: Optional[str] = None
+    digest_run_id: Optional[int] = None
+
+
+@dataclass
+class DigestRun:
+    id: Optional[int] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    trigger: str = "manual"  # manual or scheduled
+    status: str = "in_progress"  # in_progress, completed, failed
+    stats_json: Optional[str] = None
+
+
+@dataclass
+class DigestState:
+    chat_id: int
+    last_message_id: int
+    updated_at: Optional[str] = None

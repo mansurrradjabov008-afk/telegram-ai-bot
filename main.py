@@ -75,6 +75,7 @@ async def main():
         notify_boss_callback=admin_bot_service.send_notification,
     )
     digest_service.register_boss_notifier(admin_bot_service.send_notification)
+    digest_service.set_userbot_client(lambda: userbot_service.client)
 
     # 5. Start Scheduler and restore pending tasks
     scheduler_service.start()

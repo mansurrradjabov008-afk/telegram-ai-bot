@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     MIGRATE_EXISTING_TO: str = "draft"
     OWNER_ID: Optional[int] = None
 
+    # Smart Digest V2 settings
+    DIGEST_V2_ENABLED: bool = True
+    DIGEST_LOOKBACK_HOURS: int = 24
+    MAX_POSTS_PER_RUN: int = 100
+    MAX_POST_CHARS: int = 1500
+    RETENTION_DAYS: int = 14
+    MAX_AI_CALLS_PER_RUN: int = 10
+    BATCH_SIZE: int = 10
+    DIGEST_TIME: str = "08:00"
+
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent
 

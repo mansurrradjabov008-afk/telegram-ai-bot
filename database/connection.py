@@ -100,6 +100,57 @@ CREATE TABLE IF NOT EXISTS raw_feed_posts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_feed_unsummarized ON raw_feed_posts(is_summarized);
+
+-- Smart Digest V2 Tables
+CREATE TABLE IF NOT EXISTS digest_sources (
+    peer_id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    username TEXT,
+    peer_type TEXT NOT NULL, -- 'channel' or 'group'
+    is_active INTEGER DEFAULT 1,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS digest_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    chat_title TEXT NOT NULL,
+    chat_username TEXT,
+    text TEXT NOT NULL,
+    original_source TEXT,
+    posted_at TIMESTAMP,
+    link TEXT,
+    normalized_hash TEXT,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    spam_score REAL DEFAULT 0,
+    spam_reasons TEXT,
+    topic TEXT,
+    importance INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'new' CHECK(status IN ('new', 'filtered', 'classified', 'included', 'discarded')),
+    discard_reason TEXT,
+    digest_run_id INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_posts_chat_msg ON digest_posts(chat_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_digest_posts_status ON digest_posts(status);
+CREATE INDEX IF NOT EXISTS idx_digest_posts_posted_at ON digest_posts(posted_at);
+CREATE INDEX IF NOT EXISTS idx_digest_posts_run_id ON digest_posts(digest_run_id);
+
+CREATE TABLE IF NOT EXISTS digest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at TIMESTAMP,
+    trigger TEXT DEFAULT 'manual' CHECK(trigger IN ('manual', 'scheduled')),
+    status TEXT DEFAULT 'in_progress' CHECK(status IN ('in_progress', 'completed', 'failed', 'partial')),
+    stats_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS digest_state (
+    chat_id INTEGER PRIMARY KEY,
+    last_message_id INTEGER NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -161,6 +212,67 @@ async def init_db(db_path: Path = None):
         await db.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
             (3, "Add contact autonomy mode and drafts table"),
+        )
+
+        # Migration version 4: Smart Digest V2 schema
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS digest_sources (
+            peer_id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            username TEXT,
+            peer_type TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS digest_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            chat_title TEXT NOT NULL,
+            chat_username TEXT,
+            text TEXT NOT NULL,
+            original_source TEXT,
+            posted_at TIMESTAMP,
+            link TEXT,
+            normalized_hash TEXT,
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            spam_score REAL DEFAULT 0,
+            spam_reasons TEXT,
+            topic TEXT,
+            importance INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'new' CHECK(status IN ('new', 'filtered', 'classified', 'included', 'discarded')),
+            discard_reason TEXT,
+            digest_run_id INTEGER
+        );
+        """)
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_posts_chat_msg ON digest_posts(chat_id, message_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_digest_posts_status ON digest_posts(status);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_digest_posts_posted_at ON digest_posts(posted_at);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_digest_posts_run_id ON digest_posts(digest_run_id);")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS digest_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP,
+            trigger TEXT DEFAULT 'manual' CHECK(trigger IN ('manual', 'scheduled')),
+            status TEXT DEFAULT 'in_progress' CHECK(status IN ('in_progress', 'completed', 'failed', 'partial')),
+            stats_json TEXT
+        );
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS digest_state (
+            chat_id INTEGER PRIMARY KEY,
+            last_message_id INTEGER NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
+            (4, "Add Smart Digest V2 schema (digest_sources, digest_posts, digest_runs, digest_state)"),
         )
 
         await db.commit()

@@ -4,9 +4,21 @@ Asynchronous Database Manager and CRUD operations for Telegram AI Butler.
 
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
+import json
 import aiosqlite
 from .connection import get_db
-from .models import Contact, ScheduledTask, ConversationMessage, MonitoredSource, Draft, SchemaVersion
+from .models import (
+    Contact,
+    ScheduledTask,
+    ConversationMessage,
+    MonitoredSource,
+    Draft,
+    SchemaVersion,
+    DigestSource,
+    DigestPost,
+    DigestRun,
+    DigestState,
+)
 
 
 class DatabaseManager:
@@ -449,3 +461,264 @@ class DatabaseManager:
             async with db.execute(query) as cursor:
                 row = await cursor.fetchone()
                 return row["max_v"] if row and row["max_v"] is not None else 0
+
+    # ------------------ SMART DIGEST V2 ------------------
+    async def add_digest_source(
+        self,
+        peer_id: int,
+        title: str,
+        peer_type: str,
+        username: Optional[str] = None,
+    ) -> DigestSource:
+        """Add or update a whitelisted source for Smart Digest V2."""
+        if username and username.startswith("@"):
+            username = username[1:]
+
+        query = """
+        INSERT INTO digest_sources (peer_id, title, username, peer_type, is_active, added_at)
+        VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ON CONFLICT(peer_id) DO UPDATE SET
+            title = excluded.title,
+            username = COALESCE(excluded.username, digest_sources.username),
+            peer_type = excluded.peer_type,
+            is_active = 1;
+        """
+        async with get_db(self.db_path) as db:
+            await db.execute(query, (peer_id, title, username, peer_type))
+            await db.commit()
+
+        source = await self.get_digest_source_by_peer_id(peer_id)
+        if not source:
+            raise RuntimeError(f"Failed to retrieve added digest source for peer_id {peer_id}")
+        return source
+
+    async def remove_digest_source(self, identifier: Any) -> bool:
+        """Remove a source from Smart Digest V2 whitelist by peer_id or username."""
+        async with get_db(self.db_path) as db:
+            if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.lstrip("-").isdigit()):
+                peer_id = int(identifier)
+                cursor = await db.execute("DELETE FROM digest_sources WHERE peer_id = ?", (peer_id,))
+            else:
+                clean_name = str(identifier).lstrip("@").strip()
+                cursor = await db.execute("DELETE FROM digest_sources WHERE LOWER(username) = LOWER(?)", (clean_name,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_digest_sources(self, active_only: bool = True) -> List[DigestSource]:
+        """List whitelisted sources for Smart Digest V2."""
+        query = "SELECT * FROM digest_sources"
+        if active_only:
+            query += " WHERE is_active = 1"
+        query += " ORDER BY added_at ASC"
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query) as cursor:
+                rows = await cursor.fetchall()
+                return [DigestSource(**dict(r)) for r in rows]
+
+    async def get_digest_source_by_peer_id(self, peer_id: int) -> Optional[DigestSource]:
+        """Fetch digest source by numeric peer_id."""
+        query = "SELECT * FROM digest_sources WHERE peer_id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (peer_id,)) as cursor:
+                row = await cursor.fetchone()
+                return DigestSource(**dict(row)) if row else None
+
+    async def get_digest_source_by_username(self, username: str) -> Optional[DigestSource]:
+        """Fetch digest source by username (case-insensitive)."""
+        clean_name = username.lstrip("@").strip()
+        query = "SELECT * FROM digest_sources WHERE LOWER(username) = LOWER(?)"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (clean_name,)) as cursor:
+                row = await cursor.fetchone()
+                return DigestSource(**dict(row)) if row else None
+
+    async def get_digest_source_post_count(self, chat_id: int) -> int:
+        """Counts collected posts for a specific source."""
+        query = "SELECT COUNT(*) as cnt FROM digest_posts WHERE chat_id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (chat_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row["cnt"] if row else 0
+
+    async def get_all_source_post_counts(self) -> Dict[int, int]:
+        """Returns mapping of chat_id to post count."""
+        query = "SELECT chat_id, COUNT(*) as cnt FROM digest_posts GROUP BY chat_id"
+        counts: Dict[int, int] = {}
+        async with get_db(self.db_path) as db:
+            async with db.execute(query) as cursor:
+                rows = await cursor.fetchall()
+                for r in rows:
+                    counts[r["chat_id"]] = r["cnt"]
+        return counts
+
+    async def get_digest_state(self, chat_id: int) -> int:
+        """Returns the last collected message_id for a source, or 0 if none."""
+        query = "SELECT last_message_id FROM digest_state WHERE chat_id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (chat_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row["last_message_id"] if row else 0
+
+    async def set_digest_state(self, chat_id: int, last_message_id: int):
+        """Updates the highest message_id collected for a source."""
+        query = """
+        INSERT INTO digest_state (chat_id, last_message_id, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            last_message_id = MAX(digest_state.last_message_id, excluded.last_message_id),
+            updated_at = CURRENT_TIMESTAMP;
+        """
+        async with get_db(self.db_path) as db:
+            await db.execute(query, (chat_id, last_message_id))
+            await db.commit()
+
+    async def save_digest_post(self, post: DigestPost) -> Optional[int]:
+        """Saves a new digest post. Enforces uniqueness on (chat_id, message_id)."""
+        query = """
+        INSERT OR IGNORE INTO digest_posts (
+            chat_id, message_id, chat_title, chat_username, text,
+            original_source, posted_at, link, normalized_hash, fetched_at,
+            spam_score, spam_reasons, topic, importance, status,
+            discard_reason, digest_run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
+        """
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(
+                query,
+                (
+                    post.chat_id,
+                    post.message_id,
+                    post.chat_title,
+                    post.chat_username,
+                    post.text,
+                    post.original_source,
+                    post.posted_at,
+                    post.link,
+                    post.normalized_hash,
+                    post.spam_score,
+                    post.spam_reasons,
+                    post.topic,
+                    post.importance,
+                    post.status,
+                    post.discard_reason,
+                    post.digest_run_id,
+                ),
+            )
+            await db.commit()
+            return cursor.lastrowid if cursor.rowcount > 0 else None
+
+    async def bulk_save_digest_posts(self, posts: List[DigestPost]) -> int:
+        """Saves multiple digest posts in a single transaction."""
+        if not posts:
+            return 0
+        query = """
+        INSERT OR IGNORE INTO digest_posts (
+            chat_id, message_id, chat_title, chat_username, text,
+            original_source, posted_at, link, normalized_hash, fetched_at,
+            spam_score, spam_reasons, topic, importance, status,
+            discard_reason, digest_run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = [
+            (
+                p.chat_id,
+                p.message_id,
+                p.chat_title,
+                p.chat_username,
+                p.text,
+                p.original_source,
+                p.posted_at,
+                p.link,
+                p.normalized_hash,
+                p.spam_score,
+                p.spam_reasons,
+                p.topic,
+                p.importance,
+                p.status,
+                p.discard_reason,
+                p.digest_run_id,
+            )
+            for p in posts
+        ]
+        inserted = 0
+        async with get_db(self.db_path) as db:
+            for param in params:
+                cur = await db.execute(query, param)
+                if cur.rowcount > 0:
+                    inserted += 1
+            await db.commit()
+        return inserted
+
+    async def create_digest_run(self, trigger: str = "manual") -> int:
+        """Creates a new digest run record and returns its ID."""
+        query = "INSERT INTO digest_runs (trigger, status) VALUES (?, 'in_progress')"
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(query, (trigger,))
+            await db.commit()
+            return cursor.lastrowid
+
+    async def finish_digest_run(
+        self,
+        run_id: int,
+        status: str = "completed",
+        stats: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Marks a digest run as finished and records stats JSON."""
+        stats_json = json.dumps(stats, ensure_ascii=False) if stats else None
+        query = """
+        UPDATE digest_runs 
+        SET finished_at = CURRENT_TIMESTAMP, status = ?, stats_json = ? 
+        WHERE id = ?
+        """
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(query, (status, stats_json, run_id))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_latest_digest_run(self) -> Optional[DigestRun]:
+        """Fetch the most recent digest run."""
+        query = "SELECT * FROM digest_runs ORDER BY id DESC LIMIT 1"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query) as cursor:
+                row = await cursor.fetchone()
+                return DigestRun(**dict(row)) if row else None
+
+    async def purge_old_digest_posts(self, retention_days: int = 14) -> int:
+        """Deletes posts older than retention_days."""
+        cutoff = (datetime.utcnow() - timedelta(days=retention_days)).isoformat()
+        query = "DELETE FROM digest_posts WHERE (posted_at IS NOT NULL AND posted_at < ?) OR (posted_at IS NULL AND fetched_at < ?)"
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(query, (cutoff, cutoff))
+            await db.commit()
+            return cursor.rowcount
+
+    async def get_digest_posts(
+        self,
+        run_id: Optional[int] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[DigestPost]:
+        """Fetch digest posts with optional run_id and status filters."""
+        conditions = []
+        params: List[Any] = []
+        if run_id is not None:
+            conditions.append("digest_run_id = ?")
+            params.append(run_id)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+
+        query = "SELECT * FROM digest_posts"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY id ASC LIMIT ?"
+        params.append(limit)
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, tuple(params)) as cursor:
+                rows = await cursor.fetchall()
+                posts = []
+                for r in rows:
+                    posts.append(DigestPost(**dict(r)))
+                return posts

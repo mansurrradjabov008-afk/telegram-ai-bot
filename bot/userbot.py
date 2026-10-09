@@ -63,6 +63,10 @@ class UserbotService:
         """Callback to send general notifications to Admin Bot Cockpit."""
         self._notification_callback = callback
 
+    def get_client(self) -> Optional[TelegramClient]:
+        """Returns active Telethon client instance."""
+        return self.client
+
     def init_client(self) -> bool:
         """Initializes Telethon TelegramClient instance."""
         if not settings.TELEGRAM_API_ID or not settings.TELEGRAM_API_HASH:
