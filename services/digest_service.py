@@ -15,6 +15,7 @@ from database.models import DigestSource, DigestPost, DigestRun
 from services.ai_engine import AIEngine
 from services.digest_cleaner import DigestCleaner
 from services.digest_classifier import DigestClassifier
+from services.digest_summarizer import DigestSummarizer, DigestItem
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class DigestService:
         self.ai_engine = ai_engine
         self.cleaner = DigestCleaner()
         self.classifier = DigestClassifier(self.ai_engine)
+        self.summarizer = DigestSummarizer(self.ai_engine)
         self._notify_boss_callback: Optional[Callable] = None
         self._telethon_client: Optional[Any] = None
         self._client_getter: Optional[Callable] = None
@@ -427,6 +429,20 @@ class DigestService:
         stats["failed_batches_count"] = classification_stats.get("failed_batches_count", 0)
         stats["topic_counts"] = classification_stats.get("topic_counts", {})
 
+        # Phase 4: Execute summarization and anti-hallucination verification
+        summary_stats = await self.summarize_run_posts(run_id=run_id)
+        stats["summarization"] = {
+            "topic_items_count": summary_stats.get("topic_items_count", {}),
+            "total_items_selected": summary_stats.get("total_items_selected", 0),
+            "discarded_by_verification_count": summary_stats.get("discarded_by_verification_count", 0),
+            "failed_topics": summary_stats.get("failed_topics", []),
+            "skipped_by_limit_count": summary_stats.get("skipped_by_limit_count", 0),
+        }
+        stats["total_items_selected"] = summary_stats.get("total_items_selected", 0)
+        stats["discarded_by_verification_count"] = summary_stats.get("discarded_by_verification_count", 0)
+        stats["failed_topics"] = summary_stats.get("failed_topics", [])
+        stats["skipped_by_limit_count"] = summary_stats.get("skipped_by_limit_count", 0)
+
         # Finish run in DB
         run_status = "completed" if not stats["errors"] else ("partial" if stats["total_collected"] > 0 else "failed")
         await self.db_manager.finish_digest_run(run_id, status=run_status, stats=stats)
@@ -497,5 +513,53 @@ class DigestService:
         all_processed.extend(res["discarded_posts"])
 
         await self.db_manager.bulk_update_digest_posts_classification(all_processed)
+
+        return res
+
+    async def summarize_run_posts(self, run_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Executes Phase 4 Event Grouping, Summarization, and Verification:
+        - Fetches classified posts with status='classified'
+        - Groups posts by event within each topic
+        - Summarizes via Gemini (temperature 0.0, strict JSON)
+        - Verifies every item by code via DigestVerifier (numbers, proper entities, URLs, phones, post_ids)
+        - Formats Section D deterministically from extracted fields
+        - Sorts Section F by nearest deadline
+        - Updates database with approved (status='included') and discarded posts
+        """
+        posts = await self.db_manager.get_digest_posts(run_id=run_id, status="classified", limit=settings.MAX_POSTS_PER_RUN)
+        if not posts:
+            return {
+                "sections": {},
+                "topic_items_count": {},
+                "discarded_by_verification": [],
+                "discarded_by_verification_count": 0,
+                "failed_topics": [],
+                "skipped_by_limit_count": 0,
+                "raw_posts_analyzed": 0,
+                "total_items_selected": 0,
+            }
+
+        res = await self.summarizer.process_all_topics(posts)
+
+        # Update posts status in database
+        posts_to_update: List[DigestPost] = []
+        posts_by_id = {p.id: p for p in posts if p.id is not None}
+
+        # Mark included posts
+        for items in res["sections"].values():
+            for item in items:
+                for pid in item.post_ids_used:
+                    if pid in posts_by_id:
+                        p = posts_by_id[pid]
+                        p.status = "included"
+                        p.discard_reason = None
+                        posts_to_update.append(p)
+
+        # Add discarded posts
+        posts_to_update.extend(res["discarded_by_verification"])
+
+        if posts_to_update:
+            await self.db_manager.bulk_update_digest_posts_classification(posts_to_update)
 
         return res

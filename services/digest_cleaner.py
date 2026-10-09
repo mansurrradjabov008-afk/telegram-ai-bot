@@ -158,6 +158,14 @@ class DigestCleaner:
     Loads keyword lists from configurable data file.
     """
 
+    @staticmethod
+    def transliterate_uzbek_cyrillic_to_latin(text: str) -> str:
+        return transliterate_uzbek_cyrillic_to_latin(text)
+
+    @staticmethod
+    def calculate_token_similarity(text1: str, text2: str) -> float:
+        return calculate_text_similarity(text1, text2)
+
     def __init__(self, rules_file_path: Optional[Path] = None):
         self.rules_path = rules_file_path or (settings.BASE_DIR / settings.SPAM_RULES_FILE)
         self.rules: Dict[str, List[str]] = self._load_rules()

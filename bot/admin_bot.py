@@ -492,6 +492,15 @@ class AdminBotService:
                 if failed_batches > 0:
                     quota_warning += f"⚠️ <b>Xatolik tufayli o'tkazib yuborilgan batch'lar:</b> <code>{failed_batches}</code> ta\n"
 
+                total_items_selected = stats.get("total_items_selected", 0)
+                discarded_by_verification = stats.get("discarded_by_verification_count", 0)
+                failed_topics = stats.get("failed_topics", [])
+                skipped_by_limit = stats.get("skipped_by_limit_count", 0)
+
+                failed_topics_warning = ""
+                if failed_topics:
+                    failed_topics_warning = f"\n⚠️ <b>Xatolik tufayli o'tkazib yuborilgan mavzular:</b> <code>{', '.join(failed_topics)}</code>\n"
+
                 report = (
                     "📰 <b>SMART DIGEST V2 — MONITORING VA KLASSIFIKATSIYA</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -502,13 +511,16 @@ class AdminBotService:
                     f"⚠️ <b>Gumonli e'lonlar:</b> <code>{suspicious_count}</code> ta\n"
                     f"✨ <b>Tahlilga olingan toza postlar:</b> <code>{clean_count}</code> ta\n"
                     f"🎯 <b>Saralangan va kiritilgan:</b> <code>{classified_cnt}</code> ta\n"
+                    f"✅ <b>Tasdiqlangan xulosalar:</b> <code>{total_items_selected}</code> ta\n"
+                    f"🔍 <b>Tekshiruvdan o'tmagan (discarded):</b> <code>{discarded_by_verification}</code> ta\n"
                     f"🚫 <b>Ahamiyatsiz/boshqa mavzular:</b> <code>{discarded_cnt}</code> ta\n"
                     f"{topics_str}"
                     f"{quota_warning}"
+                    f"{failed_topics_warning}"
                     f"🗑 <b>Tozalangan eski postlar:</b> <code>{purged}</code> ta\n"
                     f"{err_lines}\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<i>Reklama/spam filtrlandi: {spam_count} ta | Saralangan: {classified_cnt} ta</i>"
+                    f"<i>Reklama/spam: {spam_count} ta | Tekshiruvdan o'tmagan: {discarded_by_verification} ta | Tanlangan: {total_items_selected} ta</i>"
                 )
 
                 builder = InlineKeyboardBuilder()
