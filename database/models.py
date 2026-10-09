@@ -134,3 +134,76 @@ class DigestState:
     chat_id: int
     last_message_id: int
     updated_at: Optional[str] = None
+
+
+# Contact Memory Models
+@dataclass
+class MemContact:
+    contact_user_id: int
+    username_at_bind: Optional[str] = None
+    memory_enabled: int = 1
+    paused_reason: Optional[str] = None
+    bound_at: Optional[str] = None
+
+
+@dataclass
+class MemMessage:
+    id: Optional[int]
+    contact_user_id: int
+    tg_message_id: int
+    sender: str  # 'contact', 'owner_manual', 'owner_edited', 'bot_approved', 'bot_auto'
+    text_redacted: str
+    sent_at: Optional[str] = None
+    edited_at: Optional[str] = None
+    is_media: int = 0
+
+
+@dataclass
+class MemFact:
+    id: Optional[int]
+    contact_user_id: int
+    category: Optional[str]
+    text: str
+    source_type: str  # 'owner_stated', 'contact_claim', 'owner_confirmed'
+    source_message_ids: Optional[str] = None  # JSON array string
+    status: str = "active"  # 'active', 'superseded', 'disputed'
+    confidence: float = 1.0
+    supersedes_id: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
+    valid_until: Optional[str] = None
+    injection_suspected: int = 0
+
+
+@dataclass
+class MemOpenItem:
+    id: Optional[int]
+    contact_user_id: int
+    text: str
+    source_message_ids: Optional[str] = None
+    status: str = "open"  # 'open', 'resolved', 'dismissed'
+    created_at: Optional[str] = None
+
+
+@dataclass
+class MemSummary:
+    id: Optional[int]
+    contact_user_id: int
+    summary_text: str
+    covers_until_message_id: Optional[int] = None
+    version: int = 1
+    created_at: Optional[str] = None
+
+
+@dataclass
+class MemEmbedding:
+    id: Optional[int]
+    contact_user_id: int
+    item_type: str  # 'fact', 'message', 'summary'
+    item_id: int
+    model_name: str
+    dim: int
+    vector: bytes
+    created_at: Optional[str] = None
+

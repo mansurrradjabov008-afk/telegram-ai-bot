@@ -280,6 +280,7 @@ class AdminBotService:
         ai_engine: AIEngine,
         scheduler_service: SchedulerService,
         digest_service: Optional[DigestService] = None,
+        memory_service: Optional[Any] = None,
         token: Optional[str] = None,
         admin_id: Optional[int] = None,
     ):
@@ -287,6 +288,7 @@ class AdminBotService:
         self.ai_engine = ai_engine
         self.scheduler_service = scheduler_service
         self.digest_service = digest_service
+        self.memory_service = memory_service
         self.token = token or settings.ADMIN_BOT_TOKEN
         self.admin_id = admin_id if admin_id is not None else settings.owner_id_effective
 
@@ -297,6 +299,10 @@ class AdminBotService:
         self._pending_escalations: Dict[str, Dict[str, Any]] = {}
 
         self._setup_handlers()
+
+    def set_memory_service(self, memory_service: Any):
+        """Sets Contact Memory service instance."""
+        self.memory_service = memory_service
 
     def set_userbot_sender(self, fn: Callable):
         self._userbot_send_fn = fn
@@ -2170,7 +2176,20 @@ class AdminBotService:
             if self._userbot_send_fn:
                 peer = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "")
                 if peer:
-                    await self._userbot_send_fn(peer, draft.proposed_reply)
+                    sent_msg = await self._userbot_send_fn(peer, draft.proposed_reply)
+                    if self.memory_service and sent_msg:
+                        target_user_id = draft.contact_user_id
+                        if not target_user_id and draft.contact_username:
+                            c = await self.db_manager.get_contact_by_username(draft.contact_username)
+                            target_user_id = c.user_id if c else None
+                        if target_user_id:
+                            await self.memory_service.log_message(
+                                contact_user_id=target_user_id,
+                                tg_message_id=getattr(sent_msg, "id", 0),
+                                sender="bot_approved",
+                                text=draft.proposed_reply,
+                                username=draft.contact_username,
+                            )
 
             await callback.answer(f"✅ #{draft_id} qoralama yuborildi!", show_alert=True)
             try:
@@ -2259,7 +2278,20 @@ class AdminBotService:
             if self._userbot_send_fn:
                 peer = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "")
                 if peer:
-                    await self._userbot_send_fn(peer, new_text)
+                    sent_msg = await self._userbot_send_fn(peer, new_text)
+                    if self.memory_service and sent_msg:
+                        target_user_id = draft.contact_user_id
+                        if not target_user_id and draft.contact_username:
+                            c = await self.db_manager.get_contact_by_username(draft.contact_username)
+                            target_user_id = c.user_id if c else None
+                        if target_user_id:
+                            await self.memory_service.log_message(
+                                contact_user_id=target_user_id,
+                                tg_message_id=getattr(sent_msg, "id", 0),
+                                sender="owner_edited",
+                                text=new_text,
+                                username=draft.contact_username,
+                            )
 
             safe_text = html.escape(new_text)
             await safe_reply(

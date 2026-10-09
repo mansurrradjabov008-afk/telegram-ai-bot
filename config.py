@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     DIGEST_TOPIC_LIMIT_DEFAULT: int = 5
     DIGEST_TOPIC_LIMIT_AI: int = 8
 
+    # Contact Memory settings
+    MEMORY_ENABLED: bool = True
+    MEMORY_LOG_MUTED: bool = False
+    MEM_MESSAGE_RETENTION_DAYS: int = 180
+    MEM_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    MEM_EMBEDDING_DIM: int = 3072
+    MEM_MAX_EMBED_CALLS_PER_DAY: int = 200
+    MEM_EXTRACT_IDLE_MINUTES: int = 5
+    MEM_MAX_EXTRACT_CALLS_PER_DAY: int = 50
+    MEM_MAX_MESSAGES_PER_BATCH: int = 15
+    MEM_MAX_FACT_LENGTH: int = 150
+    MEM_FACT_VALIDITY_DAYS: int = 30
+    MEM_CONTEXT_TIMEOUT_SECONDS: float = 1.0
+    MEM_MAX_CONTEXT_TOKENS: int = 1200
+    MEM_IMPORT_ENABLED: bool = False
+    MEM_IMPORT_MAX_MESSAGES: int = 200
+    MEM_REDACTION_MASK: str = "[REDACTED]"
+
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent
 

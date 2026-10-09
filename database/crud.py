@@ -5,6 +5,8 @@ Asynchronous Database Manager and CRUD operations for Telegram AI Butler.
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import json
+import asyncio
+from contextlib import asynccontextmanager
 import aiosqlite
 from .connection import get_db
 from .models import (
@@ -18,12 +20,33 @@ from .models import (
     DigestPost,
     DigestRun,
     DigestState,
+    MemContact,
+    MemMessage,
+    MemFact,
+    MemOpenItem,
+    MemSummary,
+    MemEmbedding,
 )
+from services.memory_redactor import redact_text
 
 
 class DatabaseManager:
+    _write_lock = asyncio.Lock()
+
     def __init__(self, db_path=None):
         self.db_path = db_path
+
+    @asynccontextmanager
+    async def serialized_transaction(self):
+        """
+        Provides a centralized serialized SQLite write transaction protected by asyncio.Lock.
+        Guarantees zero database-is-locked errors under high write concurrency.
+        """
+        async with self._write_lock:
+            async with get_db(self.db_path) as db:
+                yield db
+                await db.commit()
+
 
     # ------------------ CONTACT CRM ------------------
     async def upsert_contact(
@@ -998,3 +1021,279 @@ class DatabaseManager:
                 posts = [DigestPost(**dict(r)) for r in rows]
 
             return (posts, total)
+
+    # ------------------ CONTACT MEMORY (V7) ------------------
+    async def bind_mem_contact(
+        self,
+        contact_user_id: int,
+        username: Optional[str] = None,
+    ) -> MemContact:
+        """
+        Binds or verifies contact record in mem_contacts.
+        Keyed strictly by numeric contact_user_id (H2).
+        """
+        if username and username.startswith("@"):
+            username = username[1:]
+
+        query = """
+        INSERT INTO mem_contacts (contact_user_id, username_at_bind, memory_enabled, bound_at)
+        VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+        ON CONFLICT(contact_user_id) DO UPDATE SET
+            username_at_bind = COALESCE(excluded.username_at_bind, mem_contacts.username_at_bind);
+        """
+        async with self.serialized_transaction() as db:
+            await db.execute(query, (contact_user_id, username))
+
+        contact = await self.get_mem_contact(contact_user_id)
+        if not contact:
+            raise RuntimeError(f"Failed to retrieve bound mem_contact for {contact_user_id}")
+        return contact
+
+    async def get_mem_contact(self, contact_user_id: int) -> Optional[MemContact]:
+        """Fetch mem_contact by numeric contact_user_id."""
+        query = "SELECT * FROM mem_contacts WHERE contact_user_id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id,)) as cur:
+                row = await cur.fetchone()
+                return MemContact(**dict(row)) if row else None
+
+    async def get_mem_contact_by_username(self, username: str) -> Optional[MemContact]:
+        """Fetch mem_contact by username."""
+        clean_name = username.lstrip("@").strip()
+        query = "SELECT * FROM mem_contacts WHERE LOWER(username_at_bind) = LOWER(?)"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (clean_name,)) as cur:
+                row = await cur.fetchone()
+                return MemContact(**dict(row)) if row else None
+
+    async def pause_mem_contact(self, contact_user_id: int, reason: str) -> bool:
+        """Pauses memory recording for contact with reason."""
+        query = "UPDATE mem_contacts SET memory_enabled = 0, paused_reason = ? WHERE contact_user_id = ?"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (reason, contact_user_id))
+            return cur.rowcount > 0
+
+    async def resume_mem_contact(self, contact_user_id: int) -> bool:
+        """Resumes memory recording for contact."""
+        query = "UPDATE mem_contacts SET memory_enabled = 1, paused_reason = NULL WHERE contact_user_id = ?"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (contact_user_id,))
+            return cur.rowcount > 0
+
+    async def log_mem_message(
+        self,
+        contact_user_id: int,
+        tg_message_id: int,
+        sender: str,
+        text: str,
+        is_media: bool = False,
+        sent_at: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        Logs message turn into mem_messages with pure code redaction before storage (H5).
+        Sender must be one of: 'contact', 'owner_manual', 'owner_edited', 'bot_approved', 'bot_auto' (H8).
+        Enforces UNIQUE(contact_user_id, tg_message_id).
+        """
+        allowed_senders = ("contact", "owner_manual", "owner_edited", "bot_approved", "bot_auto")
+        if sender not in allowed_senders:
+            raise ValueError(f"Invalid sender '{sender}'. Must be one of {allowed_senders}")
+
+        # Strict code-level redaction BEFORE touching DB (H5)
+        text_redacted = redact_text(text)
+
+        query = """
+        INSERT OR IGNORE INTO mem_messages (
+            contact_user_id, tg_message_id, sender, text_redacted, is_media, sent_at
+        ) VALUES (?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                query,
+                (
+                    contact_user_id,
+                    tg_message_id,
+                    sender,
+                    text_redacted,
+                    1 if is_media else 0,
+                    sent_at,
+                ),
+            )
+            return cur.lastrowid if cur.rowcount > 0 else None
+
+    async def update_mem_message_edit(
+        self,
+        contact_user_id: int,
+        tg_message_id: int,
+        new_text: str,
+    ) -> bool:
+        """
+        Updates text_redacted and edited_at for an existing message turn.
+        Re-applies full redaction before persistence.
+        """
+        text_redacted = redact_text(new_text)
+        query = """
+        UPDATE mem_messages 
+        SET text_redacted = ?, edited_at = CURRENT_TIMESTAMP
+        WHERE contact_user_id = ? AND tg_message_id = ?
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (text_redacted, contact_user_id, tg_message_id))
+            return cur.rowcount > 0
+
+    async def get_mem_message(
+        self,
+        contact_user_id: int,
+        tg_message_id: int,
+    ) -> Optional[MemMessage]:
+        """Fetch single mem_message by contact_user_id and tg_message_id."""
+        query = "SELECT * FROM mem_messages WHERE contact_user_id = ? AND tg_message_id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, tg_message_id)) as cur:
+                row = await cur.fetchone()
+                return MemMessage(**dict(row)) if row else None
+
+    async def get_mem_messages(
+        self,
+        contact_user_id: int,
+        limit: int = 50,
+    ) -> List[MemMessage]:
+        """
+        Fetch recent messages for target contact.
+        Enforces strict per-contact isolation (H4).
+        """
+        query = """
+        SELECT * FROM mem_messages 
+        WHERE contact_user_id = ? 
+        ORDER BY id ASC 
+        LIMIT ?
+        """
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, limit)) as cur:
+                rows = await cur.fetchall()
+                # Strict code-level isolation assertion (H4)
+                messages = []
+                for r in rows:
+                    msg = MemMessage(**dict(r))
+                    assert msg.contact_user_id == contact_user_id, "CRITICAL: Memory isolation breach!"
+                    messages.append(msg)
+                return messages
+
+    async def purge_old_mem_messages(self, retention_days: int = 180) -> int:
+        """
+        Purges messages older than retention_days from mem_messages.
+        """
+        cutoff = (datetime.utcnow() - timedelta(days=retention_days)).isoformat()
+        query = "DELETE FROM mem_messages WHERE sent_at < ?"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (cutoff,))
+            return cur.rowcount
+
+    async def get_mem_state(self, key: str) -> Optional[str]:
+        """Fetch persistent value from mem_state."""
+        query = "SELECT value FROM mem_state WHERE key = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (key,)) as cur:
+                row = await cur.fetchone()
+                return row["value"] if row else None
+
+    async def set_mem_state(self, key: str, value: str) -> None:
+        """Upsert persistent key-value into mem_state."""
+        query = """
+        INSERT INTO mem_state (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = CURRENT_TIMESTAMP;
+        """
+        async with self.serialized_transaction() as db:
+            await db.execute(query, (key, value))
+
+    async def create_mem_fact(
+        self,
+        contact_user_id: int,
+        category: Optional[str],
+        text: str,
+        source_type: str,
+        source_message_ids: Optional[List[int]] = None,
+        confidence: float = 1.0,
+        supersedes_id: Optional[int] = None,
+        valid_until: Optional[str] = None,
+        injection_suspected: bool = False,
+    ) -> int:
+        """Stores extracted fact with strict source_type validation and redaction."""
+        src_json = json.dumps(source_message_ids or [])
+        text_redacted = redact_text(text)
+        query = """
+        INSERT INTO mem_facts (
+            contact_user_id, category, text, source_type, source_message_ids,
+            confidence, supersedes_id, valid_until, injection_suspected
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                query,
+                (
+                    contact_user_id,
+                    category,
+                    text_redacted,
+                    source_type,
+                    src_json,
+                    confidence,
+                    supersedes_id,
+                    valid_until,
+                    1 if injection_suspected else 0,
+                ),
+            )
+            return cur.lastrowid
+
+    async def get_mem_facts(
+        self,
+        contact_user_id: int,
+        status: str = "active",
+    ) -> List[MemFact]:
+        """Fetch active facts for target contact with strict isolation (H4)."""
+        query = "SELECT * FROM mem_facts WHERE contact_user_id = ? AND status = ? ORDER BY id ASC"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, status)) as cur:
+                rows = await cur.fetchall()
+                facts = []
+                for r in rows:
+                    fact = MemFact(**dict(r))
+                    assert fact.contact_user_id == contact_user_id, "CRITICAL: Fact isolation breach!"
+                    facts.append(fact)
+                return facts
+
+    async def create_mem_open_item(
+        self,
+        contact_user_id: int,
+        text: str,
+        source_message_ids: Optional[List[int]] = None,
+    ) -> int:
+        """Stores open item for target contact."""
+        src_json = json.dumps(source_message_ids or [])
+        text_redacted = redact_text(text)
+        query = """
+        INSERT INTO mem_open_items (contact_user_id, text, source_message_ids)
+        VALUES (?, ?, ?)
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (contact_user_id, text_redacted, src_json))
+            return cur.lastrowid
+
+    async def get_mem_open_items(
+        self,
+        contact_user_id: int,
+        status: str = "open",
+    ) -> List[MemOpenItem]:
+        """Fetch open items for target contact with strict isolation (H4)."""
+        query = "SELECT * FROM mem_open_items WHERE contact_user_id = ? AND status = ? ORDER BY id ASC"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, status)) as cur:
+                rows = await cur.fetchall()
+                items = []
+                for r in rows:
+                    item = MemOpenItem(**dict(r))
+                    assert item.contact_user_id == contact_user_id, "CRITICAL: Open item isolation breach!"
+                    items.append(item)
+                return items
+

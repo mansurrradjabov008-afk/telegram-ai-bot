@@ -33,11 +33,13 @@ class UserbotService:
         ai_engine: AIEngine,
         rate_limiter: HumanRateLimiter,
         digest_service: DigestService,
+        memory_service: Optional[Any] = None,
     ):
         self.db_manager = db_manager
         self.ai_engine = ai_engine
         self.rate_limiter = rate_limiter
         self.digest_service = digest_service
+        self.memory_service = memory_service
 
         self.session_path = Path("data") / settings.TELEGRAM_SESSION_NAME
         self.client: Optional[TelegramClient] = None
@@ -50,6 +52,10 @@ class UserbotService:
         self._debounce_tasks: Dict[int, asyncio.Task] = {}
 
         self._is_running = False
+
+    def set_memory_service(self, memory_service: Any):
+        """Sets the Contact Memory service instance."""
+        self.memory_service = memory_service
 
     def set_escalation_callback(self, callback: Callable):
         """Callback to notify Admin Bot Cockpit when an escalation happens."""
@@ -92,12 +98,27 @@ class UserbotService:
             except Exception as e:
                 logger.error(f"Error handling private message: {e}", exc_info=True)
 
+        @client.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
+        async def on_outgoing_private_message(event):
+            try:
+                await self._handle_outgoing_message(event)
+            except Exception as e:
+                logger.error(f"Error handling outgoing message: {e}", exc_info=True)
+
+        @client.on(events.MessageEdited(func=lambda e: e.is_private))
+        async def on_message_edited(event):
+            try:
+                await self._handle_edited_message(event)
+            except Exception as e:
+                logger.error(f"Error handling edited message: {e}", exc_info=True)
+
         @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_channel or e.is_group))
         async def on_feed_message(event):
             try:
                 await self._handle_feed_message(event)
             except Exception as e:
                 logger.error(f"Error handling feed message: {e}")
+
 
     async def check_owner_manually_replied(self, peer: Any, after_message_id: int) -> bool:
         """
@@ -119,6 +140,84 @@ class UserbotService:
         except Exception as e:
             logger.warning(f"Could not check manual reply history for {peer}: {e}")
         return False
+
+    async def _handle_outgoing_message(self, event):
+        """
+        Captures manual outgoing messages typed by owner in private chats with saved contacts.
+        Assigns sender='owner_manual' unless message was sent by the bot (bot_auto, bot_approved, owner_edited).
+        """
+        if not self.memory_service:
+            return
+
+        chat_id = getattr(event, "chat_id", None)
+        if not chat_id:
+            return
+
+        # Check if recipient is a saved contact (H1: 1-to-1 with saved contacts only)
+        contact = await self.db_manager.get_contact_by_id(chat_id)
+        if not contact:
+            return
+
+        # Check if this message was already logged (e.g. by bot_auto, bot_approved, owner_edited)
+        existing = await self.db_manager.get_mem_message(contact_user_id=chat_id, tg_message_id=event.id)
+        if existing:
+            return
+
+        # It's an owner manual message typed from Telegram client!
+        raw_text = (event.raw_text or "").strip()
+        is_media = (
+            getattr(event.message, "media", None) is not None
+            and not isinstance(event.message.media, MessageMediaWebPage)
+        )
+        media_marker = None
+        if is_media:
+            if getattr(event.message, "voice", False):
+                media_marker = "ovozli xabar"
+            elif getattr(event.message, "photo", False):
+                media_marker = "rasm"
+            elif getattr(event.message, "video_note", False):
+                media_marker = "dumaloq video"
+            elif getattr(event.message, "video", False):
+                media_marker = "video"
+            elif getattr(event.message, "document", False):
+                media_marker = "hujjat"
+            elif getattr(event.message, "sticker", False):
+                media_marker = "stiker"
+            else:
+                media_marker = "fayl"
+
+        await self.memory_service.log_message(
+            contact_user_id=chat_id,
+            tg_message_id=event.id,
+            sender="owner_manual",
+            text=raw_text,
+            is_media=is_media,
+            media_type=media_marker,
+            contact_mode=getattr(contact, "mode", "draft"),
+            username=getattr(contact, "username", None),
+        )
+
+    async def _handle_edited_message(self, event):
+        """
+        Updates edited message in Contact Memory if it was previously captured.
+        """
+        if not self.memory_service:
+            return
+
+        chat_id = getattr(event, "chat_id", None)
+        if not chat_id:
+            return
+
+        contact = await self.db_manager.get_contact_by_id(chat_id)
+        if not contact:
+            return
+
+        new_text = (event.raw_text or "").strip()
+        await self.memory_service.handle_message_edit(
+            contact_user_id=chat_id,
+            tg_message_id=event.id,
+            new_text=new_text,
+        )
 
     async def _send_with_floodwait(self, peer: Any, text: str, max_retries: int = 3) -> Optional[Any]:
         """
@@ -204,23 +303,44 @@ class UserbotService:
             getattr(event.message, "media", None) is not None
             and not isinstance(event.message.media, MessageMediaWebPage)
         )
+        media_marker = None
+        if is_media:
+            if getattr(event.message, "voice", False):
+                media_marker = "ovozli xabar"
+            elif getattr(event.message, "photo", False):
+                media_marker = "rasm"
+            elif getattr(event.message, "video_note", False):
+                media_marker = "dumaloq video"
+            elif getattr(event.message, "video", False):
+                media_marker = "video"
+            elif getattr(event.message, "document", False):
+                media_marker = "hujjat"
+            elif getattr(event.message, "sticker", False):
+                media_marker = "stiker"
+            else:
+                media_marker = "fayl"
+
         if is_media or not incoming_text:
             logger.info(f"📎 Non-text message from {peer_repr}. Notifying owner.")
-            if self._notification_callback:
-                media_type = "ovozli xabar / rasm / fayl"
-                if getattr(event.message, "voice", False):
-                    media_type = "ovozli xabar (voice)"
-                elif getattr(event.message, "photo", False):
-                    media_type = "rasm"
-                elif getattr(event.message, "video_note", False):
-                    media_type = "dumaloq video (video note)"
-                elif getattr(event.message, "document", False):
-                    media_type = "hujjat / fayl"
+            # Contact Memory Hook (Incoming Media Message)
+            if self.memory_service:
+                await self.memory_service.log_message(
+                    contact_user_id=sender_id,
+                    tg_message_id=event.id,
+                    sender="contact",
+                    text=incoming_text,
+                    is_media=True,
+                    media_type=media_marker,
+                    contact_mode=mode,
+                    username=username,
+                )
 
+            if self._notification_callback:
+                media_type_label = f"{media_marker} ({media_marker})" if media_marker else "ovozli xabar / rasm / fayl"
                 safe_name = html.escape(first_name)
                 safe_peer = html.escape(peer_repr)
                 await self._notification_callback(
-                    f"📎 <b>{safe_name}</b> (<code>{safe_peer}</code>) sizga <i>{media_type}</i> yubordi.\n"
+                    f"📎 <b>{safe_name}</b> (<code>{safe_peer}</code>) sizga <i>{media_type_label}</i> yubordi.\n"
                     f"🛡 <i>Avto-javob yuborilmadi.</i>"
                 )
             return
@@ -232,6 +352,19 @@ class UserbotService:
             role="contact",
             content=incoming_text,
         )
+
+        # Contact Memory Hook (Incoming Text Message)
+        if self.memory_service:
+            await self.memory_service.log_message(
+                contact_user_id=sender_id,
+                tg_message_id=event.id,
+                sender="contact",
+                text=incoming_text,
+                is_media=is_media,
+                media_type=media_marker,
+                contact_mode=mode,
+                username=username,
+            )
 
         # Step 4: Debounce buffer and timer
         await self._debounce_enqueue(
@@ -381,7 +514,7 @@ class UserbotService:
                     await asyncio.sleep(delay)
 
                 # Send message safely with FloodWait handling
-                await self._send_with_floodwait(chat_id, reply_text)
+                sent_msg = await self._send_with_floodwait(chat_id, reply_text)
 
                 # Log outgoing reply to DB
                 await self.db_manager.log_message(
@@ -390,6 +523,18 @@ class UserbotService:
                     role="assistant",
                     content=reply_text,
                 )
+
+                # Contact Memory Hook (Bot Auto Message)
+                if self.memory_service and sent_msg:
+                    await self.memory_service.log_message(
+                        contact_user_id=sender_id,
+                        tg_message_id=getattr(sent_msg, "id", 0),
+                        sender="bot_auto",
+                        text=reply_text,
+                        contact_mode=mode,
+                        username=username,
+                    )
+
                 logger.info(f"Auto-replied to {peer_repr}: '{reply_text}'")
                 return
 
@@ -466,6 +611,7 @@ class UserbotService:
             role="assistant",
             content=message_text,
         )
+        return sent_msg
 
     async def start(self):
         """Starts client session connection."""

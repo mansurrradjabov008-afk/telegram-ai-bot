@@ -23,6 +23,7 @@ from services.ai_engine import AIEngine
 from services.rate_limiter import HumanRateLimiter
 from services.digest_service import DigestService
 from services.scheduler_service import SchedulerService
+from services.memory_service import MemoryService
 from bot.admin_bot import AdminBotService
 from bot.userbot import UserbotService
 
@@ -49,6 +50,8 @@ async def main():
     rate_limiter = HumanRateLimiter()
     digest_service = DigestService(db_manager, ai_engine)
     scheduler_service = SchedulerService(db_manager)
+    memory_service = MemoryService(db_manager)
+    await memory_service.purge_retention()
 
     # 3. Initialize Bot Services
     admin_bot_service = AdminBotService(
@@ -56,12 +59,14 @@ async def main():
         ai_engine=ai_engine,
         scheduler_service=scheduler_service,
         digest_service=digest_service,
+        memory_service=memory_service,
     )
     userbot_service = UserbotService(
         db_manager=db_manager,
         ai_engine=ai_engine,
         rate_limiter=rate_limiter,
         digest_service=digest_service,
+        memory_service=memory_service,
     )
 
     # 4. Wire cross-service callbacks

@@ -47,8 +47,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 ---
 
 ## 2. Phase Status
-- [x] **Phase 0: Inspection & Foundation Plan** — COMPLETE (Waiting for user "OK")
-- [ ] **Phase 1: Storage, Redaction, Logging** — PENDING
+- [x] **Phase 0: Inspection & Foundation Plan** — COMPLETE
+- [x] **Phase 1: Storage, Redaction, Logging** — COMPLETE (Awaiting user "OK" for Phase 2)
 - [ ] **Phase 2: Retrieval Foundation** — PENDING
 - [ ] **Phase 3: Fact Extraction (code-verified)** — PENDING
 - [ ] **Phase 4: Rolling Summaries** — PENDING
@@ -56,6 +56,41 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - [ ] **Phase 6: Owner Commands & Deletion Hook** — PENDING
 - [ ] **Phase 7: Comprehensive Test Suite** — PENDING
 - [ ] **Phase 8: Final Report & Shadow Check** — PENDING
+
+---
+
+## 2.1 Verified Facts from Phase 1 Execution
+- **Database Backup Before Migration**: `data/butler_backup_20261009_185241.db` (393,216 bytes).
+- **Schema Migration v7 Applied**:
+  - `mem_contacts` (`contact_user_id` PK, `username_at_bind`, `memory_enabled`, `paused_reason`, `bound_at`)
+  - `mem_messages` (`id` PK auto, `contact_user_id`, `tg_message_id`, `sender` CHECK constraint, `text_redacted`, `sent_at`, `edited_at`, `is_media`, UNIQUE(`contact_user_id`, `tg_message_id`))
+  - `mem_facts` (`id` PK auto, `contact_user_id`, `category`, `text`, `source_type` CHECK, `source_message_ids`, `status` CHECK, `confidence`, `supersedes_id`, timestamps, `valid_until`, `injection_suspected`)
+  - `mem_open_items` (`id` PK auto, `contact_user_id`, `text`, `source_message_ids`, `status` CHECK, `created_at`)
+  - `mem_summaries` (`id` PK auto, `contact_user_id`, `summary_text`, `covers_until_message_id`, `version`, `created_at`)
+  - `mem_embeddings` (`id` PK auto, `contact_user_id`, `item_type` CHECK, `item_id`, `model_name`, `dim`, `vector` BLOB, `created_at`)
+  - `mem_state` (`key` PK, `value`, `updated_at`)
+- **Write Concurrency Proof**: `DatabaseManager.serialized_transaction()` wraps writes in `asyncio.Lock()`. Proven with 25 simultaneous concurrent writer tasks without SQLite locking issues.
+- **Pure Redaction Engine (`services/memory_redactor.py`)**:
+  - Luhn verification on 13-19 digit candidates.
+  - 20-digit bank accounts & IBAN formats.
+  - 14-digit Uzbek PINFL / JShShIR (`[1-6]\d{13}`).
+  - Passports (Uzbek `\b[A-Za-z]{2}\s*\d{7}\b`, CIS keywords).
+  - One-time codes / passwords / OTPs across 4 languages (Uzbek Latin, Uzbek Cyrillic, Russian, English).
+  - Negative safety proven: dates, prices, quantities, normal words, and phone numbers are never redacted.
+  - 39/39 redaction unit tests passing.
+- **Message Logging Hooks (Integration Point 1 / H8)**:
+  - `contact`: Incoming private text & media markers (`[ovozli xabar]`, `[rasm]`, etc. with `is_media=1`).
+  - `owner_manual`: Outgoing private messages captured via Telethon `outgoing=True` if not bot-originated.
+  - `bot_auto`: Automatic replies logged upon successful send.
+  - `bot_approved`: Drafts approved unchanged logged upon successful send.
+  - `owner_edited`: Drafts edited and sent logged upon successful send.
+  - Message edit events (`events.MessageEdited`): re-redacts text and updates `edited_at`.
+  - Mute mode check (H3): muted contacts store nothing.
+  - Identity check (H2): strictly numeric Telegram user_id; username reassignment pauses memory.
+  - Startup retention cleanup: purges messages older than `MEM_MESSAGE_RETENTION_DAYS` (180).
+- **Test Suite Results (P7)**:
+  - Baseline: 123 passed.
+  - Phase 1 total: 172 passed (123 existing + 39 redaction + 10 storage/concurrency/lifecycle). 0 regressions.
 
 ---
 

@@ -152,6 +152,94 @@ CREATE TABLE IF NOT EXISTS digest_state (
     last_message_id INTEGER NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Contact Memory Tables (Schema v7)
+CREATE TABLE IF NOT EXISTS mem_contacts (
+    contact_user_id INTEGER PRIMARY KEY,
+    username_at_bind TEXT,
+    memory_enabled INTEGER DEFAULT 1,
+    paused_reason TEXT,
+    bound_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (contact_user_id) REFERENCES contacts(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS mem_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_user_id INTEGER NOT NULL,
+    tg_message_id INTEGER NOT NULL,
+    sender TEXT NOT NULL CHECK(sender IN ('contact', 'owner_manual', 'owner_edited', 'bot_approved', 'bot_auto')),
+    text_redacted TEXT NOT NULL,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    edited_at TIMESTAMP,
+    is_media INTEGER DEFAULT 0,
+    UNIQUE(contact_user_id, tg_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_messages_contact ON mem_messages(contact_user_id);
+CREATE INDEX IF NOT EXISTS idx_mem_messages_sent_at ON mem_messages(sent_at);
+
+CREATE TABLE IF NOT EXISTS mem_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_user_id INTEGER NOT NULL,
+    category TEXT,
+    text TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('owner_stated', 'contact_claim', 'owner_confirmed')),
+    source_message_ids TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'superseded', 'disputed')),
+    confidence REAL DEFAULT 1.0,
+    supersedes_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    valid_until TIMESTAMP,
+    injection_suspected INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_facts_contact ON mem_facts(contact_user_id);
+CREATE INDEX IF NOT EXISTS idx_mem_facts_status ON mem_facts(status);
+
+CREATE TABLE IF NOT EXISTS mem_open_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_user_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    source_message_ids TEXT,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved', 'dismissed')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_open_items_contact ON mem_open_items(contact_user_id);
+CREATE INDEX IF NOT EXISTS idx_mem_open_items_status ON mem_open_items(status);
+
+CREATE TABLE IF NOT EXISTS mem_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_user_id INTEGER NOT NULL,
+    summary_text TEXT NOT NULL,
+    covers_until_message_id INTEGER,
+    version INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_summaries_contact ON mem_summaries(contact_user_id);
+
+CREATE TABLE IF NOT EXISTS mem_embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_user_id INTEGER NOT NULL,
+    item_type TEXT NOT NULL CHECK(item_type IN ('fact', 'message', 'summary')),
+    item_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_embeddings_contact ON mem_embeddings(contact_user_id);
+CREATE INDEX IF NOT EXISTS idx_mem_embeddings_item ON mem_embeddings(item_type, item_id);
+
+CREATE TABLE IF NOT EXISTS mem_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -328,6 +416,107 @@ async def init_db(db_path: Path = None):
         await db.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
             (6, "Add telemetry metrics columns to digest_runs and priority to digest_sources"),
+        )
+
+        # Migration version 7: Contact Memory schema
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_contacts (
+            contact_user_id INTEGER PRIMARY KEY,
+            username_at_bind TEXT,
+            memory_enabled INTEGER DEFAULT 1,
+            paused_reason TEXT,
+            bound_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (contact_user_id) REFERENCES contacts(user_id) ON DELETE CASCADE
+        );
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_user_id INTEGER NOT NULL,
+            tg_message_id INTEGER NOT NULL,
+            sender TEXT NOT NULL CHECK(sender IN ('contact', 'owner_manual', 'owner_edited', 'bot_approved', 'bot_auto')),
+            text_redacted TEXT NOT NULL,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            edited_at TIMESTAMP,
+            is_media INTEGER DEFAULT 0,
+            UNIQUE(contact_user_id, tg_message_id)
+        );
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_messages_contact ON mem_messages(contact_user_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_messages_sent_at ON mem_messages(sent_at);")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_user_id INTEGER NOT NULL,
+            category TEXT,
+            text TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK(source_type IN ('owner_stated', 'contact_claim', 'owner_confirmed')),
+            source_message_ids TEXT,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'superseded', 'disputed')),
+            confidence REAL DEFAULT 1.0,
+            supersedes_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            valid_until TIMESTAMP,
+            injection_suspected INTEGER DEFAULT 0
+        );
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_facts_contact ON mem_facts(contact_user_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_facts_status ON mem_facts(status);")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_open_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_user_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            source_message_ids TEXT,
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved', 'dismissed')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_open_items_contact ON mem_open_items(contact_user_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_open_items_status ON mem_open_items(status);")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_user_id INTEGER NOT NULL,
+            summary_text TEXT NOT NULL,
+            covers_until_message_id INTEGER,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_summaries_contact ON mem_summaries(contact_user_id);")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_user_id INTEGER NOT NULL,
+            item_type TEXT NOT NULL CHECK(item_type IN ('fact', 'message', 'summary')),
+            item_id INTEGER NOT NULL,
+            model_name TEXT NOT NULL,
+            dim INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_embeddings_contact ON mem_embeddings(contact_user_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_embeddings_item ON mem_embeddings(item_type, item_id);")
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS mem_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
+            (7, "Add Contact Memory schema v7 (mem_contacts, mem_messages, mem_facts, mem_open_items, mem_summaries, mem_embeddings, mem_state)"),
         )
 
         await db.commit()
