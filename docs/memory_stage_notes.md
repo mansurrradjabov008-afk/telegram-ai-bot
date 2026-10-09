@@ -52,8 +52,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - [x] **Phase 2: Retrieval Foundation** — COMPLETE
 - [x] **Phase 3: Fact Extraction (code-verified)** — COMPLETE
 - [x] **Phase 4: Rolling Summaries** — COMPLETE
-- [x] **Phase 5: Context Assembly & Reply Integration** — COMPLETE (Awaiting user "OK" for Phase 6)
-- [ ] **Phase 6: Owner Commands & Deletion Hook** — PENDING
+- [x] **Phase 5: Context Assembly & Reply Integration** — COMPLETE
+- [x] **Phase 6: Owner Commands & Deletion Hook** — COMPLETE (Awaiting user "OK" for Phase 7)
 - [ ] **Phase 7: Comprehensive Test Suite** — PENDING
 - [ ] **Phase 8: Final Report & Shadow Check** — PENDING
 
@@ -197,6 +197,28 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline before Phase 5: 216 passed.
   - Phase 5 total: 229 passed (216 existing + 13 new context tests in `tests/test_memory_context_phase5.py`). 0 regressions.
+
+---
+
+## 2.6 Verified Facts from Phase 6 Execution
+- **Database Backup Before Phase 6**: `data/butler_backup_20261009_201508.db` (565,248 bytes).
+- **Database CRUD Capabilities (`database/crud.py`)**:
+  - `wipe_contact_memory(contact_user_id)`: Permanently deletes all records across `mem_messages` (with automatic FTS5 cleanup via trigger `trg_mem_messages_ad`), `mem_facts` (with FTS5 cleanup via `trg_mem_facts_ad`), `mem_open_items`, `mem_summaries`, `mem_embeddings`, and `mem_contacts`. Also blanks legacy unredacted text in `drafts` with `'[DELETED]'` per Rule H10 & H13.
+  - `delete_mem_fact(contact_user_id, fact_id)`: Deletes individual facts for a specific contact with strict isolation (H4, H10).
+  - `get_mem_stats(contact_user_id)`: Returns real-time counts for messages, active facts, open items, summaries, and embeddings.
+- **Allowed Integration Point 3 (`bot/admin_bot.py:handle_crm_delete`)**:
+  - When owner clicks "🗑 O'chirish" in CRM contacts list, bot presents an interactive confirmation dialog offering two distinct options:
+    1. "🗑 Kontakt o'chirilsin (Xotira to'xtatiladi)" — Default per Rule H10: pauses memory (`pause_mem_contact`) and deletes CRM contact.
+    2. "🔥 Hammasi o'chirilsin (Xotira ham tozalansin)" — Complete wipe calling `wipe_contact_memory` and deleting CRM contact.
+    3. "❌ Bekor qilish" — Cancels deletion and refreshes contacts list.
+- **Admin Cockpit Commands & Inline Navigation**:
+  - `/memory @username` (or `/memory <user_id>`): Shows Contact Memory card (Telegram ID, memory state, message count, fact count, vector count, rolling summary, and private open items). Provides inline buttons: "📋 Faktlarni ko'rish", "🗑 Xotirani o'chirish (/forget)", "🔙 Bosh menyu".
+  - `/memory_facts @username`: Displays up to 10 active facts with their source type labels (`contact_claim`, `owner_stated`, `owner_confirmed`) and inline buttons to delete specific facts (`mem_fact_del:<user_id>:<fact_id>`).
+  - `/forget @username`: Prompts confirmation before permanent memory wipe and drafts blanking per Rule H10.
+  - Strict Authorization: All commands and callback queries verify `_is_admin(user_id) == True` against `settings.owner_id_effective`.
+- **Test Suite Results (P7)**:
+  - Baseline before Phase 6: 229 passed.
+  - Phase 6 total: 237 passed (229 existing + 8 new tests in `tests/test_memory_commands_phase6.py`). 0 regressions.
 
 ---
 

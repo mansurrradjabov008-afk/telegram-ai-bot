@@ -1680,3 +1680,68 @@ class DatabaseManager:
         await self.set_mem_state(key, str(new_val))
         return new_val
 
+    # ------------------ OWNER MEMORY MANAGEMENT (PHASE 6) ------------------
+    async def wipe_contact_memory(self, contact_user_id: int) -> Dict[str, int]:
+        """
+        Permanently deletes all memory for target contact per Rule H10:
+        - mem_messages (auto-triggers clean mem_messages_fts)
+        - mem_facts (auto-triggers clean mem_facts_fts)
+        - mem_open_items
+        - mem_summaries
+        - mem_embeddings
+        - mem_contacts
+        - blanks drafts table incoming_text and proposed_reply
+        Returns dictionary of affected row counts.
+        """
+        counts: Dict[str, int] = {}
+        async with self.serialized_transaction() as db:
+            cur = await db.execute("DELETE FROM mem_messages WHERE contact_user_id = ?", (contact_user_id,))
+            counts["messages"] = cur.rowcount
+            cur = await db.execute("DELETE FROM mem_facts WHERE contact_user_id = ?", (contact_user_id,))
+            counts["facts"] = cur.rowcount
+            cur = await db.execute("DELETE FROM mem_open_items WHERE contact_user_id = ?", (contact_user_id,))
+            counts["open_items"] = cur.rowcount
+            cur = await db.execute("DELETE FROM mem_summaries WHERE contact_user_id = ?", (contact_user_id,))
+            counts["summaries"] = cur.rowcount
+            cur = await db.execute("DELETE FROM mem_embeddings WHERE contact_user_id = ?", (contact_user_id,))
+            counts["embeddings"] = cur.rowcount
+            cur = await db.execute("DELETE FROM mem_contacts WHERE contact_user_id = ?", (contact_user_id,))
+            counts["contact_records"] = cur.rowcount
+            cur = await db.execute(
+                "UPDATE drafts SET incoming_text = '[DELETED]', proposed_reply = '[DELETED]' WHERE contact_user_id = ?",
+                (contact_user_id,),
+            )
+            counts["drafts_blanked"] = cur.rowcount
+        return counts
+
+    async def delete_mem_fact(self, contact_user_id: int, fact_id: int) -> bool:
+        """Permanently deletes a specific fact for target contact (H4, H10)."""
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                "DELETE FROM mem_facts WHERE contact_user_id = ? AND id = ?",
+                (contact_user_id, fact_id),
+            )
+            return cur.rowcount > 0
+
+    async def get_mem_stats(self, contact_user_id: int) -> Dict[str, int]:
+        """Returns statistics of stored memory items for target contact (H4)."""
+        async with get_db(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM mem_messages WHERE contact_user_id = ?", (contact_user_id,)) as cur:
+                messages = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_facts WHERE contact_user_id = ? AND status = 'active'", (contact_user_id,)) as cur:
+                facts = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_open_items WHERE contact_user_id = ? AND status = 'open'", (contact_user_id,)) as cur:
+                open_items = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_summaries WHERE contact_user_id = ?", (contact_user_id,)) as cur:
+                summaries = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_embeddings WHERE contact_user_id = ?", (contact_user_id,)) as cur:
+                embeddings = (await cur.fetchone())[0]
+            return {
+                "messages": messages,
+                "facts": facts,
+                "open_items": open_items,
+                "summaries": summaries,
+                "embeddings": embeddings,
+            }
+
+

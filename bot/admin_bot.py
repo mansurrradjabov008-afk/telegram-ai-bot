@@ -1969,11 +1969,42 @@ class AdminBotService:
                 return
             username = callback.data.split(":")[1]
             contact = await self.db_manager.get_contact_by_username(username)
-            if contact:
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+
+            text = (
+                f"⚠️ <b>@{username} ni CRM dan o'chirish:</b>\n\n"
+                f"Ushbu kontakt xotirasi (yozishmalar, faktlar, aylanma xulosalar) ham to'liq o'chirilsinmi?\n\n"
+                f"<i>Eslatma: Xotira o'chirilsa, uni qayta tiklab bo'lmaydi (arxiv DB zaxiralari o'zgartirilmaydi).</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🗑 Kontakt o'chirilsin (Xotira to'xtatiladi)", callback_data=f"crm_del_confirm:{username}:keep")
+            builder.button(text="🔥 Hammasi o'chirilsin (Xotira ham tozalansin)", callback_data=f"crm_del_confirm:{username}:wipe")
+            builder.button(text="❌ Bekor qilish", callback_data="crm:refresh")
+            builder.adjust(1)
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("crm_del_confirm:"))
+        async def handle_crm_delete_confirm(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            username = parts[1]
+            action = parts[2]
+            contact = await self.db_manager.get_contact_by_username(username)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+
+            if action == "wipe":
+                await self.db_manager.wipe_contact_memory(contact.user_id)
                 await self.db_manager.delete_contact(contact.user_id)
-                await callback.answer(f"🗑 @{username} CRM xotirasidan o'chirildi!", show_alert=True)
+                await callback.answer(f"🔥 @{username} va uning barcha xotiralari to'liq o'chirildi!", show_alert=True)
             else:
-                await callback.answer("Kontakt topilmadi.", show_alert=True)
+                # Default per H10: memory stays but disabled for that contact
+                await self.db_manager.pause_mem_contact(contact.user_id, reason="contact_deleted_memory_retained")
+                await self.db_manager.delete_contact(contact.user_id)
+                await callback.answer(f"🗑 @{username} o'chirildi (xotira to'xtatildi)!", show_alert=True)
+
             await _render_contacts_list(callback.message, is_callback=True)
 
         @dp.callback_query(F.data == "crm:refresh")
@@ -2017,6 +2048,287 @@ class AdminBotService:
             }
             await callback.answer(f"✅ @{contact.username or target_user} rejimi {mode_labels.get(new_mode, new_mode)} ga o'zgartirildi!")
             await _render_contacts_list(callback.message, is_callback=True)
+
+        # ------------------ CONTACT MEMORY MANAGEMENT (PHASE 6) ------------------
+        async def _resolve_target_contact(target_str: str) -> Optional[Any]:
+            target_str = target_str.strip()
+            if not target_str:
+                return None
+            if target_str.isdigit():
+                return await self.db_manager.get_contact_by_id(int(target_str))
+            clean = target_str.lstrip("@").strip()
+            return await self.db_manager.get_contact_by_username(clean)
+
+        @dp.message(Command("memory"))
+        async def cmd_memory(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            args = message.text[len("/memory"):].strip()
+            if not args:
+                return await safe_reply(
+                    message,
+                    "ℹ️ <b>Contact Memory Boshqaruvi:</b>\n\n"
+                    "📌 <b>Buyruq formati:</b>\n"
+                    "• <code>/memory @username</code> yoki <code>/memory &lt;user_id&gt;</code> — Kontakt xotirasi ko'rish\n"
+                    "• <code>/memory_facts @username</code> — Kontakt faktlari va ularni tahrirlash\n"
+                    "• <code>/forget @username</code> — Kontakt xotirasini butunlay o'chirish\n\n"
+                    "💡 <b>Misol:</b> <code>/memory @farrux</code>",
+                    parse_mode="HTML",
+                )
+
+            contact = await _resolve_target_contact(args)
+            if not contact:
+                return await safe_reply(
+                    message,
+                    f"❌ <b>'{html.escape(args)}'</b> nomli kontakt /contacts ro'yxatida topilmadi.",
+                    parse_mode="HTML",
+                )
+
+            mem_contact = await self.db_manager.get_mem_contact(contact.user_id)
+            stats = await self.db_manager.get_mem_stats(contact.user_id)
+            summary = await self.db_manager.get_latest_mem_summary(contact.user_id)
+            open_items = await self.db_manager.get_mem_open_items(contact.user_id, status="open")
+
+            status_str = "🟢 Faol" if (mem_contact and mem_contact.memory_enabled) else "⏸ To'xtatilgan"
+            if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
+                status_str += f" (Sabab: {mem_contact.paused_reason})"
+
+            summary_text = summary.summary_text if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
+
+            open_items_text = ""
+            if open_items:
+                open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
+                    [f"• {html.escape(it.text)}" for it in open_items[:5]]
+                )
+
+            report = (
+                f"🧠 <b>KONTAKT XOTIRASI:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
+                f"• <b>Xotira holati:</b> {status_str}\n"
+                f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
+                f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
+                f"• <b>Vektorlar:</b> <code>{stats.get('embeddings', 0)}</code> ta\n\n"
+                f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
+                f"{html.escape(summary_text)}"
+                f"{open_items_text}"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="📋 Faktlarni ko'rish", callback_data=f"mem_facts_view:{contact.user_id}")
+            builder.button(text="🗑 Xotirani o'chirish (/forget)", callback_data=f"mem_forget_prompt:{contact.user_id}")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(2, 1)
+
+            await safe_reply(message, report, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(Command("memory_facts"))
+        async def cmd_memory_facts(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            args = message.text[len("/memory_facts"):].strip()
+            if not args:
+                return await safe_reply(
+                    message,
+                    "ℹ️ <b>Faktlarni boshqarish:</b>\n"
+                    "Format: <code>/memory_facts @username</code> yoki <code>/memory_facts &lt;user_id&gt;</code>",
+                    parse_mode="HTML",
+                )
+            contact = await _resolve_target_contact(args)
+            if not contact:
+                return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(args)}'</b> topilmadi.", parse_mode="HTML")
+
+            facts = await self.db_manager.get_mem_facts(contact.user_id, status="active")
+            if not facts:
+                return await safe_reply(
+                    message,
+                    f"ℹ️ <b>{html.escape(contact.full_name)}</b> uchun saqlangan faol faktlar mavjud emas.",
+                    parse_mode="HTML",
+                )
+
+            builder = InlineKeyboardBuilder()
+            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
+            for f in facts[:10]:
+                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
+                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
+                builder.button(text=f"🗑 #{f.id} ni o'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+
+            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
+            builder.adjust(1)
+
+            await safe_reply(message, "\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(Command("forget"))
+        async def cmd_forget(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            args = message.text[len("/forget"):].strip()
+            if not args:
+                return await safe_reply(
+                    message,
+                    "ℹ️ <b>Xotirani to'liq tozalash:</b>\n"
+                    "Format: <code>/forget @username</code> yoki <code>/forget &lt;user_id&gt;</code>",
+                    parse_mode="HTML",
+                )
+            contact = await _resolve_target_contact(args)
+            if not contact:
+                return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(args)}'</b> topilmadi.", parse_mode="HTML")
+
+            text = (
+                f"⚠️ <b>DIQQAT: Xotirani butunlay o'chirish tasdig'i!</b>\n\n"
+                f"Siz <b>{html.escape(contact.full_name)}</b> (<code>@{contact.username or contact.user_id}</code>) "
+                f"haqidagi barcha xotiralarni to'liq o'chirmoqchimisiz?\n\n"
+                f"• Barcha yozishmalar va xabarlar o'chiriladi\n"
+                f"• Barcha faktlar va ochiq vazifalar o'chiriladi\n"
+                f"• Barcha aylanma xulosalar va vektorlar o'chiriladi\n"
+                f"• Qoralamalar jadvalidagi matnlar bo'shatiladi\n\n"
+                f"<i>Eslatma: Ushbu amal qaytarilmasdir. Eski DB zaxiralari o'zgartirilmaydi.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔥 Ha, xotira butunlay tozalansin", callback_data=f"mem_forget_confirm:{contact.user_id}")
+            builder.button(text="❌ Bekor qilish", callback_data="crm:refresh")
+            builder.adjust(1)
+
+            await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("mem_facts_view:"))
+        async def handle_mem_facts_view(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            contact_user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(contact_user_id)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+            facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
+            if not facts:
+                return await callback.answer("Faol faktlar mavjud emas.", show_alert=True)
+
+            builder = InlineKeyboardBuilder()
+            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
+            for f in facts[:10]:
+                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
+                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
+                builder.button(text=f"🗑 #{f.id} ni o'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+
+            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
+            builder.adjust(1)
+            await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("mem_fact_del:"))
+        async def handle_mem_fact_del(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            contact_user_id = int(parts[1])
+            fact_id = int(parts[2])
+            ok = await self.db_manager.delete_mem_fact(contact_user_id, fact_id)
+            if ok:
+                await callback.answer(f"🗑 #{fact_id} fakt o'chirildi!", show_alert=True)
+            else:
+                await callback.answer("Fakt topilmadi yoki allaqachon o'chirilgan.", show_alert=True)
+
+            contact = await self.db_manager.get_contact_by_id(contact_user_id)
+            if not contact:
+                return await callback.message.edit_text("Kontakt topilmadi.")
+            facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
+            if not facts:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact_user_id}")
+                await callback.message.edit_text("ℹ️ Faol faktlar qolmadi.", reply_markup=builder.as_markup(), parse_mode="HTML")
+                return
+
+            builder = InlineKeyboardBuilder()
+            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
+            for f in facts[:10]:
+                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
+                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
+                builder.button(text=f"🗑 #{f.id} ni o'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+
+            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
+            builder.adjust(1)
+            await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("mem_forget_prompt:"))
+        async def handle_mem_forget_prompt(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(user_id)
+            name = contact.full_name if contact else str(user_id)
+            text = (
+                f"⚠️ <b>DIQQAT: Xotirani butunlay o'chirish tasdig'i!</b>\n\n"
+                f"Siz <b>{html.escape(name)}</b> haqidagi barcha xotiralarni to'liq tozalashni tasdiqlaysizmi?\n\n"
+                f"<i>Eslatma: Ushbu amal qaytarilmasdir. Eski DB zaxiralari o'zgartirilmaydi.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔥 Ha, xotira butunlay tozalansin", callback_data=f"mem_forget_confirm:{user_id}")
+            builder.button(text="❌ Bekor qilish", callback_data=f"mem_back:{user_id}")
+            builder.adjust(1)
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("mem_forget_confirm:"))
+        async def handle_mem_forget_confirm(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            user_id = int(callback.data.split(":")[1])
+            counts = await self.db_manager.wipe_contact_memory(user_id)
+            report = (
+                f"✅ <b>Xotira to'liq o'chirildi!</b>\n\n"
+                f"• O'chirilgan xabarlar: <code>{counts.get('messages', 0)}</code> ta\n"
+                f"• O'chirilgan faktlar: <code>{counts.get('facts', 0)}</code> ta\n"
+                f"• O'chirilgan xulosalar: <code>{counts.get('summaries', 0)}</code> ta\n"
+                f"• O'chirilgan vektorlar: <code>{counts.get('embeddings', 0)}</code> ta\n"
+                f"• Tozalangan qoralamalar: <code>{counts.get('drafts_blanked', 0)}</code> ta\n\n"
+                f"<i>Eslatma: Eski DB zaxiralari o'zgartirilmaydi.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            await callback.message.edit_text(report, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("mem_back:"))
+        async def handle_mem_back(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(user_id)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+            mem_contact = await self.db_manager.get_mem_contact(contact.user_id)
+            stats = await self.db_manager.get_mem_stats(contact.user_id)
+            summary = await self.db_manager.get_latest_mem_summary(contact.user_id)
+            open_items = await self.db_manager.get_mem_open_items(contact.user_id, status="open")
+
+            status_str = "🟢 Faol" if (mem_contact and mem_contact.memory_enabled) else "⏸ To'xtatilgan"
+            if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
+                status_str += f" (Sabab: {mem_contact.paused_reason})"
+
+            summary_text = summary.summary_text if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
+            open_items_text = ""
+            if open_items:
+                open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
+                    [f"• {html.escape(it.text)}" for it in open_items[:5]]
+                )
+
+            report = (
+                f"🧠 <b>KONTAKT XOTIRASI:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
+                f"• <b>Xotira holati:</b> {status_str}\n"
+                f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
+                f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
+                f"• <b>Vektorlar:</b> <code>{stats.get('embeddings', 0)}</code> ta\n\n"
+                f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
+                f"{html.escape(summary_text)}"
+                f"{open_items_text}"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="📋 Faktlarni ko'rish", callback_data=f"mem_facts_view:{contact.user_id}")
+            builder.button(text="🗑 Xotirani o'chirish (/forget)", callback_data=f"mem_forget_prompt:{contact.user_id}")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(2, 1)
+
+            await callback.message.edit_text(report, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.callback_query(F.data.startswith("task_send:"))
         async def handle_task_send_now(callback: types.CallbackQuery):
