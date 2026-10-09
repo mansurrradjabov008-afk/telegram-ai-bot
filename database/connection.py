@@ -162,6 +162,9 @@ async def get_db(db_path: Path = None) -> AsyncGenerator[aiosqlite.Connection, N
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON;")
+        await db.execute("PRAGMA journal_mode = WAL;")
+        await db.execute("PRAGMA busy_timeout = 5000;")
+        await db.execute("PRAGMA synchronous = NORMAL;")
         yield db
 
 
@@ -172,6 +175,9 @@ async def init_db(db_path: Path = None):
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA foreign_keys = ON;")
+        await db.execute("PRAGMA journal_mode = WAL;")
+        await db.execute("PRAGMA busy_timeout = 5000;")
+        await db.execute("PRAGMA synchronous = NORMAL;")
         await db.executescript(DB_SCHEMA)
 
         # Baseline schema version

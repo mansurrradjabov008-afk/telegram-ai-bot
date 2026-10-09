@@ -8,7 +8,7 @@ import html
 import logging
 import re
 from datetime import datetime, timedelta
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
 import pytz
 
 from aiogram import Bot, Dispatcher, F, types
@@ -100,38 +100,104 @@ def format_task_time_human(iso_str: str, tz) -> str:
         return iso_str
 
 
-async def safe_reply(message: types.Message, text: str, reply_markup=None, parse_mode: Optional[str] = "HTML") -> Optional[types.Message]:
-    """Sends a reply safely; if formatting fails, automatically falls back to plain text."""
-    try:
-        return await message.reply(text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except TelegramBadRequest as e:
-        logger.warning(f"Telegram parse error on reply ({e}), sending plain text...")
-        clean_text = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "").replace("<i>", "").replace("</i>", "")
-        try:
-            return await message.reply(clean_text, reply_markup=reply_markup, parse_mode=None)
-        except Exception as e2:
-            logger.error(f"Fallback reply also failed: {e2}")
-            return None
-    except Exception as e:
-        logger.error(f"Unexpected error in safe_reply: {e}")
-        return None
+def split_telegram_text(text: str, max_chars: int = 3800) -> List[str]:
+    """Splits text safely by lines or character boundaries into chunks under max_chars."""
+    if not text:
+        return [""]
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    curr = ""
+    for line in text.split("\n"):
+        if len(line) > max_chars:
+            if curr:
+                chunks.append(curr.rstrip("\n"))
+                curr = ""
+            for i in range(0, len(line), max_chars):
+                chunks.append(line[i : i + max_chars])
+        elif len(curr) + len(line) + 1 > max_chars:
+            chunks.append(curr.rstrip("\n"))
+            curr = line + "\n"
+        else:
+            curr += line + "\n"
+    if curr:
+        chunks.append(curr.rstrip("\n"))
+    return [c for c in chunks if c.strip()] or [text[:max_chars]]
 
 
-async def safe_send(bot: Bot, chat_id: int, text: str, reply_markup=None, parse_mode: Optional[str] = "HTML") -> Optional[types.Message]:
-    """Sends a message safely; if formatting fails, automatically falls back to plain text."""
-    try:
-        return await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except TelegramBadRequest as e:
-        logger.warning(f"Telegram parse error on send ({e}), sending plain text...")
-        clean_text = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "").replace("<i>", "").replace("</i>", "")
-        try:
-            return await bot.send_message(chat_id=chat_id, text=clean_text, reply_markup=reply_markup, parse_mode=None)
-        except Exception as e2:
-            logger.error(f"Fallback send also failed: {e2}")
-            return None
-    except Exception as e:
-        logger.error(f"Unexpected error in safe_send: {e}")
+async def safe_reply(
+    message: types.Message,
+    text: str,
+    reply_markup=None,
+    parse_mode: Optional[str] = "HTML",
+) -> Optional[types.Message]:
+    """Sends a reply safely; if text is long, splits into chunks; if formatting fails, falls back to plain text."""
+    if not message:
         return None
+    chunks = split_telegram_text(text, max_chars=3800)
+    first_msg = None
+    for idx, chunk in enumerate(chunks):
+        markup = reply_markup if idx == len(chunks) - 1 else None
+        if idx == 0:
+            try:
+                first_msg = await message.reply(chunk, reply_markup=markup, parse_mode=parse_mode)
+            except TelegramBadRequest as e:
+                logger.warning(f"Telegram parse error on reply ({e}), sending plain text...")
+                clean_chunk = (
+                    chunk.replace("<b>", "")
+                    .replace("</b>", "")
+                    .replace("<code>", "")
+                    .replace("</code>", "")
+                    .replace("<i>", "")
+                    .replace("</i>", "")
+                )
+                try:
+                    first_msg = await message.reply(clean_chunk, reply_markup=markup, parse_mode=None)
+                except Exception as e2:
+                    logger.error(f"Fallback reply also failed: {e2}")
+            except Exception as e:
+                logger.error(f"Unexpected error in safe_reply: {e}")
+        else:
+            bot = message.bot
+            if bot:
+                await safe_send(bot, message.chat.id, chunk, reply_markup=markup, parse_mode=parse_mode)
+    return first_msg
+
+
+async def safe_send(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    reply_markup=None,
+    parse_mode: Optional[str] = "HTML",
+) -> Optional[types.Message]:
+    """Sends a message safely; if text is long, splits into chunks; if formatting fails, falls back to plain text."""
+    if not bot:
+        return None
+    chunks = split_telegram_text(text, max_chars=3800)
+    last_msg = None
+    for idx, chunk in enumerate(chunks):
+        markup = reply_markup if idx == len(chunks) - 1 else None
+        try:
+            last_msg = await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup, parse_mode=parse_mode)
+        except TelegramBadRequest as e:
+            logger.warning(f"Telegram parse error on send ({e}), sending plain text...")
+            clean_chunk = (
+                chunk.replace("<b>", "")
+                .replace("</b>", "")
+                .replace("<code>", "")
+                .replace("</code>", "")
+                .replace("<i>", "")
+                .replace("</i>", "")
+            )
+            try:
+                last_msg = await bot.send_message(chat_id=chat_id, text=clean_chunk, reply_markup=markup, parse_mode=None)
+            except Exception as e2:
+                logger.error(f"Fallback send also failed: {e2}")
+        except Exception as e:
+            logger.error(f"Unexpected error in safe_send: {e}")
+    return last_msg
 
 
 async def safe_reply_or_send_long(
@@ -139,28 +205,43 @@ async def safe_reply_or_send_long(
     text: str,
     reply_markup=None,
 ):
-    """Sends text splitting nicely across 4000 character chunks if needed."""
-    if len(text) <= 4000:
-        return await safe_reply(message, text, reply_markup=reply_markup, parse_mode="HTML")
+    """Sends text splitting nicely across chunks if needed."""
+    return await safe_reply(message, text, reply_markup=reply_markup, parse_mode="HTML")
 
-    lines = text.split("\n")
-    chunks = []
-    curr = ""
-    for line in lines:
-        if len(curr) + len(line) + 1 > 3800:
-            chunks.append(curr)
-            curr = line + "\n"
-        else:
-            curr += line + "\n"
-    if curr:
-        chunks.append(curr)
 
-    for i, c in enumerate(chunks):
-        markup = reply_markup if i == len(chunks) - 1 else None
-        if i == 0:
-            await safe_reply(message, c.strip(), reply_markup=markup, parse_mode="HTML")
-        else:
-            await message.answer(c.strip(), reply_markup=markup, parse_mode="HTML")
+async def safe_edit(
+    message: types.Message,
+    text: str,
+    reply_markup=None,
+    parse_mode: Optional[str] = "HTML",
+) -> Optional[types.Message]:
+    """Edits message safely; catches 'message is not modified', parse errors, and falls back to plain text."""
+    if not message:
+        return None
+    try:
+        return await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest as e:
+        err_msg = str(e).lower()
+        if "message is not modified" in err_msg:
+            return message
+        logger.warning(f"Telegram parse/edit error ({e}), falling back to plain text...")
+        clean_text = (
+            text.replace("<b>", "")
+            .replace("</b>", "")
+            .replace("<code>", "")
+            .replace("</code>", "")
+            .replace("<i>", "")
+            .replace("</i>", "")
+        )
+        try:
+            return await message.edit_text(clean_text, reply_markup=reply_markup, parse_mode=None)
+        except Exception:
+            return None
+    except Exception as e:
+        logger.error(f"Unexpected error in safe_edit: {e}")
+        return None
+
+
 
 
 USERNAME_REGEX = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
@@ -311,7 +392,7 @@ class AdminBotService:
             if not self.digest_service:
                 text = "❌ <b>Digest xizmati ulanmagan.</b>"
                 if is_callback:
-                    return await target_msg.edit_text(text, parse_mode="HTML")
+                    return await safe_edit(target_msg, text, parse_mode="HTML")
                 return await safe_reply(target_msg, text, parse_mode="HTML")
 
             sources = await self.digest_service.list_sources_summary()
@@ -329,7 +410,7 @@ class AdminBotService:
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
                 builder.adjust(1, 1)
                 if is_callback:
-                    return await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                    return await safe_edit(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 return await safe_reply(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
             lines = [
@@ -365,7 +446,7 @@ class AdminBotService:
             )
 
             if is_callback:
-                await target_msg.edit_text(content, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await safe_edit(target_msg, content, reply_markup=builder.as_markup(), parse_mode="HTML")
             else:
                 await safe_reply(target_msg, content, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -386,9 +467,9 @@ class AdminBotService:
                         await target_msg.edit_text(loading_text, parse_mode="HTML")
                         active_msg = target_msg
                     except Exception:
-                        active_msg = await target_msg.answer(loading_text, parse_mode="HTML")
+                        active_msg = await safe_reply(target_msg, loading_text, parse_mode="HTML") or target_msg
                 else:
-                    active_msg = await target_msg.reply(loading_text, parse_mode="HTML")
+                    active_msg = await safe_reply(target_msg, loading_text, parse_mode="HTML") or target_msg
 
                 try:
                     summary, count = await self.digest_service.generate_digest(force_recent=force_recent)
@@ -445,9 +526,9 @@ class AdminBotService:
                     await target_msg.edit_text(loading_text, parse_mode="HTML")
                     active_msg = target_msg
                 except Exception:
-                    active_msg = await target_msg.answer(loading_text, parse_mode="HTML")
+                    active_msg = await safe_reply(target_msg, loading_text, parse_mode="HTML") or target_msg
             else:
-                active_msg = await target_msg.reply(loading_text, parse_mode="HTML")
+                active_msg = await safe_reply(target_msg, loading_text, parse_mode="HTML") or target_msg
 
             try:
                 res = await self.digest_service.run_smart_digest(trigger="manual", topic_filter=topic_filter)
@@ -511,8 +592,11 @@ class AdminBotService:
                             pass
                     if idx == 0 and not is_callback:
                         await safe_reply(active_msg, m, reply_markup=markup, parse_mode="HTML")
-                    else:
-                        await active_msg.answer(m, reply_markup=markup, parse_mode="HTML")
+                    elif idx > 0:
+                        if self.bot and getattr(active_msg, "chat", None):
+                            await safe_send(self.bot, active_msg.chat.id, m, reply_markup=markup, parse_mode="HTML")
+                        else:
+                            await safe_reply(active_msg, m, reply_markup=markup, parse_mode="HTML")
 
             except Exception as e:
                 logger.error(f"Smart Digest V2 execution failed: {e}", exc_info=True)
@@ -555,11 +639,9 @@ class AdminBotService:
             builder.adjust(nav_count, 3)
 
             if is_callback:
-                try:
-                    await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                res = await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                if res:
                     return
-                except Exception:
-                    pass
             await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         async def _render_digest_stats(
@@ -618,11 +700,9 @@ class AdminBotService:
             builder.adjust(2, 2)
 
             if is_callback:
-                try:
-                    await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                res = await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                if res:
                     return
-                except Exception:
-                    pass
             await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.message(Command("digest"))

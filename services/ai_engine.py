@@ -3,6 +3,7 @@ AI Engine powered by Google Gemini with multi-model fallback,
 rich conversational vocabulary, and strict anti-repetition guardrails.
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -76,6 +77,42 @@ class AIEngine:
                 models.append(m)
         return models
 
+    async def _call_gemini_raw(
+        self,
+        model: str,
+        prompt: str,
+        temperature: float = 0.0,
+        response_mime_type: Optional[str] = None,
+        timeout: float = 25.0,
+    ) -> str:
+        """
+        Executes a single Gemini content generation call safely off the main event loop
+        in a background worker thread with a strict timeout.
+        """
+        if not self._client:
+            raise RuntimeError("Gemini client is not initialized.")
+
+        def _sync_call() -> str:
+            if NEW_SDK:
+                config_kwargs: Dict[str, Any] = {"temperature": temperature}
+                if response_mime_type:
+                    config_kwargs["response_mime_type"] = response_mime_type
+                resp = self._client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
+                return getattr(resp, "text", "") or ""
+            else:
+                mod = genai.GenerativeModel(model)
+                gen_config: Dict[str, Any] = {"temperature": temperature}
+                if response_mime_type:
+                    gen_config["response_mime_type"] = response_mime_type
+                resp = mod.generate_content(prompt, generation_config=gen_config)
+                return getattr(resp, "text", "") or ""
+
+        return await asyncio.wait_for(asyncio.to_thread(_sync_call), timeout=timeout)
+
     async def classify_incoming_message(
         self,
         incoming_text: str,
@@ -130,25 +167,16 @@ Return JSON strictly matching this schema:
 
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=f"{system_prompt}\n\n{user_content}",
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            temperature=0.2,
-                        ),
-                    )
-                    text = response.text
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(
-                        f"{system_prompt}\n\n{user_content}",
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.2},
-                    )
-                    text = response.text
-
-                data = json.loads(text)
+                full_prompt = f"{system_prompt}\n\n{user_content}"
+                raw_text = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=full_prompt,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                )
+                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text.strip())
+                raw_text = re.sub(r"\s*```$", "", raw_text)
+                data = json.loads(raw_text)
                 return ClassificationResult(**data)
             except Exception as e:
                 logger.warning(f"Classification failed on model {candidate_model}: {e}")
@@ -246,20 +274,12 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
 
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.85),
-                    )
-                    reply = response.text.strip()
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(
-                        prompt,
-                        generation_config={"temperature": 0.85},
-                    )
-                    reply = response.text.strip()
+                reply = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.85,
+                )
+                reply = reply.strip()
 
                 # Clean any quotes if generated
                 if reply.startswith('"') and reply.endswith('"'):
@@ -313,22 +333,13 @@ Respond with STRICT JSON ONLY in this exact format:
 """
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(temperature=0.0),
-                    )
-                    raw_text = response.text.strip()
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(
-                        prompt,
-                        generation_config={"temperature": 0.0},
-                    )
-                    raw_text = response.text.strip()
-
-                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+                raw_text = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                )
+                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text.strip())
                 raw_text = re.sub(r"\s*```$", "", raw_text)
                 parsed = json.loads(raw_text)
                 if isinstance(parsed, dict) and "sensitive" in parsed:
@@ -377,16 +388,13 @@ Postlar ro'yxati:
 """
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=prompt,
-                    )
-                    return response.text.strip()
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(prompt)
-                    return response.text.strip()
+                raw_text = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.2,
+                )
+                if raw_text:
+                    return raw_text.strip()
             except Exception as e:
                 logger.warning(f"Digest generation failed on model {candidate_model}: {e}")
                 continue
@@ -444,27 +452,14 @@ Agar matn xabar rejalashtirish haqida bo'lmasa yoki qabul qiluvchi umuman ko'rsa
 
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            temperature=0.1,
-                        ),
-                    )
-                    raw = response.text.strip()
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(
-                        prompt,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "temperature": 0.1,
-                        },
-                    )
-                    raw = response.text.strip()
-
+                raw = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                )
+                raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+                raw = re.sub(r"\s*```$", "", raw)
                 data = json.loads(raw)
                 if data.get("is_schedule") and data.get("target_peer") and data.get("scheduled_iso") and data.get("message_text"):
                     return data
@@ -525,27 +520,14 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
 """
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            temperature=0.1,
-                        ),
-                    )
-                    raw = response.text.strip()
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(
-                        prompt,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "temperature": 0.1,
-                        },
-                    )
-                    raw = response.text.strip()
-
+                raw = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.1,
+                    response_mime_type="application/json",
+                )
+                raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+                raw = re.sub(r"\s*```$", "", raw)
                 data = json.loads(raw)
                 if data.get("is_crm") and data.get("username"):
                     return data
@@ -571,26 +553,14 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
 
         for candidate_model in self._get_candidate_models():
             try:
-                if NEW_SDK:
-                    response = self._client.models.generate_content(
-                        model=candidate_model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            temperature=temperature,
-                        ),
-                    )
-                    return response.text.strip()
-                else:
-                    mod = genai.GenerativeModel(candidate_model)
-                    response = mod.generate_content(
-                        prompt,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "temperature": temperature,
-                        },
-                    )
-                    return response.text.strip()
+                raw_text = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=temperature,
+                    response_mime_type="application/json",
+                )
+                if raw_text:
+                    return raw_text.strip()
             except Exception as e:
                 logger.warning(f"generate_json_response failed on model {candidate_model}: {e}")
                 continue

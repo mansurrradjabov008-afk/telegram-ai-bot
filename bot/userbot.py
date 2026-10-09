@@ -440,7 +440,10 @@ class UserbotService:
 
         logger.info(f"Userbot sending direct message to {target_peer}: '{message_text}'")
         peer_target = int(target_peer) if (isinstance(target_peer, str) and target_peer.lstrip("-").isdigit()) else target_peer
-        entity = await self.client.get_input_entity(peer_target)
+        try:
+            entity = await self.client.get_entity(peer_target)
+        except Exception:
+            entity = await self.client.get_input_entity(peer_target)
 
         # Human-like typing delay
         typing_duration = self.rate_limiter.calculate_typing_duration(message_text)
@@ -451,10 +454,12 @@ class UserbotService:
             logger.warning(f"Typing simulation failed for {target_peer}: {e}")
             await asyncio.sleep(typing_duration)
 
-        await self._send_with_floodwait(entity, message_text)
+        sent_msg = await self._send_with_floodwait(entity, message_text)
+        if not sent_msg:
+            raise RuntimeError(f"Xabar '{target_peer}' ga yetkazilmadi (FloodWait yoki tarmoq xatosi).")
 
         # Log to DB
-        chat_id = getattr(entity, "user_id", 0) or 0
+        chat_id = getattr(entity, "id", None) or getattr(entity, "user_id", 0) or 0
         await self.db_manager.log_message(
             chat_id=chat_id,
             sender_name="Men (AI Butler Reja)",
