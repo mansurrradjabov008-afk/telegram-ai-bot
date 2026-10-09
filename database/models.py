@@ -87,6 +87,7 @@ class DigestSource:
     peer_type: str = "channel"  # channel or group
     is_active: bool = True
     added_at: Optional[str] = None
+    priority: int = 1
 
 
 @dataclass
@@ -120,6 +121,12 @@ class DigestRun:
     trigger: str = "manual"  # manual or scheduled
     status: str = "in_progress"  # in_progress, completed, failed
     stats_json: Optional[str] = None
+    posts_collected: int = 0
+    posts_filtered: int = 0
+    posts_classified: int = 0
+    items_in_digest: int = 0
+    ai_calls_count: int = 0
+    duration_seconds: float = 0.0
 
 
 @dataclass

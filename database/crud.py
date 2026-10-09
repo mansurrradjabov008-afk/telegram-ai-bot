@@ -467,24 +467,26 @@ class DatabaseManager:
         self,
         peer_id: int,
         title: str,
-        peer_type: str,
+        peer_type: str = "channel",
         username: Optional[str] = None,
+        priority: int = 1,
     ) -> DigestSource:
         """Add or update a whitelisted source for Smart Digest V2."""
         if username and username.startswith("@"):
             username = username[1:]
 
         query = """
-        INSERT INTO digest_sources (peer_id, title, username, peer_type, is_active, added_at)
-        VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        INSERT INTO digest_sources (peer_id, title, username, peer_type, priority, is_active, added_at)
+        VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
         ON CONFLICT(peer_id) DO UPDATE SET
             title = excluded.title,
             username = COALESCE(excluded.username, digest_sources.username),
             peer_type = excluded.peer_type,
+            priority = excluded.priority,
             is_active = 1;
         """
         async with get_db(self.db_path) as db:
-            await db.execute(query, (peer_id, title, username, peer_type))
+            await db.execute(query, (peer_id, title, username, peer_type, priority))
             await db.commit()
 
         source = await self.get_digest_source_by_peer_id(peer_id)
@@ -509,7 +511,7 @@ class DatabaseManager:
         query = "SELECT * FROM digest_sources"
         if active_only:
             query += " WHERE is_active = 1"
-        query += " ORDER BY added_at ASC"
+        query += " ORDER BY priority DESC, added_at ASC"
 
         async with get_db(self.db_path) as db:
             async with db.execute(query) as cursor:
@@ -665,18 +667,103 @@ class DatabaseManager:
         run_id: int,
         status: str = "completed",
         stats: Optional[Dict[str, Any]] = None,
+        duration_seconds: float = 0.0,
     ) -> bool:
-        """Marks a digest run as finished and records stats JSON."""
+        """Marks a digest run as finished and records stats JSON and telemetry metrics."""
         stats_json = json.dumps(stats, ensure_ascii=False, default=str) if stats else None
+
+        posts_collected = 0
+        posts_filtered = 0
+        posts_classified = 0
+        items_in_digest = 0
+        ai_calls_count = 0
+
+        if stats:
+            posts_collected = stats.get("total_collected", 0)
+            posts_filtered = stats.get("spam_filtered", 0) + stats.get("duplicates_filtered", 0)
+            posts_classified = stats.get("classified_count", 0)
+            items_in_digest = stats.get("total_items_selected", 0)
+            ai_calls_count = (
+                stats.get("classification", {}).get("ai_calls_made", 0)
+                + stats.get("ai_calls_made", 0)
+            )
+
         query = """
         UPDATE digest_runs 
-        SET finished_at = CURRENT_TIMESTAMP, status = ?, stats_json = ? 
+        SET finished_at = CURRENT_TIMESTAMP,
+            status = ?,
+            stats_json = ?,
+            posts_collected = ?,
+            posts_filtered = ?,
+            posts_classified = ?,
+            items_in_digest = ?,
+            ai_calls_count = ?,
+            duration_seconds = ?
         WHERE id = ?
         """
         async with get_db(self.db_path) as db:
-            cursor = await db.execute(query, (status, stats_json, run_id))
+            cursor = await db.execute(
+                query,
+                (
+                    status,
+                    stats_json,
+                    posts_collected,
+                    posts_filtered,
+                    posts_classified,
+                    items_in_digest,
+                    ai_calls_count,
+                    duration_seconds,
+                    run_id,
+                ),
+            )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def get_digest_stats_summary(self) -> Dict[str, Any]:
+        """
+        Calculates summary metrics for /digest stats:
+        - Last run: time, posts collected, items delivered, spam dropped, ai calls, duration
+        - Average run duration over last 7 runs
+        - Total active sources count
+        """
+        async with get_db(self.db_path) as db:
+            # 1. Last run
+            last_run_query = """
+            SELECT * FROM digest_runs 
+            WHERE status IN ('completed', 'partial')
+            ORDER BY id DESC LIMIT 1
+            """
+            async with db.execute(last_run_query) as cur:
+                last_run_row = await cur.fetchone()
+                last_run = dict(last_run_row) if last_run_row else None
+
+            # 2. Last 7 runs duration
+            durations_query = """
+            SELECT duration_seconds FROM digest_runs 
+            WHERE status IN ('completed', 'partial') AND duration_seconds > 0
+            ORDER BY id DESC LIMIT 7
+            """
+            async with db.execute(durations_query) as cur:
+                rows = await cur.fetchall()
+                durations = [r["duration_seconds"] for r in rows if r["duration_seconds"]]
+                avg_duration = sum(durations) / len(durations) if durations else 0.0
+
+            # 3. Active sources count
+            async with db.execute("SELECT COUNT(*) as cnt FROM digest_sources WHERE is_active = 1") as cur:
+                src_row = await cur.fetchone()
+                active_sources = src_row["cnt"] if src_row else 0
+
+            # 4. Total runs count
+            async with db.execute("SELECT COUNT(*) as cnt FROM digest_runs") as cur:
+                total_runs_row = await cur.fetchone()
+                total_runs = total_runs_row["cnt"] if total_runs_row else 0
+
+            return {
+                "last_run": last_run,
+                "avg_duration_last_7": avg_duration,
+                "active_sources_count": active_sources,
+                "total_runs_count": total_runs,
+            }
 
     async def get_latest_digest_run(self) -> Optional[DigestRun]:
         """Fetch the most recent digest run."""

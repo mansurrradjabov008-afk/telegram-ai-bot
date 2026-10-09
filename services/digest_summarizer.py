@@ -343,6 +343,11 @@ class DigestSummarizer:
         if topic == "F":
             approved_items = self.sort_section_f_items(approved_items)
 
+        if len(approved_items) > limit:
+            excess = len(approved_items) - limit
+            skipped_count += excess
+            approved_items = approved_items[:limit]
+
         return (approved_items, discarded_posts, skipped_count)
 
     async def process_all_topics(

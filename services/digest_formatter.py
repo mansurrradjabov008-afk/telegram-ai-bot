@@ -165,6 +165,7 @@ class DigestFormatter:
         spam_count: int = 0,
         discarded_by_verification: int = 0,
         skipped_by_limit: int = 0,
+        failed_batches: int = 0,
         failed_topics: Optional[List[str]] = None,
     ) -> str:
         """Formats Smart Digest V2 footer."""
@@ -175,6 +176,8 @@ class DigestFormatter:
         ]
         if skipped_by_limit > 0:
             lines.append(f"⚠️ <i>Limit sababli kiritilmagan: {skipped_by_limit} ta</i>")
+        if failed_batches > 0:
+            lines.append(f"⚠️ <i>Muvaffaqiyatsiz batch'lar: {failed_batches} ta</i>")
 
         if failed_topics:
             safe_failed = ", ".join([html.escape(t) for t in failed_topics])
@@ -191,6 +194,7 @@ class DigestFormatter:
         spam_count: int = 0,
         discarded_by_verification: int = 0,
         skipped_by_limit: int = 0,
+        failed_batches: int = 0,
         failed_topics: Optional[List[str]] = None,
         target_date: Optional[datetime] = None,
     ) -> List[str]:
@@ -200,7 +204,13 @@ class DigestFormatter:
         Splits at section or item boundaries.
         """
         header = cls.format_header(analyzed_count, selected_count, target_date)
-        footer = cls.format_footer(spam_count, discarded_by_verification, skipped_by_limit, failed_topics)
+        footer = cls.format_footer(
+            spam_count=spam_count,
+            discarded_by_verification=discarded_by_verification,
+            skipped_by_limit=skipped_by_limit,
+            failed_batches=failed_batches,
+            failed_topics=failed_topics,
+        )
 
         messages: List[str] = []
         current_msg = header

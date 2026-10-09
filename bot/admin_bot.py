@@ -548,6 +548,69 @@ class AdminBotService:
                     pass
             await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
+        async def _render_digest_stats(
+            target_msg: types.Message,
+            is_callback: bool = False,
+        ):
+            if not self.digest_service:
+                return await safe_reply(target_msg, "❌ <b>Digest xizmati ulanmagan.</b>", parse_mode="HTML")
+
+            summary = await self.db_manager.get_digest_stats_summary()
+            last_run = summary.get("last_run")
+            avg_duration = summary.get("avg_duration_last_7", 0.0)
+            active_sources = summary.get("active_sources_count", 0)
+
+            tz = pytz.timezone(settings.TIMEZONE)
+            if last_run and last_run.get("started_at"):
+                try:
+                    raw_st = str(last_run["started_at"])
+                    if "T" in raw_st:
+                        dt_obj = datetime.fromisoformat(raw_st.replace("Z", "+00:00"))
+                    else:
+                        dt_obj = datetime.strptime(raw_st, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    loc_dt = dt_obj.astimezone(tz)
+                    last_run_time = loc_dt.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    last_run_time = str(last_run.get("started_at"))
+            else:
+                last_run_time = "Mavjud emas"
+
+            posts_analyzed = last_run.get("posts_collected", 0) if last_run else 0
+            items_delivered = last_run.get("items_in_digest", 0) if last_run else 0
+            spam_dropped = last_run.get("posts_filtered", 0) if last_run else 0
+            ai_calls = last_run.get("ai_calls_count", 0) if last_run else 0
+            last_dur = last_run.get("duration_seconds", 0.0) if last_run else 0.0
+
+            text = (
+                "📊 <b>SMART DIGEST V2 — STATISTIKA VA TELEMETRIYA</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"⏱ <b>So'nggi tahlil vaqti:</b> <code>{last_run_time}</code>\n"
+                f"📥 <b>Tahlil qilingan postlar:</b> <code>{posts_analyzed}</code> ta\n"
+                f"🎯 <b>Digestga kiritilgan xulosalar:</b> <code>{items_delivered}</code> ta\n"
+                f"🛡 <b>Tozalangan reklama/spam:</b> <code>{spam_dropped}</code> ta\n"
+                f"🤖 <b>AI so'rovlari:</b> <code>{ai_calls}</code> ta\n"
+                f"⚡️ <b>Oxirgi generatsiya davomiyligi:</b> <code>{last_dur:.1f}</code> soniya\n"
+                f"📈 <b>O'rtacha davomiylik (so'nggi 7 ta run):</b> <code>{avg_duration:.1f}</code> soniya\n\n"
+                f"📡 <b>Kuzatilayotgan faol manbalar:</b> <code>{active_sources}</code> ta\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>Har kuni soat {settings.DIGEST_TIME} da avtomatik yuboriladi.</i>"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="📰 Yangi Digest", callback_data="digest:open")
+            builder.button(text="🔄 Yangilash", callback_data="digest:stats")
+            builder.button(text="📋 Manbalar", callback_data="digest_sources:list")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(2, 2)
+
+            if is_callback:
+                try:
+                    await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                    return
+                except Exception:
+                    pass
+            await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
         @dp.message(Command("digest"))
         async def cmd_digest(message: types.Message):
             if not self._is_admin(message.from_user.id):
@@ -557,7 +620,10 @@ class AdminBotService:
             parts = raw_text.split(maxsplit=2)
             subcmd = parts[1].lower() if len(parts) > 1 else ""
 
-            if subcmd == "sources":
+            if subcmd == "stats":
+                await _render_digest_stats(message, is_callback=False)
+                return
+            elif subcmd == "sources":
                 await _render_digest_sources(message, is_callback=False)
                 return
             elif subcmd == "add":
@@ -1663,23 +1729,7 @@ class AdminBotService:
                 await _render_digest_debug(callback.message, page=0, is_callback=True)
             elif action == "stats":
                 await callback.answer()
-                stats = await self.digest_service.get_stats() if self.digest_service else {}
-                total = stats.get("total_posts", 0)
-                unsum = stats.get("unsummarized", 0)
-                sources = stats.get("unique_sources", 0)
-                text = (
-                    "📊 <b>TELEGRAM KANAL VA GURUHLAR STATISTIKASI:</b>\n\n"
-                    f"• <b>Jami yig'ilgan xabarlar:</b> <code>{total}</code> ta\n"
-                    f"• <b>Tahlil qilinmagan xabarlar:</b> <code>{unsum}</code> ta\n"
-                    f"• <b>Kuzatilayotgan manbalar soni:</b> <code>{sources}</code> ta kanal/guruh\n\n"
-                    "<i>Userbot profilingiz a'zo bo'lgan barcha kanal va guruhlardagi postlarni tahlil uchun yig'ib boradi.</i>"
-                )
-                builder = InlineKeyboardBuilder()
-                builder.button(text="📰 Yangi Digest", callback_data="digest:open")
-                builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
-                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(2, 1)
-                await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await _render_digest_stats(callback.message, is_callback=True)
 
         @dp.callback_query(F.data.startswith("digest_debug:page:"))
         async def handle_digest_debug_page(callback: types.CallbackQuery):

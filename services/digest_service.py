@@ -4,10 +4,18 @@ Monitors feeds, triggers instant alerts on critical keywords, and provides sched
 Includes Smart Digest V2 sources whitelist, post collection, and storage pipelines.
 """
 
+import asyncio
 import html
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Callable, Optional, Dict, Any, Tuple
+
+try:
+    from telethon.errors import FloodWaitError
+except ImportError:
+    class FloodWaitError(Exception):
+        seconds = 0
 
 from config import settings
 from database.crud import DatabaseManager
@@ -297,6 +305,7 @@ class DigestService:
             }
 
         sources = await self.db_manager.list_digest_sources(active_only=True)
+        start_time = asyncio.get_event_loop().time()
         run_id = await self.db_manager.create_digest_run(trigger=trigger)
 
         stats: Dict[str, Any] = {
@@ -307,14 +316,19 @@ class DigestService:
             "sources_count": len(sources),
             "per_source": {},
             "errors": [],
+            "duration_seconds": 0.0,
+            "ai_calls_made": 0,
         }
 
-        try:
-            from telethon.errors import FloodWaitError
-        except ImportError:
-            FloodWaitError = Exception
-
         for source in sources:
+            if stats["total_collected"] >= settings.MAX_POSTS_PER_RUN:
+                logger.info(
+                    f"Reached MAX_POSTS_PER_RUN limit ({settings.MAX_POSTS_PER_RUN}). "
+                    f"Prioritizing {len(stats['per_source'])} higher-priority sources."
+                )
+                stats["limit_reached"] = True
+                break
+
             source_collected = 0
             source_status = "ok"
             try:
@@ -338,21 +352,27 @@ class DigestService:
                         if msg_date < cutoff_time:
                             break
 
-                    raw_text = (getattr(msg, "message", None) or getattr(msg, "text", None) or "").strip()
+                    raw_msg = getattr(msg, "message", None)
+                    if not isinstance(raw_msg, str):
+                        raw_msg = getattr(msg, "text", None)
+                    raw_text = raw_msg.strip() if isinstance(raw_msg, str) else ""
                     if not raw_text:
                         # Skip empty post (e.g. photos without caption, service messages)
                         continue
 
                     # Forward info
                     orig_source = None
-                    if getattr(msg, "forward", None):
-                        fwd = msg.forward
-                        if getattr(fwd, "chat", None):
-                            orig_source = getattr(fwd.chat, "title", None)
-                        elif getattr(fwd, "sender", None):
-                            orig_source = getattr(fwd.sender, "first_name", None)
-                        elif getattr(fwd, "from_name", None):
-                            orig_source = fwd.from_name
+                    fwd = getattr(msg, "forward", None)
+                    if fwd:
+                        chat = getattr(fwd, "chat", None)
+                        sender = getattr(fwd, "sender", None)
+                        from_name = getattr(fwd, "from_name", None)
+                        if chat and isinstance(getattr(chat, "title", None), str):
+                            orig_source = chat.title
+                        elif sender and isinstance(getattr(sender, "first_name", None), str):
+                            orig_source = sender.first_name
+                        elif isinstance(from_name, str):
+                            orig_source = from_name
 
                     msg_date_str = msg.date.isoformat() if getattr(msg, "date", None) else datetime.utcnow().isoformat()
                     link = self.build_post_link(source.peer_id, msg.id, source.username)
@@ -447,9 +467,22 @@ class DigestService:
         stats["failed_topics"] = summary_stats.get("failed_topics", [])
         stats["skipped_by_limit_count"] = summary_stats.get("skipped_by_limit_count", 0)
 
-        # Finish run in DB
+        # Calculate execution duration
+        duration_seconds = max(0.01, asyncio.get_event_loop().time() - start_time)
+        stats["duration_seconds"] = duration_seconds
+        stats["ai_calls_made"] = (
+            classification_stats.get("ai_calls_made", 0)
+            + summary_stats.get("ai_calls_made", 0)
+        )
+
+        # Finish run in DB with telemetry metrics
         run_status = "completed" if not stats["errors"] else ("partial" if stats["total_collected"] > 0 else "failed")
-        await self.db_manager.finish_digest_run(run_id, status=run_status, stats=stats)
+        await self.db_manager.finish_digest_run(
+            run_id=run_id,
+            status=run_status,
+            stats=stats,
+            duration_seconds=duration_seconds,
+        )
 
         return stats
 
@@ -637,6 +670,7 @@ class DigestService:
                     spam_count=stats.get("spam_filtered", 0),
                     discarded_by_verification=stats.get("discarded_by_verification_count", 0),
                     skipped_by_limit=stats.get("skipped_by_limit_count", 0),
+                    failed_batches=stats.get("failed_batches_count", 0),
                     failed_topics=stats.get("failed_topics", []),
                 )
 

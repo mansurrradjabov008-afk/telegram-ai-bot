@@ -292,4 +292,36 @@ async def init_db(db_path: Path = None):
             (5, "Add extracted_json column to digest_posts for Phase 3 classification"),
         )
 
+        # Migration version 6: Add telemetry metrics to digest_runs and priority to digest_sources
+        async with db.execute("PRAGMA table_info(digest_runs)") as cur:
+            runs_cols = [row["name"] for row in await cur.fetchall()]
+
+        for col_name, col_type in [
+            ("posts_collected", "INTEGER DEFAULT 0"),
+            ("posts_filtered", "INTEGER DEFAULT 0"),
+            ("posts_classified", "INTEGER DEFAULT 0"),
+            ("items_in_digest", "INTEGER DEFAULT 0"),
+            ("ai_calls_count", "INTEGER DEFAULT 0"),
+            ("duration_seconds", "REAL DEFAULT 0.0"),
+        ]:
+            if col_name not in runs_cols:
+                try:
+                    await db.execute(f"ALTER TABLE digest_runs ADD COLUMN {col_name} {col_type}")
+                except Exception:
+                    pass
+
+        async with db.execute("PRAGMA table_info(digest_sources)") as cur:
+            src_cols = [row["name"] for row in await cur.fetchall()]
+
+        if "priority" not in src_cols:
+            try:
+                await db.execute("ALTER TABLE digest_sources ADD COLUMN priority INTEGER DEFAULT 1")
+            except Exception:
+                pass
+
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
+            (6, "Add telemetry metrics columns to digest_runs and priority to digest_sources"),
+        )
+
         await db.commit()
