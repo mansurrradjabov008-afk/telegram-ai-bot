@@ -130,8 +130,8 @@ class DigestVerifier:
 
     # Phone number regex (Uzbek and international)
     PHONE_RE = re.compile(
-        r'(?:\+?998[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}\b'
-        r'|\b\+?\d{1,4}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3}[\s.-]?\d{3,4}\b'
+        r'(?<!\d)(?:\+?998[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)\d{3}[\s.-]?\d{2}[\s.-]?\d{2}\b'
+        r'|(?<!\d)\+\d{1,4}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3}[\s.-]?\d{3,4}\b'
     )
 
     # Capitalized word/entity pattern

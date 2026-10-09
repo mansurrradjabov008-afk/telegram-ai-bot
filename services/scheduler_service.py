@@ -203,7 +203,7 @@ class SchedulerService:
             pass
 
         async def _run_daily_digest():
-            logger.info("Triggering scheduled Smart Digest V2...")
+            logger.info("Triggering scheduled daily digest...")
             now_tashkent = datetime.now(self.tz)
             date_str = now_tashkent.strftime("%Y-%m-%d")
             already_sent = await self.db_manager.has_scheduled_digest_run_today(date_str)
@@ -211,9 +211,19 @@ class SchedulerService:
                 logger.info(f"Scheduled digest for {date_str} already completed today. Skipping.")
                 return
 
+            cb = notify_boss_callback or self._notify_boss_callback
+            if not getattr(settings, "DIGEST_V2_ENABLED", True):
+                logger.info("DIGEST_V2_ENABLED is False: Running legacy V1 digest...")
+                summary = await digest_service.generate_and_send_digest()
+                if cb and summary:
+                    res_cb = cb(summary)
+                    import inspect
+                    if inspect.isawaitable(res_cb):
+                        await res_cb
+                return
+
             res = await digest_service.run_smart_digest(trigger="scheduled")
             messages = res.get("messages", [])
-            cb = notify_boss_callback or self._notify_boss_callback
             if cb and messages:
                 for msg in messages:
                     res_cb = cb(msg)
@@ -267,9 +277,19 @@ class SchedulerService:
             late_hours = (now_tashkent - scheduled_today).total_seconds() / 3600.0
             if late_hours <= 12.0:
                 logger.info(f"Catch-up digest: {late_hours:.1f} hours late (<= 12h). Executing catch-up digest...")
+                cb = notify_boss_callback or self._notify_boss_callback
+                if not getattr(settings, "DIGEST_V2_ENABLED", True):
+                    logger.info("Catch-up: DIGEST_V2_ENABLED is False, executing legacy V1 digest...")
+                    summary = await digest_service.generate_and_send_digest()
+                    if cb and summary:
+                        res_cb = cb(summary)
+                        import inspect
+                        if inspect.isawaitable(res_cb):
+                            await res_cb
+                    return
+
                 res = await digest_service.run_smart_digest(trigger="scheduled")
                 messages = res.get("messages", [])
-                cb = notify_boss_callback or self._notify_boss_callback
                 if cb and messages:
                     for msg in messages:
                         res_cb = cb(msg)
