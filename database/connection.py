@@ -129,7 +129,8 @@ CREATE TABLE IF NOT EXISTS digest_posts (
     importance INTEGER DEFAULT 1,
     status TEXT DEFAULT 'new' CHECK(status IN ('new', 'filtered', 'classified', 'included', 'discarded')),
     discard_reason TEXT,
-    digest_run_id INTEGER
+    digest_run_id INTEGER,
+    extracted_json TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_posts_chat_msg ON digest_posts(chat_id, message_id);
@@ -244,7 +245,8 @@ async def init_db(db_path: Path = None):
             importance INTEGER DEFAULT 1,
             status TEXT DEFAULT 'new' CHECK(status IN ('new', 'filtered', 'classified', 'included', 'discarded')),
             discard_reason TEXT,
-            digest_run_id INTEGER
+            digest_run_id INTEGER,
+            extracted_json TEXT
         );
         """)
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_posts_chat_msg ON digest_posts(chat_id, message_id);")
@@ -273,6 +275,21 @@ async def init_db(db_path: Path = None):
         await db.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
             (4, "Add Smart Digest V2 schema (digest_sources, digest_posts, digest_runs, digest_state)"),
+        )
+
+        # Migration version 5: Add extracted_json column to digest_posts if missing
+        async with db.execute("PRAGMA table_info(digest_posts)") as cur:
+            digest_cols = [row["name"] for row in await cur.fetchall()]
+
+        if "extracted_json" not in digest_cols:
+            try:
+                await db.execute("ALTER TABLE digest_posts ADD COLUMN extracted_json TEXT")
+            except Exception:
+                pass
+
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
+            (5, "Add extracted_json column to digest_posts for Phase 3 classification"),
         )
 
         await db.commit()

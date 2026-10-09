@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     DEDUPLICATION_SIMILARITY_THRESHOLD: float = 0.82
     SPAM_SCORE_THRESHOLD: float = 0.60
     SPAM_RULES_FILE: str = "data/spam_keywords.json"
+    DIGEST_AI_TEMPERATURE: float = 0.0
+    DIGEST_IMPORTANCE_MIN_THRESHOLD: int = 2
 
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent

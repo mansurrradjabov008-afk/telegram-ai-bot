@@ -580,8 +580,8 @@ class DatabaseManager:
             chat_id, message_id, chat_title, chat_username, text,
             original_source, posted_at, link, normalized_hash, fetched_at,
             spam_score, spam_reasons, topic, importance, status,
-            discard_reason, digest_run_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
+            discard_reason, digest_run_id, extracted_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         async with get_db(self.db_path) as db:
             cursor = await db.execute(
@@ -603,6 +603,7 @@ class DatabaseManager:
                     post.status,
                     post.discard_reason,
                     post.digest_run_id,
+                    post.extracted_json,
                 ),
             )
             await db.commit()
@@ -617,8 +618,8 @@ class DatabaseManager:
             chat_id, message_id, chat_title, chat_username, text,
             original_source, posted_at, link, normalized_hash, fetched_at,
             spam_score, spam_reasons, topic, importance, status,
-            discard_reason, digest_run_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
+            discard_reason, digest_run_id, extracted_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = [
             (
@@ -638,6 +639,7 @@ class DatabaseManager:
                 p.status,
                 p.discard_reason,
                 p.digest_run_id,
+                p.extracted_json,
             )
             for p in posts
         ]
@@ -793,3 +795,74 @@ class DatabaseManager:
             async with db.execute(query, tuple(params)) as cursor:
                 row = await cursor.fetchone()
                 return row["cnt"] if row else 0
+
+    async def update_digest_post_classification(
+        self,
+        post_id: int,
+        topic: Optional[str],
+        importance: int,
+        status: str,
+        discard_reason: Optional[str] = None,
+        extracted_json: Optional[str] = None,
+    ) -> bool:
+        """Updates classification topic, importance, status, discard reason, and extracted JSON."""
+        query = """
+        UPDATE digest_posts 
+        SET topic = ?, importance = ?, status = ?, discard_reason = ?, extracted_json = ?
+        WHERE id = ?
+        """
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(
+                query,
+                (topic, importance, status, discard_reason, extracted_json, post_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def bulk_update_digest_posts_classification(self, posts: List[DigestPost]) -> int:
+        """Batch updates classification fields for a collection of posts."""
+        if not posts:
+            return 0
+        query = """
+        UPDATE digest_posts 
+        SET topic = ?, importance = ?, status = ?, discard_reason = ?, extracted_json = ?
+        WHERE id = ?
+        """
+        params = [
+            (
+                p.topic,
+                p.importance,
+                p.status,
+                p.discard_reason,
+                p.extracted_json,
+                p.id,
+            )
+            for p in posts
+            if p.id is not None
+        ]
+        updated = 0
+        async with get_db(self.db_path) as db:
+            for param in params:
+                cur = await db.execute(query, param)
+                if cur.rowcount > 0:
+                    updated += 1
+            await db.commit()
+        return updated
+
+    async def get_classified_posts_summary(self, run_id: Optional[int] = None) -> Dict[str, int]:
+        """Returns topic count breakdown for classified posts."""
+        query = "SELECT topic, COUNT(*) as cnt FROM digest_posts WHERE status = 'classified'"
+        params: List[Any] = []
+        if run_id is not None:
+            query += " AND digest_run_id = ?"
+            params.append(run_id)
+        query += " GROUP BY topic"
+
+        summary: Dict[str, int] = {}
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, tuple(params)) as cursor:
+                rows = await cursor.fetchall()
+                for r in rows:
+                    if r["topic"]:
+                        summary[r["topic"]] = r["cnt"]
+        return summary

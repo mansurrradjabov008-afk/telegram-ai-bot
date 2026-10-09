@@ -464,19 +464,51 @@ class AdminBotService:
                 clean_count = stats.get("clean_remaining", total - dup_count - spam_count)
                 suspicious_count = stats.get("suspicious_jobs", 0)
 
+                classified_cnt = stats.get("classified_count", 0)
+                discarded_cnt = stats.get("discarded_classified_count", 0)
+                skipped_cnt = stats.get("skipped_posts_count", 0)
+                failed_batches = stats.get("failed_batches_count", 0)
+                topic_counts = stats.get("topic_counts", {})
+
+                topics_str = ""
+                topic_labels = {
+                    "A": "Siyosat",
+                    "B": "Tashqi siyosat",
+                    "C": "TSUE",
+                    "D": "Kasblar narxlari",
+                    "E": "AI",
+                    "F": "Imkoniyatlar",
+                }
+                if topic_counts:
+                    topics_str = "\n📑 <b>Klassifikatsiya qilingan mavzular:</b>\n"
+                    for t_code in ["A", "B", "C", "D", "E", "F"]:
+                        cnt = topic_counts.get(t_code, 0)
+                        if cnt > 0:
+                            topics_str += f"• <b>{t_code} ({topic_labels[t_code]}):</b> {cnt} ta\n"
+
+                quota_warning = ""
+                if skipped_cnt > 0:
+                    quota_warning += f"\n⚠️ <b>AI kvotasi sababli qoldirildi:</b> <code>{skipped_cnt}</code> ta post\n"
+                if failed_batches > 0:
+                    quota_warning += f"⚠️ <b>Xatolik tufayli o'tkazib yuborilgan batch'lar:</b> <code>{failed_batches}</code> ta\n"
+
                 report = (
-                    "📰 <b>SMART DIGEST V2 — XABARLAR VA FILTERLAR</b>\n"
+                    "📰 <b>SMART DIGEST V2 — MONITORING VA KLASSIFIKATSIYA</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📊 <b>Kuzatilgan manbalar:</b> <code>{sources_cnt}</code> ta\n"
                     f"📥 <b>Yangi yig'ilgan postlar:</b> <code>{total}</code> ta\n"
                     f"🧹 <b>Dublikatlar tozalandi:</b> <code>{dup_count}</code> ta\n"
                     f"🛡 <b>Reklama va spamlar:</b> <code>{spam_count}</code> ta\n"
                     f"⚠️ <b>Gumonli e'lonlar:</b> <code>{suspicious_count}</code> ta\n"
-                    f"✨ <b>Tahlilga tayyor toza postlar:</b> <code>{clean_count}</code> ta\n"
+                    f"✨ <b>Tahlilga olingan toza postlar:</b> <code>{clean_count}</code> ta\n"
+                    f"🎯 <b>Saralangan va kiritilgan:</b> <code>{classified_cnt}</code> ta\n"
+                    f"🚫 <b>Ahamiyatsiz/boshqa mavzular:</b> <code>{discarded_cnt}</code> ta\n"
+                    f"{topics_str}"
+                    f"{quota_warning}"
                     f"🗑 <b>Tozalangan eski postlar:</b> <code>{purged}</code> ta\n"
                     f"{err_lines}\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"<i>Reklama/spam filtrlandi: {spam_count} ta</i>"
+                    f"<i>Reklama/spam filtrlandi: {spam_count} ta | Saralangan: {classified_cnt} ta</i>"
                 )
 
                 builder = InlineKeyboardBuilder()

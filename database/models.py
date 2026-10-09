@@ -91,10 +91,10 @@ class DigestSource:
 
 @dataclass
 class DigestPost:
-    chat_id: int
-    message_id: int
-    chat_title: str
-    text: str
+    chat_id: int = 0
+    message_id: int = 0
+    chat_title: str = ""
+    text: str = ""
     id: Optional[int] = None
     chat_username: Optional[str] = None
     original_source: Optional[str] = None
@@ -109,6 +109,7 @@ class DigestPost:
     status: str = "new"  # new, filtered, classified, included, discarded
     discard_reason: Optional[str] = None
     digest_run_id: Optional[int] = None
+    extracted_json: Optional[str] = None
 
 
 @dataclass

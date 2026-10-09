@@ -14,6 +14,7 @@ from database.crud import DatabaseManager
 from database.models import DigestSource, DigestPost, DigestRun
 from services.ai_engine import AIEngine
 from services.digest_cleaner import DigestCleaner
+from services.digest_classifier import DigestClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class DigestService:
         self.db_manager = db_manager
         self.ai_engine = ai_engine
         self.cleaner = DigestCleaner()
+        self.classifier = DigestClassifier(self.ai_engine)
         self._notify_boss_callback: Optional[Callable] = None
         self._telethon_client: Optional[Any] = None
         self._client_getter: Optional[Callable] = None
@@ -409,6 +411,22 @@ class DigestService:
         stats["clean_remaining"] = filter_stats["clean_remaining"]
         stats["suspicious_jobs"] = filter_stats["suspicious_jobs_count"]
 
+        # Phase 3: Execute classification on clean posts
+        classification_stats = await self.classify_run_posts(run_id=run_id)
+        stats["classification"] = {
+            "topic_counts": classification_stats.get("topic_counts", {}),
+            "total_classified": classification_stats.get("total_classified", 0),
+            "total_discarded": classification_stats.get("total_discarded", 0),
+            "failed_batches_count": classification_stats.get("failed_batches_count", 0),
+            "skipped_posts_count": classification_stats.get("skipped_posts_count", 0),
+            "ai_calls_made": classification_stats.get("ai_calls_made", 0),
+        }
+        stats["classified_count"] = classification_stats.get("total_classified", 0)
+        stats["discarded_classified_count"] = classification_stats.get("total_discarded", 0)
+        stats["skipped_posts_count"] = classification_stats.get("skipped_posts_count", 0)
+        stats["failed_batches_count"] = classification_stats.get("failed_batches_count", 0)
+        stats["topic_counts"] = classification_stats.get("topic_counts", {})
+
         # Finish run in DB
         run_status = "completed" if not stats["errors"] else ("partial" if stats["total_collected"] > 0 else "failed")
         await self.db_manager.finish_digest_run(run_id, status=run_status, stats=stats)
@@ -445,3 +463,39 @@ class DigestService:
         await self.db_manager.bulk_update_digest_posts_filter_status(all_processed)
 
         return batch_result["stats"]
+
+    async def classify_run_posts(self, run_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Executes Phase 3 Classification on clean posts:
+        - Batches posts according to BATCH_SIZE
+        - Respects MAX_AI_CALLS_PER_RUN quota limit
+        - Sends to Gemini with temperature 0.0
+        - Enforces strict JSON schema validation and retry-once logic
+        - Topic taxonomy A-F and 'other' with precedence F > C > E > B > A > D
+        - Discards 'other', importance <= 1, and advertisements
+        - Extracts structured fields for Topic D and Topic F
+        - Bulk updates database with classified topics, importance, and extracted JSON
+        """
+        posts = await self.db_manager.get_digest_posts(run_id=run_id, status="new", limit=settings.MAX_POSTS_PER_RUN)
+        if not posts:
+            return {
+                "classified_posts": [],
+                "discarded_posts": [],
+                "topic_counts": {},
+                "ai_calls_made": 0,
+                "failed_batches_count": 0,
+                "skipped_posts_count": 0,
+                "total_classified": 0,
+                "total_discarded": 0,
+            }
+
+        res = await self.classifier.classify_posts(posts)
+
+        # Bulk update classified and discarded posts in DB
+        all_processed: List[DigestPost] = []
+        all_processed.extend(res["classified_posts"])
+        all_processed.extend(res["discarded_posts"])
+
+        await self.db_manager.bulk_update_digest_posts_classification(all_processed)
+
+        return res

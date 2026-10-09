@@ -556,6 +556,47 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
 
         return None
 
+    async def generate_json_response(
+        self,
+        prompt: str,
+        temperature: float = 0.0,
+    ) -> Optional[str]:
+        """
+        Generates strict JSON content using Gemini with automatic multi-model fallback.
+        Used for structured tasks such as Smart Digest V2 classification.
+        """
+        if not self._client:
+            logger.warning("generate_json_response: Gemini client is not configured or offline.")
+            return None
+
+        for candidate_model in self._get_candidate_models():
+            try:
+                if NEW_SDK:
+                    response = self._client.models.generate_content(
+                        model=candidate_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=temperature,
+                        ),
+                    )
+                    return response.text.strip()
+                else:
+                    mod = genai.GenerativeModel(candidate_model)
+                    response = mod.generate_content(
+                        prompt,
+                        generation_config={
+                            "response_mime_type": "application/json",
+                            "temperature": temperature,
+                        },
+                    )
+                    return response.text.strip()
+            except Exception as e:
+                logger.warning(f"generate_json_response failed on model {candidate_model}: {e}")
+                continue
+
+        return None
+
     def _dynamic_smart_fallback(self, text: str, addressing: str = "siz") -> str:
         """
         Context-aware offline fallback that strictly respects 'SIZ' vs 'SEN' addressing style.
