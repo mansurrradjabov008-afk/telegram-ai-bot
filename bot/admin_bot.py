@@ -459,14 +459,24 @@ class AdminBotService:
                     for err in errors[:3]:
                         err_lines += f"• {html.escape(err.get('title', 'Noma'))}: <code>{html.escape(err.get('error', ''))}</code>\n"
 
+                dup_count = stats.get("duplicates_filtered", 0)
+                spam_count = stats.get("spam_filtered", 0)
+                clean_count = stats.get("clean_remaining", total - dup_count - spam_count)
+                suspicious_count = stats.get("suspicious_jobs", 0)
+
                 report = (
-                    "📰 <b>SMART DIGEST V2 — XABARLAR YIG'ISH JARAYONI</b>\n"
+                    "📰 <b>SMART DIGEST V2 — XABARLAR VA FILTERLAR</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📊 <b>Kuzatilgan manbalar:</b> <code>{sources_cnt}</code> ta\n"
                     f"📥 <b>Yangi yig'ilgan postlar:</b> <code>{total}</code> ta\n"
+                    f"🧹 <b>Dublikatlar tozalandi:</b> <code>{dup_count}</code> ta\n"
+                    f"🛡 <b>Reklama va spamlar:</b> <code>{spam_count}</code> ta\n"
+                    f"⚠️ <b>Gumonli e'lonlar:</b> <code>{suspicious_count}</code> ta\n"
+                    f"✨ <b>Tahlilga tayyor toza postlar:</b> <code>{clean_count}</code> ta\n"
                     f"🗑 <b>Tozalangan eski postlar:</b> <code>{purged}</code> ta\n"
                     f"{err_lines}\n"
-                    "🔒 <i>Barcha postlar bazada xavfsiz saqlandi (Phase 1). Shaxsiy chatlar o'qilmaydi.</i>"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<i>Reklama/spam filtrlandi: {spam_count} ta</i>"
                 )
 
                 builder = InlineKeyboardBuilder()

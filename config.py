@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     MAX_AI_CALLS_PER_RUN: int = 10
     BATCH_SIZE: int = 10
     DIGEST_TIME: str = "08:00"
+    DEDUPLICATION_SIMILARITY_THRESHOLD: float = 0.82
+    SPAM_SCORE_THRESHOLD: float = 0.60
+    SPAM_RULES_FILE: str = "data/spam_keywords.json"
 
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent

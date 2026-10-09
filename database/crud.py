@@ -722,3 +722,74 @@ class DatabaseManager:
                 for r in rows:
                     posts.append(DigestPost(**dict(r)))
                 return posts
+
+    async def update_digest_post_filter_status(
+        self,
+        post_id: int,
+        status: str,
+        discard_reason: Optional[str] = None,
+        spam_score: float = 0.0,
+        spam_reasons: Optional[str] = None,
+        normalized_hash: Optional[str] = None,
+        original_source: Optional[str] = None,
+    ) -> bool:
+        """Updates filter status, discard reasons, spam score, and merged source links for a post."""
+        query = """
+        UPDATE digest_posts 
+        SET status = ?, discard_reason = ?, spam_score = ?, spam_reasons = ?, 
+            normalized_hash = COALESCE(?, normalized_hash), 
+            original_source = COALESCE(?, original_source)
+        WHERE id = ?
+        """
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(
+                query,
+                (status, discard_reason, spam_score, spam_reasons, normalized_hash, original_source, post_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def bulk_update_digest_posts_filter_status(self, posts: List[DigestPost]) -> int:
+        """Batch updates filter statuses for a collection of posts."""
+        if not posts:
+            return 0
+        query = """
+        UPDATE digest_posts 
+        SET status = ?, discard_reason = ?, spam_score = ?, spam_reasons = ?, 
+            normalized_hash = ?, original_source = ?
+        WHERE id = ?
+        """
+        params = [
+            (
+                p.status,
+                p.discard_reason,
+                p.spam_score,
+                p.spam_reasons,
+                p.normalized_hash,
+                p.original_source,
+                p.id,
+            )
+            for p in posts
+            if p.id is not None
+        ]
+        updated = 0
+        async with get_db(self.db_path) as db:
+            for param in params:
+                cur = await db.execute(query, param)
+                if cur.rowcount > 0:
+                    updated += 1
+            await db.commit()
+        return updated
+
+    async def count_filtered_spam_posts(self, run_id: Optional[int] = None) -> int:
+        """Counts filtered spam/ad and duplicate posts, optionally for a specific run."""
+        query = "SELECT COUNT(*) as cnt FROM digest_posts WHERE status = 'filtered'"
+        params: List[Any] = []
+        if run_id is not None:
+            query += " AND digest_run_id = ?"
+            params.append(run_id)
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, tuple(params)) as cursor:
+                row = await cursor.fetchone()
+                return row["cnt"] if row else 0

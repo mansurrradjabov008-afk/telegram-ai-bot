@@ -13,6 +13,7 @@ from config import settings
 from database.crud import DatabaseManager
 from database.models import DigestSource, DigestPost, DigestRun
 from services.ai_engine import AIEngine
+from services.digest_cleaner import DigestCleaner
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class DigestService:
     def __init__(self, db_manager: DatabaseManager, ai_engine: AIEngine):
         self.db_manager = db_manager
         self.ai_engine = ai_engine
+        self.cleaner = DigestCleaner()
         self._notify_boss_callback: Optional[Callable] = None
         self._telethon_client: Optional[Any] = None
         self._client_getter: Optional[Callable] = None
@@ -399,8 +401,47 @@ class DigestService:
         purged = await self.db_manager.purge_old_digest_posts(settings.RETENTION_DAYS)
         stats["purged_old_posts"] = purged
 
+        # Phase 2: Execute cleaning, deduplication, and spam filtering
+        filter_stats = await self.clean_and_filter_run_posts(run_id=run_id)
+        stats["cleaning"] = filter_stats
+        stats["duplicates_filtered"] = filter_stats["duplicates_count"]
+        stats["spam_filtered"] = filter_stats["spam_count"]
+        stats["clean_remaining"] = filter_stats["clean_remaining"]
+        stats["suspicious_jobs"] = filter_stats["suspicious_jobs_count"]
+
         # Finish run in DB
         run_status = "completed" if not stats["errors"] else ("partial" if stats["total_collected"] > 0 else "failed")
         await self.db_manager.finish_digest_run(run_id, status=run_status, stats=stats)
 
         return stats
+
+    async def clean_and_filter_run_posts(self, run_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Executes Phase 2 Cleaning & Filtering on unclassified posts:
+        - Exact & Near-duplicate detection (merges all source links)
+        - Spam/Scam/Ad scoring with reasons (Latin/Cyrillic/RU/EN)
+        - Safelisting legitimate vacancies, courses, grants, competitions
+        - Flagging suspicious job ads
+        - Updates DB status: filtered vs new, records spam_score and discard_reason
+        """
+        posts = await self.db_manager.get_digest_posts(run_id=run_id, status="new", limit=settings.MAX_POSTS_PER_RUN)
+        if not posts:
+            return {
+                "total_input": 0,
+                "clean_remaining": 0,
+                "duplicates_count": 0,
+                "spam_count": 0,
+                "suspicious_jobs_count": 0,
+            }
+
+        batch_result = self.cleaner.process_and_filter_batch(posts)
+
+        # Batch update all posts in DB (clean, duplicates, spam)
+        all_processed: List[DigestPost] = []
+        all_processed.extend(batch_result["clean_posts"])
+        all_processed.extend(batch_result["duplicate_posts"])
+        all_processed.extend(batch_result["spam_posts"])
+
+        await self.db_manager.bulk_update_digest_posts_filter_status(all_processed)
+
+        return batch_result["stats"]
