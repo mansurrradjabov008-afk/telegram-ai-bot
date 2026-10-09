@@ -49,8 +49,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 ## 2. Phase Status
 - [x] **Phase 0: Inspection & Foundation Plan** — COMPLETE
 - [x] **Phase 1: Storage, Redaction, Logging** — COMPLETE
-- [x] **Phase 2: Retrieval Foundation** — COMPLETE (Awaiting user "OK" for Phase 3)
-- [ ] **Phase 3: Fact Extraction (code-verified)** — PENDING
+- [x] **Phase 2: Retrieval Foundation** — COMPLETE
+- [x] **Phase 3: Fact Extraction (code-verified)** — COMPLETE (Awaiting user "OK" for Phase 4)
 - [ ] **Phase 4: Rolling Summaries** — PENDING
 - [ ] **Phase 5: Context Assembly & Reply Integration** — PENDING
 - [ ] **Phase 6: Owner Commands & Deletion Hook** — PENDING
@@ -123,6 +123,37 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline before Phase 2: 172 passed.
   - Phase 2 total: 188 passed (172 existing + 16 new retrieval tests in `tests/test_memory_retrieval_phase2.py`). 0 regressions.
+
+---
+
+## 2.3 Verified Facts from Phase 3 Execution
+- **Database Backup Before Phase 3**: `data/butler_backup_20261009_193819.db` (536,576 bytes).
+- **Prompt Injection Detector (`services/memory_injection.py`)**:
+  - Shared unit-tested detector across 4 languages (Uzbek Latin, Uzbek Cyrillic, Russian, English) per Rule U2.
+  - Detects prompt injection attempts (e.g. "ignore previous instructions", "sen endi", "system prompt", "забудь все инструкции").
+  - Flags facts with `injection_suspected = 1` so they are never injected into reply context prompts.
+  - Zero false positives on ordinary conversational text.
+- **Forbidden Topics Filter (`services/memory_injection.py`)**:
+  - Pure code filter for Rule H6: drops health, religion, ethnicity, political views, sexual life, finances/debts/income, and criminal matters.
+- **No Self-Reinforcement & Sender Verification (`services/memory_extractor.py`)**:
+  - Pure code verification of cited message IDs for Rule H9.
+  - Messages from `bot_auto` or `bot_approved` are 100% REJECTED in code if cited as a fact source.
+  - Permitted senders: `('contact', 'owner_manual', 'owner_edited')`.
+- **Fact Source Types Attribution (U3)**:
+  - `contact_claim`: statement originating from contact.
+  - `owner_stated`: statement originating from owner.
+  - `owner_confirmed`: statement claimed by contact and subsequently confirmed by owner.
+- **Pure Redaction Before Storage (H5)**:
+  - Facts and open items are passed through `redact_text()` before insertion into SQLite.
+- **Open Items Extraction (U4)**:
+  - Actionable tasks, meetings, and promises stored in `mem_open_items` for the owner only; never injected into reply prompts.
+- **Config Keys Added**:
+  - `MEM_EXTRACT_TIMEOUT_SECONDS`: float = 20.0
+  - `MEM_INJECTION_KEYWORDS_UZ_LATIN`, `MEM_INJECTION_KEYWORDS_UZ_CYRILLIC`, `MEM_INJECTION_KEYWORDS_RU`, `MEM_INJECTION_KEYWORDS_EN`
+  - `MEM_FORBIDDEN_CATEGORIES`, `MEM_FORBIDDEN_KEYWORDS`
+- **Test Suite Results (P7)**:
+  - Baseline before Phase 3: 188 passed.
+  - Phase 3 total: 204 passed (188 existing + 16 new extraction tests in `tests/test_memory_extraction_phase3.py`). 0 regressions.
 
 ---
 

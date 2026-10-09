@@ -4,7 +4,7 @@ Uses Pydantic Settings for strict typing and environment variable management.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -73,6 +73,90 @@ class Settings(BaseSettings):
     MEM_SIMILARITY_THRESHOLD: float = 0.40
     MEM_RETRIEVAL_TOP_K: int = 5
     MEM_EMBEDDING_TIMEOUT_SECONDS: float = 15.0
+    MEM_EXTRACT_TIMEOUT_SECONDS: float = 20.0
+
+    # Injection detection keywords across 4 languages (U2)
+    MEM_INJECTION_KEYWORDS_UZ_LATIN: List[str] = [
+        "oldingi ko'rsatmalarni unut",
+        "oldingi qoidalarni bekor qil",
+        "tizim ko'rsatmasi",
+        "system prompt",
+        "sen endi",
+        "har doim shunday javob ber",
+        "o'zingni ... deb tut",
+        "qoidalarni chetlab o't",
+        "barcha cheklovlarni olib tashla",
+        "yangi ko'rsatma",
+        "ko'rsatmani bajar",
+        "sen erkin modelsan",
+        "faqat shunday gapir",
+    ]
+    MEM_INJECTION_KEYWORDS_UZ_CYRILLIC: List[str] = [
+        "олдинги кўрсатмаларни унут",
+        "олдинги қоидаларни бекор қил",
+        "тизим кўрсатмаси",
+        "сен энди",
+        "ҳар доим шундай жавоб бер",
+        "ўзингни ... деб тут",
+        "барча чекловларни олиб ташла",
+        "янги кўрсатма",
+    ]
+    MEM_INJECTION_KEYWORDS_RU: List[str] = [
+        "забудь все инструкции",
+        "забудь предыдущие инструкции",
+        "игнорируй предыдущие",
+        "системный промпт",
+        "ты теперь",
+        "действуй как",
+        "всегда отвечай",
+        "отвечай только так",
+        "режим разработчика",
+        "сними все ограничения",
+        "новые инструкции",
+        "обойти правила",
+    ]
+    MEM_INJECTION_KEYWORDS_EN: List[str] = [
+        "ignore previous instructions",
+        "ignore all previous instructions",
+        "disregard previous instructions",
+        "system prompt",
+        "you are now",
+        "act as",
+        "jailbreak",
+        "developer mode",
+        "dan mode",
+        "bypass safety",
+        "you must always reply",
+        "always reply",
+        "you are an unrestricted",
+        "forget your rules",
+        "new instructions",
+    ]
+
+    # Forbidden categories (H6)
+    MEM_FORBIDDEN_CATEGORIES: List[str] = [
+        "health",
+        "religion",
+        "ethnicity",
+        "politics",
+        "sexual_life",
+        "finances",
+        "criminal",
+    ]
+    MEM_FORBIDDEN_KEYWORDS: List[str] = [
+        # Health
+        "kasallik", "dori", "shifoxona", "tashxis", "болезнь", "лекарство", "диагноз", "illness", "medical", "hospital",
+        # Religion
+        "namoz", "masjid", "cherkov", "din", "islom", "xristian", "намаз", "мечеть", "религия", "церковь", "religion", "mosque", "church",
+        # Ethnicity
+        "millat", "irq", "millati", "национальность", "раса", "ethnicity", "race",
+        # Politics
+        "siyosat", "saylov", "prezident", "partiya", "сиёсат", "политика", "выборы", "politics", "election",
+        # Finances
+        "qarz", "qarzim", "oylik", "daromad", "maosh", "kredit", "долг", "зарплата", "доход", "кредит", "debt", "salary", "income", "loan",
+        # Criminal
+        "sud", "qamoq", "jinoyat", "prokuror", "суд", "тюрьма", "преступление", "jail", "prison", "crime", "criminal",
+    ]
 
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent

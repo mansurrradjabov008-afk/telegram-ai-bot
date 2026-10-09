@@ -1330,6 +1330,48 @@ class DatabaseManager:
                     items.append(item)
                 return items
 
+    async def supersede_mem_fact(
+        self,
+        contact_user_id: int,
+        old_fact_id: int,
+        new_fact_id: int,
+    ) -> bool:
+        """Marks old_fact_id as superseded by new_fact_id (H4)."""
+        query_old = "UPDATE mem_facts SET status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE contact_user_id = ? AND id = ?"
+        query_new = "UPDATE mem_facts SET supersedes_id = ?, updated_at = CURRENT_TIMESTAMP WHERE contact_user_id = ? AND id = ?"
+        async with self.serialized_transaction() as db:
+            cur_old = await db.execute(query_old, (contact_user_id, old_fact_id))
+            cur_new = await db.execute(query_new, (old_fact_id, contact_user_id, new_fact_id))
+            return cur_old.rowcount > 0 and cur_new.rowcount > 0
+
+    async def update_mem_fact_status(
+        self,
+        contact_user_id: int,
+        fact_id: int,
+        status: str,
+    ) -> bool:
+        """Updates status of a fact ('active', 'superseded', 'disputed')."""
+        if status not in ("active", "superseded", "disputed"):
+            raise ValueError(f"Invalid status '{status}'. Must be active, superseded, or disputed.")
+        query = "UPDATE mem_facts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE contact_user_id = ? AND id = ?"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (status, contact_user_id, fact_id))
+            return cur.rowcount > 0
+
+    async def resolve_mem_open_item(
+        self,
+        contact_user_id: int,
+        item_id: int,
+        status: str = "resolved",
+    ) -> bool:
+        """Resolves or dismisses an open item."""
+        if status not in ("open", "resolved", "dismissed"):
+            raise ValueError(f"Invalid status '{status}'. Must be open, resolved, or dismissed.")
+        query = "UPDATE mem_open_items SET status = ? WHERE contact_user_id = ? AND id = ?"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (status, contact_user_id, item_id))
+            return cur.rowcount > 0
+
     # ------------------ RETRIEVAL & EMBEDDING CRUD (PHASE 2) ------------------
     async def save_mem_embedding(
         self,

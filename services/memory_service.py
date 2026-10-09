@@ -8,9 +8,10 @@ import logging
 from typing import Optional, Tuple, List, Dict, Any
 from config import settings
 from database.crud import DatabaseManager
-from database.models import MemContact
+from database.models import MemContact, MemMessage
 from services.memory_embedding import MemoryEmbeddingService
 from services.memory_retriever import MemoryRetriever
+from services.memory_extractor import MemoryExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class MemoryService:
         db_manager: DatabaseManager,
         embedding_service: Optional[MemoryEmbeddingService] = None,
         retriever: Optional[MemoryRetriever] = None,
+        extractor: Optional[MemoryExtractor] = None,
     ):
         self.db_manager = db_manager
         self.embedding_service = embedding_service or MemoryEmbeddingService(db_manager=db_manager)
@@ -28,6 +30,7 @@ class MemoryService:
             db_manager=db_manager,
             embedding_service=self.embedding_service,
         )
+        self.extractor = extractor or MemoryExtractor(db_manager=db_manager)
 
     async def verify_and_bind_identity(
         self,
@@ -213,3 +216,21 @@ class MemoryService:
             logger.warning(f"Error during pending embeddings background task: {e}")
 
         return embedded_count
+
+    async def extract_facts_and_items(
+        self,
+        contact_user_id: int,
+        messages: Optional[List[MemMessage]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extracts facts and open items for contact from recent messages.
+        Fails open if any error occurs (P15).
+        """
+        try:
+            if messages is None:
+                batch_limit = getattr(settings, "MEM_MAX_MESSAGES_PER_BATCH", 15)
+                messages = await self.db_manager.get_mem_messages(contact_user_id, limit=batch_limit)
+            return await self.extractor.extract_from_messages(contact_user_id, messages)
+        except Exception as e:
+            logger.warning(f"Failed to extract facts for user {contact_user_id}: {e}")
+            return {"facts_stored": [], "open_items_stored": [], "status": "error"}
