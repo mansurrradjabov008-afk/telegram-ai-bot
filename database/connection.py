@@ -240,6 +240,47 @@ CREATE TABLE IF NOT EXISTS mem_state (
     value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Contact Memory FTS5 Virtual Tables (Schema v8)
+CREATE VIRTUAL TABLE IF NOT EXISTS mem_messages_fts USING fts5(
+    text_redacted,
+    content='mem_messages',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_mem_messages_ai AFTER INSERT ON mem_messages BEGIN
+    INSERT INTO mem_messages_fts(rowid, text_redacted) VALUES (new.id, new.text_redacted);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_mem_messages_ad AFTER DELETE ON mem_messages BEGIN
+    INSERT INTO mem_messages_fts(mem_messages_fts, rowid, text_redacted) VALUES('delete', old.id, old.text_redacted);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_mem_messages_au AFTER UPDATE ON mem_messages BEGIN
+    INSERT INTO mem_messages_fts(mem_messages_fts, rowid, text_redacted) VALUES('delete', old.id, old.text_redacted);
+    INSERT INTO mem_messages_fts(rowid, text_redacted) VALUES (new.id, new.text_redacted);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS mem_facts_fts USING fts5(
+    text,
+    content='mem_facts',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_mem_facts_ai AFTER INSERT ON mem_facts BEGIN
+    INSERT INTO mem_facts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_mem_facts_ad AFTER DELETE ON mem_facts BEGIN
+    INSERT INTO mem_facts_fts(mem_facts_fts, rowid, text) VALUES('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_mem_facts_au AFTER UPDATE ON mem_facts BEGIN
+    INSERT INTO mem_facts_fts(mem_facts_fts, rowid, text) VALUES('delete', old.id, old.text);
+    INSERT INTO mem_facts_fts(rowid, text) VALUES (new.id, new.text);
+END;
 """
 
 
@@ -517,6 +558,66 @@ async def init_db(db_path: Path = None):
         await db.execute(
             "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
             (7, "Add Contact Memory schema v7 (mem_contacts, mem_messages, mem_facts, mem_open_items, mem_summaries, mem_embeddings, mem_state)"),
+        )
+
+        # Migration version 8: FTS5 Virtual Tables and triggers for Contact Memory
+        await db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS mem_messages_fts USING fts5(
+            text_redacted,
+            content='mem_messages',
+            content_rowid='id',
+            tokenize='unicode61'
+        );
+        """)
+        await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_mem_messages_ai AFTER INSERT ON mem_messages BEGIN
+            INSERT INTO mem_messages_fts(rowid, text_redacted) VALUES (new.id, new.text_redacted);
+        END;
+        """)
+        await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_mem_messages_ad AFTER DELETE ON mem_messages BEGIN
+            INSERT INTO mem_messages_fts(mem_messages_fts, rowid, text_redacted) VALUES('delete', old.id, old.text_redacted);
+        END;
+        """)
+        await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_mem_messages_au AFTER UPDATE ON mem_messages BEGIN
+            INSERT INTO mem_messages_fts(mem_messages_fts, rowid, text_redacted) VALUES('delete', old.id, old.text_redacted);
+            INSERT INTO mem_messages_fts(rowid, text_redacted) VALUES (new.id, new.text_redacted);
+        END;
+        """)
+        await db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS mem_facts_fts USING fts5(
+            text,
+            content='mem_facts',
+            content_rowid='id',
+            tokenize='unicode61'
+        );
+        """)
+        await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_mem_facts_ai AFTER INSERT ON mem_facts BEGIN
+            INSERT INTO mem_facts_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+        """)
+        await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_mem_facts_ad AFTER DELETE ON mem_facts BEGIN
+            INSERT INTO mem_facts_fts(mem_facts_fts, rowid, text) VALUES('delete', old.id, old.text);
+        END;
+        """)
+        await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_mem_facts_au AFTER UPDATE ON mem_facts BEGIN
+            INSERT INTO mem_facts_fts(mem_facts_fts, rowid, text) VALUES('delete', old.id, old.text);
+            INSERT INTO mem_facts_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+        """)
+        try:
+            await db.execute("INSERT INTO mem_messages_fts(mem_messages_fts) VALUES('rebuild');")
+            await db.execute("INSERT INTO mem_facts_fts(mem_facts_fts) VALUES('rebuild');")
+        except Exception:
+            pass
+
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)",
+            (8, "Add Contact Memory FTS5 virtual tables and sync triggers"),
         )
 
         await db.commit()

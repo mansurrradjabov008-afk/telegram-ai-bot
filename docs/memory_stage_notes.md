@@ -48,8 +48,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 
 ## 2. Phase Status
 - [x] **Phase 0: Inspection & Foundation Plan** — COMPLETE
-- [x] **Phase 1: Storage, Redaction, Logging** — COMPLETE (Awaiting user "OK" for Phase 2)
-- [ ] **Phase 2: Retrieval Foundation** — PENDING
+- [x] **Phase 1: Storage, Redaction, Logging** — COMPLETE
+- [x] **Phase 2: Retrieval Foundation** — COMPLETE (Awaiting user "OK" for Phase 3)
 - [ ] **Phase 3: Fact Extraction (code-verified)** — PENDING
 - [ ] **Phase 4: Rolling Summaries** — PENDING
 - [ ] **Phase 5: Context Assembly & Reply Integration** — PENDING
@@ -91,6 +91,38 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline: 123 passed.
   - Phase 1 total: 172 passed (123 existing + 39 redaction + 10 storage/concurrency/lifecycle). 0 regressions.
+
+---
+
+## 2.2 Verified Facts from Phase 2 Execution
+- **Database Backup Before Phase 2**: `data/butler_backup_20261009_192431.db` (491,520 bytes).
+- **Schema Migration v8 Applied**:
+  - `mem_messages_fts`: FTS5 external content virtual table synced to `mem_messages` with unicode61 tokenizer.
+  - `mem_facts_fts`: FTS5 external content virtual table synced to `mem_facts` with unicode61 tokenizer.
+  - Automatic triggers: `trg_mem_messages_ai`, `trg_mem_messages_ad`, `trg_mem_messages_au`, `trg_mem_facts_ai`, `trg_mem_facts_ad`, `trg_mem_facts_au`.
+  - Rebuild command executed to populate index from existing rows.
+- **Vector Math & Serialization**:
+  - 3072-dimensional float vectors serialized into 12,288-byte BLOBs via `numpy.float32`.
+  - Cosine similarity computation with numerical stability check (zero-norm safeguard).
+- **Gemini Embedding Service (`services/memory_embedding.py`)**:
+  - Off-thread execution via `asyncio.to_thread` with strict 15s timeout (`MEM_EMBEDDING_TIMEOUT_SECONDS`).
+  - Quota limiter tracking daily count against `MEM_MAX_EMBED_CALLS_PER_DAY` (200) in `mem_state`.
+  - Fail-open architecture: returns `None` on any error, allowing seamless keyword fallback.
+- **Unified Memory Retriever (`services/memory_retriever.py`)**:
+  - Primary path: Vector semantic search over contact embeddings with cosine similarity.
+  - Similarity threshold: `MEM_SIMILARITY_THRESHOLD = 0.40`.
+  - Model version awareness: embeddings created with different models are ignored.
+  - Fallback path: SQLite FTS5 BM25 search with query token sanitization (handling hyphens and special characters).
+  - Strict isolation guardrail (H4): verifies `item["contact_user_id"] == contact_user_id` for every hydrated item; drops block completely on breach.
+- **Background Worker (`MemoryService.process_pending_embeddings`)**:
+  - Automatically identifies unembedded facts and messages and batches them safely.
+- **Config Keys Added**:
+  - `MEM_SIMILARITY_THRESHOLD`: float = 0.40
+  - `MEM_RETRIEVAL_TOP_K`: int = 5
+  - `MEM_EMBEDDING_TIMEOUT_SECONDS`: float = 15.0
+- **Test Suite Results (P7)**:
+  - Baseline before Phase 2: 172 passed.
+  - Phase 2 total: 188 passed (172 existing + 16 new retrieval tests in `tests/test_memory_retrieval_phase2.py`). 0 regressions.
 
 ---
 

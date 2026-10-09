@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     MEM_IMPORT_ENABLED: bool = False
     MEM_IMPORT_MAX_MESSAGES: int = 200
     MEM_REDACTION_MASK: str = "[REDACTED]"
+    MEM_SIMILARITY_THRESHOLD: float = 0.40
+    MEM_RETRIEVAL_TOP_K: int = 5
+    MEM_EMBEDDING_TIMEOUT_SECONDS: float = 15.0
 
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent

@@ -5,6 +5,7 @@ Asynchronous Database Manager and CRUD operations for Telegram AI Butler.
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import json
+import re
 import asyncio
 from contextlib import asynccontextmanager
 import aiosqlite
@@ -1152,6 +1153,22 @@ class DatabaseManager:
                 row = await cur.fetchone()
                 return MemMessage(**dict(row)) if row else None
 
+    async def get_mem_message_by_id(
+        self,
+        contact_user_id: int,
+        message_id: int,
+    ) -> Optional[MemMessage]:
+        """Fetch single mem_message by contact_user_id and DB primary key id (H4)."""
+        query = "SELECT * FROM mem_messages WHERE contact_user_id = ? AND id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, message_id)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    msg = MemMessage(**dict(row))
+                    assert msg.contact_user_id == contact_user_id, "CRITICAL: Message isolation breach!"
+                    return msg
+                return None
+
     async def get_mem_messages(
         self,
         contact_user_id: int,
@@ -1263,6 +1280,22 @@ class DatabaseManager:
                     facts.append(fact)
                 return facts
 
+    async def get_mem_fact_by_id(
+        self,
+        contact_user_id: int,
+        fact_id: int,
+    ) -> Optional[MemFact]:
+        """Fetch single mem_fact by contact_user_id and DB primary key id (H4)."""
+        query = "SELECT * FROM mem_facts WHERE contact_user_id = ? AND id = ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, fact_id)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    fact = MemFact(**dict(row))
+                    assert fact.contact_user_id == contact_user_id, "CRITICAL: Fact isolation breach!"
+                    return fact
+                return None
+
     async def create_mem_open_item(
         self,
         contact_user_id: int,
@@ -1296,4 +1329,226 @@ class DatabaseManager:
                     assert item.contact_user_id == contact_user_id, "CRITICAL: Open item isolation breach!"
                     items.append(item)
                 return items
+
+    # ------------------ RETRIEVAL & EMBEDDING CRUD (PHASE 2) ------------------
+    async def save_mem_embedding(
+        self,
+        contact_user_id: int,
+        item_type: str,
+        item_id: int,
+        model_name: str,
+        dim: int,
+        vector: bytes,
+    ) -> int:
+        """
+        Saves or updates embedding vector BLOB in mem_embeddings.
+        item_type must be in ('fact', 'message', 'summary').
+        """
+        if item_type not in ("fact", "message", "summary"):
+            raise ValueError(f"Invalid item_type '{item_type}'. Must be fact, message, or summary.")
+
+        delete_query = "DELETE FROM mem_embeddings WHERE item_type = ? AND item_id = ?"
+        insert_query = """
+        INSERT INTO mem_embeddings (contact_user_id, item_type, item_id, model_name, dim, vector)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+        async with self.serialized_transaction() as db:
+            await db.execute(delete_query, (item_type, item_id))
+            cur = await db.execute(
+                insert_query,
+                (contact_user_id, item_type, item_id, model_name, dim, vector),
+            )
+            return cur.lastrowid
+
+    async def get_mem_embeddings_by_contact(
+        self,
+        contact_user_id: int,
+        item_type: Optional[str] = None,
+    ) -> List[MemEmbedding]:
+        """
+        Fetches all stored embeddings for target contact.
+        Enforces strict SQL-level and code-level isolation (H4).
+        """
+        if item_type:
+            query = "SELECT * FROM mem_embeddings WHERE contact_user_id = ? AND item_type = ?"
+            params: Tuple[Any, ...] = (contact_user_id, item_type)
+        else:
+            query = "SELECT * FROM mem_embeddings WHERE contact_user_id = ?"
+            params = (contact_user_id,)
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    emb = MemEmbedding(**dict(r))
+                    assert emb.contact_user_id == contact_user_id, "CRITICAL: Cross-contact embedding leak detected!"
+                    results.append(emb)
+                return results
+
+    async def search_mem_messages_fts(
+        self,
+        contact_user_id: int,
+        query_text: str,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Searches mem_messages using SQLite FTS5 BM25 ranking.
+        Enforces strict per-contact SQL filtering (H4) and query sanitization.
+        """
+        if not query_text or not query_text.strip():
+            return []
+
+        tokens = re.findall(r"\w+", query_text)
+        if not tokens:
+            return []
+
+        sanitized_query = " OR ".join(f'"{tok}"' for tok in tokens if len(tok) > 1)
+        if not sanitized_query:
+            sanitized_query = " OR ".join(f'"{tok}"' for tok in tokens)
+
+        query = """
+        SELECT m.id, m.contact_user_id, m.tg_message_id, m.sender, m.text_redacted,
+               m.sent_at, m.edited_at, m.is_media, bm25(mem_messages_fts) as rank
+        FROM mem_messages m
+        JOIN mem_messages_fts ON m.id = mem_messages_fts.rowid
+        WHERE m.contact_user_id = ? AND mem_messages_fts MATCH ?
+        ORDER BY rank ASC
+        LIMIT ?
+        """
+        async with get_db(self.db_path) as db:
+            try:
+                async with db.execute(query, (contact_user_id, sanitized_query, limit)) as cur:
+                    rows = await cur.fetchall()
+                    results = []
+                    for r in rows:
+                        d = dict(r)
+                        assert d["contact_user_id"] == contact_user_id, "CRITICAL: Cross-contact FTS message leak!"
+                        results.append(d)
+                    return results
+            except Exception:
+                return []
+
+    async def search_mem_facts_fts(
+        self,
+        contact_user_id: int,
+        query_text: str,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Searches active mem_facts using SQLite FTS5 BM25 ranking.
+        Enforces strict per-contact SQL filtering (H4) and query sanitization.
+        """
+        if not query_text or not query_text.strip():
+            return []
+
+        tokens = re.findall(r"\w+", query_text)
+        if not tokens:
+            return []
+
+        sanitized_query = " OR ".join(f'"{tok}"' for tok in tokens if len(tok) > 1)
+        if not sanitized_query:
+            sanitized_query = " OR ".join(f'"{tok}"' for tok in tokens)
+
+        query = """
+        SELECT f.id, f.contact_user_id, f.category, f.text, f.source_type,
+               f.source_message_ids, f.status, f.confidence, f.supersedes_id,
+               f.created_at, f.valid_until, bm25(mem_facts_fts) as rank
+        FROM mem_facts f
+        JOIN mem_facts_fts ON f.id = mem_facts_fts.rowid
+        WHERE f.contact_user_id = ? AND f.status = 'active' AND mem_facts_fts MATCH ?
+        ORDER BY rank ASC
+        LIMIT ?
+        """
+        async with get_db(self.db_path) as db:
+            try:
+                async with db.execute(query, (contact_user_id, sanitized_query, limit)) as cur:
+                    rows = await cur.fetchall()
+                    results = []
+                    for r in rows:
+                        d = dict(r)
+                        assert d["contact_user_id"] == contact_user_id, "CRITICAL: Cross-contact FTS fact leak!"
+                        results.append(d)
+                    return results
+            except Exception:
+                return []
+
+    async def delete_mem_embeddings_by_contact(self, contact_user_id: int) -> int:
+        """Deletes all embeddings for contact."""
+        query = "DELETE FROM mem_embeddings WHERE contact_user_id = ?"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (contact_user_id,))
+            return cur.rowcount
+
+    async def get_unembedded_messages(
+        self,
+        contact_user_id: Optional[int] = None,
+        limit: int = 20,
+    ) -> List[MemMessage]:
+        """Fetches messages that have not yet been embedded."""
+        if contact_user_id is not None:
+            query = """
+            SELECT m.* FROM mem_messages m
+            LEFT JOIN mem_embeddings e ON e.item_type = 'message' AND e.item_id = m.id
+            WHERE e.id IS NULL AND m.contact_user_id = ?
+            ORDER BY m.id DESC LIMIT ?
+            """
+            params: Tuple[Any, ...] = (contact_user_id, limit)
+        else:
+            query = """
+            SELECT m.* FROM mem_messages m
+            LEFT JOIN mem_embeddings e ON e.item_type = 'message' AND e.item_id = m.id
+            WHERE e.id IS NULL
+            ORDER BY m.id DESC LIMIT ?
+            """
+            params = (limit,)
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+                return [MemMessage(**dict(r)) for r in rows]
+
+    async def get_unembedded_facts(
+        self,
+        contact_user_id: Optional[int] = None,
+        limit: int = 20,
+    ) -> List[MemFact]:
+        """Fetches active facts that have not yet been embedded."""
+        if contact_user_id is not None:
+            query = """
+            SELECT f.* FROM mem_facts f
+            LEFT JOIN mem_embeddings e ON e.item_type = 'fact' AND e.item_id = f.id
+            WHERE e.id IS NULL AND f.status = 'active' AND f.contact_user_id = ?
+            ORDER BY f.id DESC LIMIT ?
+            """
+            params: Tuple[Any, ...] = (contact_user_id, limit)
+        else:
+            query = """
+            SELECT f.* FROM mem_facts f
+            LEFT JOIN mem_embeddings e ON e.item_type = 'fact' AND e.item_id = f.id
+            WHERE e.id IS NULL AND f.status = 'active'
+            ORDER BY f.id DESC LIMIT ?
+            """
+            params = (limit,)
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+                return [MemFact(**dict(r)) for r in rows]
+
+    async def get_daily_counter(self, prefix: str) -> int:
+        """Fetches daily usage counter from mem_state."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        key = f"daily_count:{prefix}:{today}"
+        val = await self.get_mem_state(key)
+        return int(val) if val and val.isdigit() else 0
+
+    async def increment_daily_counter(self, prefix: str) -> int:
+        """Increments and returns daily usage counter in mem_state."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        key = f"daily_count:{prefix}:{today}"
+        current = await self.get_daily_counter(prefix)
+        new_val = current + 1
+        await self.set_mem_state(key, str(new_val))
+        return new_val
 

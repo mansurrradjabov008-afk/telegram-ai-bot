@@ -5,17 +5,29 @@ sender labeling, media marker handling, and message edits.
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 from config import settings
 from database.crud import DatabaseManager
 from database.models import MemContact
+from services.memory_embedding import MemoryEmbeddingService
+from services.memory_retriever import MemoryRetriever
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryService:
-    def __init__(self, db_manager: DatabaseManager):
+    def __init__(
+        self,
+        db_manager: DatabaseManager,
+        embedding_service: Optional[MemoryEmbeddingService] = None,
+        retriever: Optional[MemoryRetriever] = None,
+    ):
         self.db_manager = db_manager
+        self.embedding_service = embedding_service or MemoryEmbeddingService(db_manager=db_manager)
+        self.retriever = retriever or MemoryRetriever(
+            db_manager=db_manager,
+            embedding_service=self.embedding_service,
+        )
 
     async def verify_and_bind_identity(
         self,
@@ -138,3 +150,66 @@ class MemoryService:
         except Exception as e:
             logger.warning(f"Error during memory retention purge: {e}")
             return 0
+
+    async def retrieve_context(
+        self,
+        contact_user_id: int,
+        query_text: str,
+        k: Optional[int] = None,
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Retrieves relevant contextual moments (messages and facts) for contact.
+        Fails open to empty list if any error occurs (P15).
+        """
+        try:
+            return await self.retriever.retrieve(
+                contact_user_id=contact_user_id,
+                query_text=query_text,
+                k=k,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to retrieve memory context for user {contact_user_id}: {e}")
+            return [], "error"
+
+    async def process_pending_embeddings(self, limit: int = 15) -> int:
+        """
+        Background worker task: finds messages and facts without embeddings,
+        generates embeddings, and stores them in mem_embeddings.
+        Adheres to daily quota (P14) and fail-open design (P15).
+        """
+        if not getattr(settings, "MEMORY_ENABLED", True):
+            return 0
+
+        embedded_count = 0
+        try:
+            # 1. Process unembedded facts first (highest context density)
+            unembedded_facts = await self.db_manager.get_unembedded_facts(limit=limit)
+            for fact in unembedded_facts:
+                res = await self.embedding_service.embed_and_save(
+                    contact_user_id=fact.contact_user_id,
+                    item_type="fact",
+                    item_id=fact.id,
+                    text=fact.text,
+                )
+                if res is not None:
+                    embedded_count += 1
+
+            # 2. Process unembedded messages with remaining batch budget
+            remaining = limit - embedded_count
+            if remaining > 0:
+                unembedded_msgs = await self.db_manager.get_unembedded_messages(limit=remaining)
+                for msg in unembedded_msgs:
+                    if not msg.text_redacted or not msg.text_redacted.strip():
+                        continue
+                    res = await self.embedding_service.embed_and_save(
+                        contact_user_id=msg.contact_user_id,
+                        item_type="message",
+                        item_id=msg.id,
+                        text=msg.text_redacted,
+                    )
+                    if res is not None:
+                        embedded_count += 1
+        except Exception as e:
+            logger.warning(f"Error during pending embeddings background task: {e}")
+
+        return embedded_count
