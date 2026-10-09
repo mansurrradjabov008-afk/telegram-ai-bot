@@ -51,8 +51,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - [x] **Phase 1: Storage, Redaction, Logging** — COMPLETE
 - [x] **Phase 2: Retrieval Foundation** — COMPLETE
 - [x] **Phase 3: Fact Extraction (code-verified)** — COMPLETE
-- [x] **Phase 4: Rolling Summaries** — COMPLETE (Awaiting user "OK" for Phase 5)
-- [ ] **Phase 5: Context Assembly & Reply Integration** — PENDING
+- [x] **Phase 4: Rolling Summaries** — COMPLETE
+- [x] **Phase 5: Context Assembly & Reply Integration** — COMPLETE (Awaiting user "OK" for Phase 6)
 - [ ] **Phase 6: Owner Commands & Deletion Hook** — PENDING
 - [ ] **Phase 7: Comprehensive Test Suite** — PENDING
 - [ ] **Phase 8: Final Report & Shadow Check** — PENDING
@@ -177,6 +177,26 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline before Phase 4: 204 passed.
   - Phase 4 total: 216 passed (204 existing + 12 new summary tests in `tests/test_memory_summary_phase4.py`). 0 regressions.
+
+---
+
+## 2.5 Verified Facts from Phase 5 Execution
+- **Database Backup Before Phase 5**: `data/butler_backup_20261009_195841.db` (552,960 bytes).
+- **Context Assembly Engine (`services/memory_context.py`)**:
+  - `MemoryContextAssembler`: Assembles background context including latest rolling summary, active facts with source types, and relevant past messages.
+  - **U1 Delimiters & Anti-Instruction Framing**: Context wrapped in `<memory>...</memory>` tags with explicit warning that content is background reference only, not system instructions, and that the model possesses no tools.
+  - **U2 Injection Filtering**: Excludes facts where `injection_suspected == 1` and omits summaries/messages matching prompt injection keywords or regex.
+  - **U3 Source Attribution**: Labeled with `contact_claim` (unverified claim), `owner_stated`, and `owner_confirmed`. Model instructed to treat contact claims as unverified.
+  - **U4 Open Items Exclusion**: Actionable promises/meetings/debts stored in `mem_open_items` are strictly excluded from context.
+  - **U5 Sensitive Guard Isolation**: `check_sensitive` evaluates strictly `incoming_text` and proposed reply; it NEVER receives the memory block.
+  - **H4 Strict Isolation**: SQL-level isolation verified with code assertions on each component; any breach drops the entire context block immediately.
+  - **P14 & P15 Fail-Open & Budget**: Strict timeout `MEM_CONTEXT_TIMEOUT_SECONDS = 1.0` and character/token budget `MEM_MAX_CONTEXT_TOKENS = 1200`. Fails open returning `""` on any timeout or error.
+- **Allowed Integration Point 2**:
+  - `bot/userbot.py`: In `_process_debounced_batch`, queries `self.memory_service.get_reply_context(contact.user_id, combined_text)` and passes `memory_context` to `ai_engine.generate_reply`.
+  - `services/ai_engine.py`: `generate_reply` embeds `memory_context` under `<memory>` section if present; falls back seamlessly to standard behavior if empty or disabled (`MEMORY_ENABLED=False`).
+- **Test Suite Results (P7)**:
+  - Baseline before Phase 5: 216 passed.
+  - Phase 5 total: 229 passed (216 existing + 13 new context tests in `tests/test_memory_context_phase5.py`). 0 regressions.
 
 ---
 

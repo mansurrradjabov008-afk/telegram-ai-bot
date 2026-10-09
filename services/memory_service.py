@@ -13,6 +13,7 @@ from services.memory_embedding import MemoryEmbeddingService
 from services.memory_retriever import MemoryRetriever
 from services.memory_extractor import MemoryExtractor
 from services.memory_summarizer import MemorySummarizer
+from services.memory_context import MemoryContextAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class MemoryService:
         retriever: Optional[MemoryRetriever] = None,
         extractor: Optional[MemoryExtractor] = None,
         summarizer: Optional[MemorySummarizer] = None,
+        assembler: Optional[MemoryContextAssembler] = None,
     ):
         self.db_manager = db_manager
         self.embedding_service = embedding_service or MemoryEmbeddingService(db_manager=db_manager)
@@ -34,6 +36,10 @@ class MemoryService:
         )
         self.extractor = extractor or MemoryExtractor(db_manager=db_manager)
         self.summarizer = summarizer or MemorySummarizer(db_manager=db_manager)
+        self.assembler = assembler or MemoryContextAssembler(
+            db_manager=db_manager,
+            retriever=self.retriever,
+        )
 
     async def verify_and_bind_identity(
         self,
@@ -264,3 +270,22 @@ class MemoryService:
         except Exception as e:
             logger.warning(f"Failed to fetch summary for user {contact_user_id}: {e}")
             return None
+
+    async def get_reply_context(
+        self,
+        contact_user_id: int,
+        incoming_text: str = "",
+    ) -> str:
+        """
+        Assembles memory context for reply generation (Integration Point 2).
+        Fails open if any error occurs (P15).
+        """
+        try:
+            return await self.assembler.assemble_context(
+                contact_user_id=contact_user_id,
+                incoming_text=incoming_text,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get reply memory context for user {contact_user_id}: {e}")
+            return ""
+

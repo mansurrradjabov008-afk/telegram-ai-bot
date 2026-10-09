@@ -422,11 +422,12 @@ async def test_feature_flag_toggle_v2_and_v1_fallback(tmp_path):
     scheduler.register_callbacks(send_callback=AsyncMock(), notify_boss_callback=mock_notify_boss)
 
     # 1. Test with DIGEST_V2_ENABLED = False -> runs legacy V1
+    two_hours_ago = (datetime.now().astimezone() - timedelta(hours=2)).strftime("%H:%M")
     with patch.object(settings, "DIGEST_V2_ENABLED", False):
         await scheduler.check_and_run_catchup_digest(
             digest_service=service,
             notify_boss_callback=mock_notify_boss,
-            digest_time_str="08:00",
+            digest_time_str=two_hours_ago,
         )
         assert service.generate_and_send_digest.called
         assert not service.run_smart_digest.called

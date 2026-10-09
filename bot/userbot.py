@@ -461,13 +461,25 @@ class UserbotService:
             f"Processing debounced batch ({len(batch)} messages) for {peer_repr}: '{combined_text[:100]}...'"
         )
 
-        # Step 5: Generate reply with existing AI logic
+        # Step 5: Generate reply with existing AI logic and Contact Memory (Integration Point 2)
         history = await self.db_manager.get_recent_history(chat_id=sender_id, limit=6)
+        memory_context = ""
+        if self.memory_service and contact and getattr(contact, "user_id", None):
+            try:
+                memory_context = await self.memory_service.get_reply_context(
+                    contact_user_id=contact.user_id,
+                    incoming_text=combined_text,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch memory context for {peer_repr}: {e}")
+                memory_context = ""
+
         reply_text = await self.ai_engine.generate_reply(
             incoming_text=combined_text,
             sender_name=first_name,
             contact_profile=contact,
             history=history,
+            memory_context=memory_context,
         )
 
         if not reply_text:

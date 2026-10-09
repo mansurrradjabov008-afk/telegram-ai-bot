@@ -90,3 +90,17 @@ def is_forbidden_topic(text: str, category: Optional[str] = None) -> Tuple[bool,
             return True, f"forbidden_keyword:{clean_kw}"
 
     return False, None
+
+
+class MemoryInjectionDetector:
+    """Wrapper class for prompt injection and forbidden topic detection."""
+
+    @staticmethod
+    def detect_injection(text: str) -> bool:
+        is_suspected, _ = contains_injection_patterns(text)
+        return is_suspected
+
+    @staticmethod
+    def detect_forbidden_topics(text: str, category: Optional[str] = None) -> bool:
+        is_forbidden, _ = is_forbidden_topic(text, category)
+        return is_forbidden
