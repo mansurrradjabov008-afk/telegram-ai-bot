@@ -292,15 +292,19 @@ class AdminBotService:
         async def cmd_restart(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
-            await safe_reply(
-                message,
-                "🔄 <b>Antigravity Butler qayta yuklanmoqda...</b>\n\n"
-                "<i>Watchdog jarayoni 5 soniya ichida botni eng so'nggi yangilangan kod bilan qayta ishga tushiradi.</i>",
-                parse_mode="HTML",
-            )
-            import os
-            await asyncio.sleep(1.0)
-            os._exit(0)
+            try:
+                await safe_reply(
+                    message,
+                    "🔄 <b>Antigravity Butler qayta yuklanmoqda...</b>\n\n"
+                    "<i>Watchdog jarayoni 5 soniya ichida botni eng so'nggi yangilangan kod bilan qayta ishga tushiradi.</i>",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.warning(f"Restart acknowledgement failed: {e}")
+            finally:
+                import os
+                os._exit(0)
+
 
 
         async def _render_digest_sources(target_msg: types.Message, is_callback: bool = False):
