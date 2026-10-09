@@ -100,28 +100,38 @@ def format_task_time_human(iso_str: str, tz) -> str:
         return iso_str
 
 
-async def safe_reply(message: types.Message, text: str, reply_markup=None, parse_mode: Optional[str] = "HTML"):
+async def safe_reply(message: types.Message, text: str, reply_markup=None, parse_mode: Optional[str] = "HTML") -> Optional[types.Message]:
     """Sends a reply safely; if formatting fails, automatically falls back to plain text."""
     try:
-        await message.reply(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return await message.reply(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         logger.warning(f"Telegram parse error on reply ({e}), sending plain text...")
         clean_text = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "").replace("<i>", "").replace("</i>", "")
-        await message.reply(clean_text, reply_markup=reply_markup, parse_mode=None)
+        try:
+            return await message.reply(clean_text, reply_markup=reply_markup, parse_mode=None)
+        except Exception as e2:
+            logger.error(f"Fallback reply also failed: {e2}")
+            return None
     except Exception as e:
         logger.error(f"Unexpected error in safe_reply: {e}")
+        return None
 
 
-async def safe_send(bot: Bot, chat_id: int, text: str, reply_markup=None, parse_mode: Optional[str] = "HTML"):
+async def safe_send(bot: Bot, chat_id: int, text: str, reply_markup=None, parse_mode: Optional[str] = "HTML") -> Optional[types.Message]:
     """Sends a message safely; if formatting fails, automatically falls back to plain text."""
     try:
-        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest as e:
         logger.warning(f"Telegram parse error on send ({e}), sending plain text...")
         clean_text = text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "").replace("<i>", "").replace("</i>", "")
-        await bot.send_message(chat_id=chat_id, text=clean_text, reply_markup=reply_markup, parse_mode=None)
+        try:
+            return await bot.send_message(chat_id=chat_id, text=clean_text, reply_markup=reply_markup, parse_mode=None)
+        except Exception as e2:
+            logger.error(f"Fallback send also failed: {e2}")
+            return None
     except Exception as e:
         logger.error(f"Unexpected error in safe_send: {e}")
+        return None
 
 
 async def safe_reply_or_send_long(
@@ -636,13 +646,25 @@ class AdminBotService:
                     )
                 target = parts[2].strip()
                 loading_msg = await safe_reply(message, "⏳ <i>Manba tekshirilmoqda va ulanmoqda...</i>", parse_mode="HTML")
-                client = self.digest_service.get_client() if self.digest_service else None
-                success, resp_text, source = await self.digest_service.resolve_and_add_source(client, target)
+                try:
+                    client = self.digest_service.get_client() if self.digest_service else None
+                    success, resp_text, source = await self.digest_service.resolve_and_add_source(client, target)
+                except Exception as e:
+                    logger.error(f"Error in /digest add for target '{target}': {e}", exc_info=True)
+                    resp_text = f"❌ <b>Manbani qo'shishda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
                 builder.adjust(1, 1)
-                await loading_msg.edit_text(resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+                if loading_msg:
+                    try:
+                        await loading_msg.edit_text(resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        return
+                    except Exception as e:
+                        logger.warning(f"Failed to edit loading_msg ({e}), sending new reply...")
+                await safe_reply(message, resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 return
             elif subcmd == "remove":
                 if len(parts) < 3:
@@ -653,7 +675,12 @@ class AdminBotService:
                         parse_mode="HTML",
                     )
                 target = parts[2].strip()
-                success, resp_text = await self.digest_service.remove_source(target)
+                try:
+                    success, resp_text = await self.digest_service.remove_source(target)
+                except Exception as e:
+                    logger.error(f"Error in /digest remove for target '{target}': {e}", exc_info=True)
+                    resp_text = f"❌ <b>Manbani o'chirishda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")

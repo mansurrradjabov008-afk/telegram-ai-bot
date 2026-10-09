@@ -180,28 +180,32 @@ class DigestService:
         if not telethon_client:
             return (False, "⚠️ Userbot mijozi ulanmagan.", None)
 
-        # Parse identifier from link or username or numeric id
-        identifier: Any = target
-        if "t.me/" in target:
-            parts = target.split("t.me/")[-1].split("/")
+        # Clean target from query params and trailing slashes
+        clean_target = target.split("?")[0].rstrip("/")
+        identifier: Any = clean_target
+        if "t.me/" in clean_target:
+            parts = clean_target.split("t.me/")[-1].split("/")
             first = parts[0]
             if first == "c" and len(parts) > 1:
                 cid = parts[1]
                 identifier = int(f"-100{cid}") if not cid.startswith("-100") else int(cid)
             elif first.startswith("+") or first == "joinchat":
-                identifier = target
+                identifier = clean_target
             else:
                 identifier = first.lstrip("@")
-        elif target.startswith("@"):
-            identifier = target.lstrip("@")
-        elif target.lstrip("-").isdigit():
-            identifier = int(target)
+        elif clean_target.startswith("@"):
+            identifier = clean_target.lstrip("@")
+        elif clean_target.lstrip("-").isdigit():
+            identifier = int(clean_target)
 
         try:
-            entity = await telethon_client.get_entity(identifier)
+            entity = await asyncio.wait_for(telethon_client.get_entity(identifier), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout resolving entity {target}")
+            return (False, "⏱ <b>Manbani tekshirish vaqti tugadi (15 soniya).</b>\nIltimos, internet aloqasini yoki havola to'g'riligini tekshiring.", None)
         except Exception as e:
             logger.warning(f"Failed to resolve entity {target}: {e}")
-            return (False, f"❌ Manba topilmadi yoki unga kirish huquqi yo'q: {str(e)}", None)
+            return (False, f"❌ <b>Manba topilmadi yoki unga kirish huquqi yo'q:</b>\n<code>{html.escape(str(e))}</code>", None)
 
         # Strict privacy check: NEVER allow User or private chats
         from telethon.tl.types import User, Channel, Chat
