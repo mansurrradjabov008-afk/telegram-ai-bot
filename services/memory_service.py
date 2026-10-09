@@ -8,10 +8,11 @@ import logging
 from typing import Optional, Tuple, List, Dict, Any
 from config import settings
 from database.crud import DatabaseManager
-from database.models import MemContact, MemMessage
+from database.models import MemContact, MemMessage, MemSummary
 from services.memory_embedding import MemoryEmbeddingService
 from services.memory_retriever import MemoryRetriever
 from services.memory_extractor import MemoryExtractor
+from services.memory_summarizer import MemorySummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class MemoryService:
         embedding_service: Optional[MemoryEmbeddingService] = None,
         retriever: Optional[MemoryRetriever] = None,
         extractor: Optional[MemoryExtractor] = None,
+        summarizer: Optional[MemorySummarizer] = None,
     ):
         self.db_manager = db_manager
         self.embedding_service = embedding_service or MemoryEmbeddingService(db_manager=db_manager)
@@ -31,6 +33,7 @@ class MemoryService:
             embedding_service=self.embedding_service,
         )
         self.extractor = extractor or MemoryExtractor(db_manager=db_manager)
+        self.summarizer = summarizer or MemorySummarizer(db_manager=db_manager)
 
     async def verify_and_bind_identity(
         self,
@@ -234,3 +237,30 @@ class MemoryService:
         except Exception as e:
             logger.warning(f"Failed to extract facts for user {contact_user_id}: {e}")
             return {"facts_stored": [], "open_items_stored": [], "status": "error"}
+
+    async def update_contact_summary(
+        self,
+        contact_user_id: int,
+        force: bool = False,
+    ) -> Tuple[Optional[MemSummary], str]:
+        """
+        Generates or updates rolling conversation summary for contact.
+        Fails open if any error occurs (P15).
+        """
+        try:
+            return await self.summarizer.generate_or_update_summary(contact_user_id, force=force)
+        except Exception as e:
+            logger.warning(f"Failed to update rolling summary for user {contact_user_id}: {e}")
+            latest = await self.db_manager.get_latest_mem_summary(contact_user_id)
+            return latest, "error"
+
+    async def get_contact_summary(
+        self,
+        contact_user_id: int,
+    ) -> Optional[MemSummary]:
+        """Fetches latest rolling summary for contact (H4)."""
+        try:
+            return await self.db_manager.get_latest_mem_summary(contact_user_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch summary for user {contact_user_id}: {e}")
+            return None

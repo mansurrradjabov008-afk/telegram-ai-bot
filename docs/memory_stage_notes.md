@@ -50,8 +50,8 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - [x] **Phase 0: Inspection & Foundation Plan** — COMPLETE
 - [x] **Phase 1: Storage, Redaction, Logging** — COMPLETE
 - [x] **Phase 2: Retrieval Foundation** — COMPLETE
-- [x] **Phase 3: Fact Extraction (code-verified)** — COMPLETE (Awaiting user "OK" for Phase 4)
-- [ ] **Phase 4: Rolling Summaries** — PENDING
+- [x] **Phase 3: Fact Extraction (code-verified)** — COMPLETE
+- [x] **Phase 4: Rolling Summaries** — COMPLETE (Awaiting user "OK" for Phase 5)
 - [ ] **Phase 5: Context Assembly & Reply Integration** — PENDING
 - [ ] **Phase 6: Owner Commands & Deletion Hook** — PENDING
 - [ ] **Phase 7: Comprehensive Test Suite** — PENDING
@@ -154,6 +154,29 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Test Suite Results (P7)**:
   - Baseline before Phase 3: 188 passed.
   - Phase 3 total: 204 passed (188 existing + 16 new extraction tests in `tests/test_memory_extraction_phase3.py`). 0 regressions.
+
+---
+
+## 2.4 Verified Facts from Phase 4 Execution
+- **Database Backup Before Phase 4**: `data/butler_backup_20261009_194954.db` (540,672 bytes).
+- **Rolling Summaries Engine (`services/memory_summarizer.py`)**:
+  - Incremental summarization: generates first-time summary if none exists; generates rolling update combining previous summary + new messages since `covers_until_message_id`.
+  - Rate limiting & daily quota: enforces `MEM_MAX_SUMMARY_CALLS_PER_DAY` (30) tracked in `mem_state`.
+  - Minimum message threshold: only runs if new messages >= `MEM_SUMMARY_MIN_MESSAGES` (5), unless `force=True`.
+  - Strict length constraint: enforces `MEM_MAX_SUMMARY_LENGTH` (500 chars).
+- **Security & Safety Guardrails**:
+  - **U2 Injection Protection**: If candidate summary text triggers prompt injection detection (`MemoryInjectionDetector.detect_injection`), the new candidate is DISCARDED and the previous verified summary is kept in DB.
+  - **H6 Forbidden Topics Filter**: If candidate summary mentions health, religion, politics, sex, debt, or criminal matters (`MemoryInjectionDetector.detect_forbidden_topics`), the new candidate is DISCARDED and previous verified summary is kept.
+  - **H5 Redaction Before Storage**: Redacts credit cards (Luhn), passwords/PINs, passports, and PINFL before inserting into `mem_summaries`.
+  - **H9 No Self-Reinforcement**: Bot messages (`bot_auto`, `bot_approved`) in dialogue context explicitly marked with `(AI ASSISTANT - MAY CONTAIN ERRORS)` warning so the summarizer never mistakes AI hallucinations for factual truths.
+- **Config Keys Added**:
+  - `MEM_MAX_SUMMARY_LENGTH`: int = 500
+  - `MEM_SUMMARY_MIN_MESSAGES`: int = 5
+  - `MEM_MAX_SUMMARY_CALLS_PER_DAY`: int = 30
+  - `MEM_SUMMARY_TIMEOUT_SECONDS`: float = 20.0
+- **Test Suite Results (P7)**:
+  - Baseline before Phase 4: 204 passed.
+  - Phase 4 total: 216 passed (204 existing + 12 new summary tests in `tests/test_memory_summary_phase4.py`). 0 regressions.
 
 ---
 

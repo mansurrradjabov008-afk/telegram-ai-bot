@@ -1372,6 +1372,92 @@ class DatabaseManager:
             cur = await db.execute(query, (status, contact_user_id, item_id))
             return cur.rowcount > 0
 
+    async def save_mem_summary(
+        self,
+        contact_user_id: int,
+        summary_text: str,
+        covers_until_message_id: Optional[int],
+        version: int = 1,
+    ) -> int:
+        """Saves a rolling summary into mem_summaries with pure redaction (H5)."""
+        clean_summary = redact_text(summary_text)
+        query = """
+        INSERT INTO mem_summaries (contact_user_id, summary_text, covers_until_message_id, version, created_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                query,
+                (contact_user_id, clean_summary, covers_until_message_id, version),
+            )
+            return cur.lastrowid
+
+    async def get_latest_mem_summary(
+        self,
+        contact_user_id: int,
+    ) -> Optional[MemSummary]:
+        """Fetches the latest summary for target contact with strict isolation (H4)."""
+        query = "SELECT * FROM mem_summaries WHERE contact_user_id = ? ORDER BY id DESC LIMIT 1"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    summary = MemSummary(**dict(row))
+                    assert summary.contact_user_id == contact_user_id, "CRITICAL: Summary isolation breach!"
+                    return summary
+                return None
+
+    async def get_mem_summaries_history(
+        self,
+        contact_user_id: int,
+        limit: int = 5,
+    ) -> List[MemSummary]:
+        """Fetches historical summaries for target contact."""
+        query = "SELECT * FROM mem_summaries WHERE contact_user_id = ? ORDER BY id DESC LIMIT ?"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (contact_user_id, limit)) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    summary = MemSummary(**dict(r))
+                    assert summary.contact_user_id == contact_user_id, "CRITICAL: Summary isolation breach!"
+                    results.append(summary)
+                return results
+
+    async def get_mem_messages_since(
+        self,
+        contact_user_id: int,
+        since_message_id: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[MemMessage]:
+        """Fetches messages for contact created after since_message_id (H4)."""
+        if since_message_id is not None:
+            query = """
+            SELECT * FROM mem_messages 
+            WHERE contact_user_id = ? AND id > ? 
+            ORDER BY id ASC 
+            LIMIT ?
+            """
+            params: Tuple[Any, ...] = (contact_user_id, since_message_id, limit)
+        else:
+            query = """
+            SELECT * FROM mem_messages 
+            WHERE contact_user_id = ? 
+            ORDER BY id ASC 
+            LIMIT ?
+            """
+            params = (contact_user_id, limit)
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    m = MemMessage(**dict(r))
+                    assert m.contact_user_id == contact_user_id, "CRITICAL: Message isolation breach!"
+                    results.append(m)
+                return results
+
     # ------------------ RETRIEVAL & EMBEDDING CRUD (PHASE 2) ------------------
     async def save_mem_embedding(
         self,

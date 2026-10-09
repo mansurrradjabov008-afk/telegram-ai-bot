@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     MEM_RETRIEVAL_TOP_K: int = 5
     MEM_EMBEDDING_TIMEOUT_SECONDS: float = 15.0
     MEM_EXTRACT_TIMEOUT_SECONDS: float = 20.0
+    MEM_MAX_SUMMARY_LENGTH: int = 500
+    MEM_SUMMARY_MIN_MESSAGES: int = 5
+    MEM_MAX_SUMMARY_CALLS_PER_DAY: int = 30
+    MEM_SUMMARY_TIMEOUT_SECONDS: float = 20.0
 
     # Injection detection keywords across 4 languages (U2)
     MEM_INJECTION_KEYWORDS_UZ_LATIN: List[str] = [
