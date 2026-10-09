@@ -5,9 +5,10 @@ Ensures persistent, reboot-safe message delivery with real-time Boss notificatio
 
 import logging
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.cron import CronTrigger
 import pytz
 
 from config import settings
@@ -181,3 +182,99 @@ class SchedulerService:
                     )
             except Exception as e:
                 logger.error(f"Error restoring pending task #{task.id}: {e}")
+
+    def register_smart_digest_job(
+        self,
+        digest_service: Any,
+        notify_boss_callback: Optional[Callable] = None,
+        digest_time_str: str = "08:00",
+    ):
+        """
+        Registers daily recurring APScheduler cron job for Smart Digest V2.
+        Runs daily at DIGEST_TIME (Asia/Tashkent).
+        Persists state in digest_runs and guarantees no double send for the same date.
+        """
+        hour, minute = 8, 0
+        try:
+            parts = digest_time_str.split(":")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            pass
+
+        async def _run_daily_digest():
+            logger.info("Triggering scheduled Smart Digest V2...")
+            now_tashkent = datetime.now(self.tz)
+            date_str = now_tashkent.strftime("%Y-%m-%d")
+            already_sent = await self.db_manager.has_scheduled_digest_run_today(date_str)
+            if already_sent:
+                logger.info(f"Scheduled digest for {date_str} already completed today. Skipping.")
+                return
+
+            res = await digest_service.run_smart_digest(trigger="scheduled")
+            messages = res.get("messages", [])
+            cb = notify_boss_callback or self._notify_boss_callback
+            if cb and messages:
+                for msg in messages:
+                    res_cb = cb(msg)
+                    import inspect
+                    if inspect.isawaitable(res_cb):
+                        await res_cb
+
+        job_id = "smart_digest_daily_job"
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
+
+        self.scheduler.add_job(
+            _run_daily_digest,
+            CronTrigger(hour=hour, minute=minute, timezone=self.tz),
+            id=job_id,
+            name="Daily Smart Digest V2",
+            replace_existing=True,
+        )
+        logger.info(f"Registered daily Smart Digest job at {hour:02d}:{minute:02d} ({settings.TIMEZONE}).")
+
+    async def check_and_run_catchup_digest(
+        self,
+        digest_service: Any,
+        notify_boss_callback: Optional[Callable] = None,
+        digest_time_str: str = "08:00",
+    ):
+        """
+        Catch-up rule:
+        If the bot was offline at the scheduled time, send ONE catch-up digest after restart
+        (only if less than 12 hours late, otherwise skip and log).
+        """
+        now_tashkent = datetime.now(self.tz)
+        date_str = now_tashkent.strftime("%Y-%m-%d")
+
+        already_sent = await self.db_manager.has_scheduled_digest_run_today(date_str)
+        if already_sent:
+            logger.info(f"Catch-up check: Digest for {date_str} already completed. No catch-up needed.")
+            return
+
+        hour, minute = 8, 0
+        try:
+            parts = digest_time_str.split(":")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        except Exception:
+            pass
+
+        scheduled_today = now_tashkent.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        if now_tashkent > scheduled_today:
+            late_hours = (now_tashkent - scheduled_today).total_seconds() / 3600.0
+            if late_hours <= 12.0:
+                logger.info(f"Catch-up digest: {late_hours:.1f} hours late (<= 12h). Executing catch-up digest...")
+                res = await digest_service.run_smart_digest(trigger="scheduled")
+                messages = res.get("messages", [])
+                cb = notify_boss_callback or self._notify_boss_callback
+                if cb and messages:
+                    for msg in messages:
+                        res_cb = cb(msg)
+                        import inspect
+                        if inspect.isawaitable(res_cb):
+                            await res_cb
+            else:
+                logger.info(f"Catch-up digest skipped: {late_hours:.1f} hours late (> 12h cutoff).")

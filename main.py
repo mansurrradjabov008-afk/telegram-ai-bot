@@ -82,6 +82,19 @@ async def main():
     await scheduler_service.reload_pending_tasks_from_db()
     logger.info("✅ Scheduler service started with persistent SQLite job store.")
 
+    # Register Smart Digest daily job and run catch-up if needed
+    if getattr(settings, "DIGEST_V2_ENABLED", True):
+        scheduler_service.register_smart_digest_job(
+            digest_service=digest_service,
+            notify_boss_callback=admin_bot_service.send_notification,
+            digest_time_str=getattr(settings, "DIGEST_TIME", "08:00"),
+        )
+        await scheduler_service.check_and_run_catchup_digest(
+            digest_service=digest_service,
+            notify_boss_callback=admin_bot_service.send_notification,
+            digest_time_str=getattr(settings, "DIGEST_TIME", "08:00"),
+        )
+
     # 6. Initialize MTProto Userbot
     has_userbot_creds = userbot_service.init_client()
     if has_userbot_creds:

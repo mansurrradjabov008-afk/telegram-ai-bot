@@ -16,6 +16,7 @@ from services.ai_engine import AIEngine
 from services.digest_cleaner import DigestCleaner
 from services.digest_classifier import DigestClassifier
 from services.digest_summarizer import DigestSummarizer, DigestItem
+from services.digest_formatter import DigestFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ class DigestService:
         self.cleaner = DigestCleaner()
         self.classifier = DigestClassifier(self.ai_engine)
         self.summarizer = DigestSummarizer(self.ai_engine)
+        self.formatter = DigestFormatter()
+        self._is_run_in_progress: bool = False
         self._notify_boss_callback: Optional[Callable] = None
         self._telethon_client: Optional[Any] = None
         self._client_getter: Optional[Callable] = None
@@ -438,6 +441,7 @@ class DigestService:
             "failed_topics": summary_stats.get("failed_topics", []),
             "skipped_by_limit_count": summary_stats.get("skipped_by_limit_count", 0),
         }
+        stats["sections"] = summary_stats.get("sections", {})
         stats["total_items_selected"] = summary_stats.get("total_items_selected", 0)
         stats["discarded_by_verification_count"] = summary_stats.get("discarded_by_verification_count", 0)
         stats["failed_topics"] = summary_stats.get("failed_topics", [])
@@ -563,3 +567,92 @@ class DigestService:
             await self.db_manager.bulk_update_digest_posts_classification(posts_to_update)
 
         return res
+
+    async def run_smart_digest(
+        self,
+        trigger: str = "manual",
+        topic_filter: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes full Smart Digest V2 pipeline with concurrency guard:
+        1. Checks concurrency lock: if running, returns 'in_progress' status
+        2. Collects new posts from whitelisted sources
+        3. Cleans, transliterates, deduplicates, and filters spam
+        4. Classifies topics A-F with precedence rules
+        5. Groups events, creates summaries, and runs code verification
+        6. Formats Telegram HTML messages under 4000 characters
+        """
+        if self._is_run_in_progress:
+            return {
+                "status": "in_progress",
+                "message": "⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting.",
+                "messages": ["⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting."],
+            }
+
+        self._is_run_in_progress = True
+        try:
+            # 1. Run collection, cleaning, classification, and summarization
+            stats = await self.collect_new_posts(trigger=trigger)
+
+            # Check if sources exist
+            if stats.get("sources_count", 0) == 0:
+                empty_msg = (
+                    "ℹ️ <b>Kuzatiladigan manbalar mavjud emas!</b>\n\n"
+                    "Smart Digest V2 xabarlarni faqat siz ko'rsatgan kanallar va guruhlardan yig'adi.\n\n"
+                    "Qo'shish: <code>/digest add @kanal</code>"
+                )
+                return {
+                    "status": "no_sources",
+                    "stats": stats,
+                    "messages": [empty_msg],
+                }
+
+            run_id = stats.get("run_id")
+            sections = stats.get("sections", {})
+            selected_count = stats.get("total_items_selected", 0)
+
+            # Fallback if sections were not populated in stats
+            if not sections and run_id:
+                included_posts = await self.db_manager.get_digest_posts(
+                    run_id=run_id, status="included", limit=settings.MAX_POSTS_PER_RUN
+                )
+                if included_posts:
+                    processed_sum = await self.summarizer.process_all_topics(included_posts)
+                    sections = processed_sum.get("sections", {})
+                    selected_count = processed_sum.get("total_items_selected", 0)
+
+            if topic_filter:
+                clean_topic = topic_filter.strip().upper()
+                items = sections.get(clean_topic, [])
+                formatted_messages = self.formatter.format_single_topic(
+                    topic=clean_topic,
+                    items=items,
+                    analyzed_count=stats.get("total_collected", 0),
+                )
+            else:
+                formatted_messages = self.formatter.format_full_digest(
+                    sections=sections,
+                    analyzed_count=stats.get("total_collected", 0),
+                    selected_count=selected_count,
+                    spam_count=stats.get("spam_filtered", 0),
+                    discarded_by_verification=stats.get("discarded_by_verification_count", 0),
+                    skipped_by_limit=stats.get("skipped_by_limit_count", 0),
+                    failed_topics=stats.get("failed_topics", []),
+                )
+
+            return {
+                "status": "completed",
+                "stats": stats,
+                "sections": sections,
+                "messages": formatted_messages,
+                "run_id": run_id,
+            }
+        except Exception as e:
+            logger.error(f"Error in run_smart_digest: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "messages": [f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"],
+            }
+        finally:
+            self._is_run_in_progress = False

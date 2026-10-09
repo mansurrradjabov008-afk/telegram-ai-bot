@@ -2,7 +2,7 @@
 Asynchronous Database Manager and CRUD operations for Telegram AI Butler.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 import json
 import aiosqlite
@@ -667,7 +667,7 @@ class DatabaseManager:
         stats: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Marks a digest run as finished and records stats JSON."""
-        stats_json = json.dumps(stats, ensure_ascii=False) if stats else None
+        stats_json = json.dumps(stats, ensure_ascii=False, default=str) if stats else None
         query = """
         UPDATE digest_runs 
         SET finished_at = CURRENT_TIMESTAMP, status = ?, stats_json = ? 
@@ -866,3 +866,48 @@ class DatabaseManager:
                     if r["topic"]:
                         summary[r["topic"]] = r["cnt"]
         return summary
+
+    async def has_scheduled_digest_run_today(self, date_str: str) -> bool:
+        """
+        Checks if a scheduled digest run was already completed for date_str (YYYY-MM-DD).
+        """
+        query = """
+        SELECT COUNT(*) as cnt FROM digest_runs 
+        WHERE trigger = 'scheduled' AND status = 'completed' 
+          AND date(started_at) = date(?)
+        """
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (date_str,)) as cursor:
+                row = await cursor.fetchone()
+                return (row["cnt"] > 0) if row else False
+
+    async def get_excluded_digest_posts(
+        self,
+        run_id: Optional[int] = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[DigestPost], int]:
+        """
+        Fetches excluded/discarded/filtered posts with pagination and total count.
+        """
+        where_clauses = ["status IN ('filtered', 'discarded')"]
+        params: List[Any] = []
+        if run_id is not None:
+            where_clauses.append("digest_run_id = ?")
+            params.append(run_id)
+
+        where_str = " WHERE " + " AND ".join(where_clauses)
+        count_query = f"SELECT COUNT(*) as cnt FROM digest_posts {where_str}"
+        select_query = f"SELECT * FROM digest_posts {where_str} ORDER BY id DESC LIMIT ? OFFSET ?"
+
+        async with get_db(self.db_path) as db:
+            async with db.execute(count_query, tuple(params)) as cur:
+                count_row = await cur.fetchone()
+                total = count_row["cnt"] if count_row else 0
+
+            fetch_params = list(params) + [limit, offset]
+            async with db.execute(select_query, tuple(fetch_params)) as cur:
+                rows = await cur.fetchall()
+                posts = [DigestPost(**dict(r)) for r in rows]
+
+            return (posts, total)
