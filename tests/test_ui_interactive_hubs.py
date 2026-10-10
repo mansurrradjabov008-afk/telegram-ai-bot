@@ -1088,7 +1088,111 @@ async def test_jarvis_conversational_brain(temp_db):
     assert reply_kwargs.get("reply_markup") is None, "JARVIS conversational response must have ZERO buttons (reply_markup=None)!"
 
 
+@pytest.mark.asyncio
+async def test_jarvis_colloquial_surachi_and_username_cleaning(temp_db):
+    """
+    Test scenario from user's screenshot:
+    Prompt: '@axtamov_0777 dan surachi nima gaplar ekan'
+    1. 'surachi' / 'sorachi' must be normalized to 'so\'rachi' (NOT photographer 'suratchi').
+    2. 'extract_clean_human_name' must resolve 'axtamov_0777' to 'Axtam'.
+    3. Outreach greetings must never say 'Assalomu alaykum axtamov_0777' with numbers/underscores.
+    4. Mission goal and outreach must not hallucinate 'suratchi' (photographer).
+    5. Direct action dispatch sends clean greeting and reports back with zero buttons.
+    """
+    from services.ai_engine import (
+        normalize_colloquial_uzbek_query,
+        extract_clean_human_name,
+        sanitize_outreach_constraints,
+    )
 
+    prompt = "@axtamov_0777 dan surachi nima gaplar ekan"
 
+    # 1. Normalization & Human name extraction checks
+    norm_query = normalize_colloquial_uzbek_query(prompt)
+    assert "so'rachi" in norm_query
+    assert "surachi" not in norm_query
 
+    assert extract_clean_human_name("axtamov_0777") == "Axtam"
+    assert extract_clean_human_name("umid_namozov") == "Umid"
+    assert extract_clean_human_name("axtam_0777") == "Axtam"
 
+    # 2. Sanitizer tests (prevent photographer hallucination & raw username greeting)
+    hallucinated_outreach = "Assalomu alaykum axtamov_0777, ishlaring qanday ketyapti, tinchgina yuribsanmi? Suratchi bo'yicha nima gaplar, qanday yangiliklar bor?"
+    clean_outreach = sanitize_outreach_constraints(hallucinated_outreach, prompt, "Axtam")
+    assert "axtamov_0777" not in clean_outreach
+    assert "suratchi" not in clean_outreach.lower()
+    assert "Axtam" in clean_outreach
+
+    # 3. Full AdminBot direct action test
+    db_mgr = temp_db
+    owner_id = 999111
+    userbot_sender = AsyncMock(return_value=True)
+
+    userbot_client = MagicMock()
+    target_entity = MagicMock()
+    target_entity.id = 777123
+    target_entity.username = "axtamov_0777"
+    target_entity.first_name = ""  # No first name in profile!
+    target_entity.last_name = None
+    userbot_client.get_entity = AsyncMock(return_value=target_entity)
+    userbot_client.get_messages = AsyncMock(return_value=[])
+
+    digest_service = MagicMock()
+    digest_service.get_client.return_value = userbot_client
+
+    ai_engine = MagicMock()
+    # Mock AI engine returning inquiry analysis
+    ai_engine.analyze_contact_inquiry = AsyncMock(return_value={
+        "summary": "@axtamov_0777 bilan oldingi yozishmalar mavjud emas.",
+        "suggested_outreach": "Assalomu alaykum Axtam, ishlaring qanday ketyapti? Nima yangiliklar bor?",
+        "is_direct_send": False,
+        "direct_message": None,
+        "is_delegation_mission": True,
+        "is_direct_action": True,
+        "mission_goal": "Axtamdan hol-ahvol va yangiliklarni aniqlash",
+    })
+
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=digest_service,
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+    service.set_userbot_sender(userbot_sender)
+
+    crm_or_sched_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_natural_crm_or_schedule":
+            crm_or_sched_fn = h.callback
+            break
+    assert crm_or_sched_fn is not None
+
+    msg = MagicMock()
+    msg.from_user.id = owner_id
+    msg.text = prompt
+    msg.reply = AsyncMock()
+
+    await crm_or_sched_fn(msg)
+
+    # 4. Verify AI Engine called with clean human name 'Axtam', not username
+    ai_engine.analyze_contact_inquiry.assert_called_once()
+    ai_call_kwargs = ai_engine.analyze_contact_inquiry.call_args[1]
+    assert ai_call_kwargs["username"] == "axtamov_0777"
+    assert ai_call_kwargs["contact_name"] == "Axtam"
+
+    # 5. Verify direct dispatch
+    userbot_sender.assert_called_once()
+    sent_peer, sent_text = userbot_sender.call_args[0]
+    assert sent_peer == "@axtamov_0777"
+    assert "axtamov_0777" not in sent_text
+    assert "suratchi" not in sent_text.lower()
+    assert "Axtam" in sent_text
+
+    # 6. Verify Cockpit reply
+    assert msg.reply.called
+    reply_text = msg.reply.call_args[0][0]
+    assert "suratchi" not in reply_text.lower()
+    assert "Axtam" in reply_text
+    assert msg.reply.call_args[1].get("reply_markup") is None

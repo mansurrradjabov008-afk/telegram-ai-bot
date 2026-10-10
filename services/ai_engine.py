@@ -49,10 +49,54 @@ class ScheduleIntent(BaseModel):
     human_time: Optional[str] = Field(default=None, description="Human readable description in Uzbek")
 
 
+def normalize_colloquial_uzbek_query(query: str) -> str:
+    """
+    Normalizes colloquial Uzbek chat verbs into standard forms
+    to prevent AI from misinterpreting colloquial imperatives (e.g. 'surachi' != 'suratchi').
+    """
+    if not query:
+        return ""
+    res = query
+    # 'surachi' / 'sorachi' -> "so'rachi" (verb: ask him, NOT photographer!)
+    res = re.sub(r"(?i)\b(?:surachi|sorachi|so'rachi|surabchi)\b", "so'rachi", res)
+    res = re.sub(r"(?i)\b(?:surashtirchi|surishtirchi)\b", "surishtirchi", res)
+    res = re.sub(r"(?i)\b(?:bilibberchi|bilib\s+berchi)\b", "bilib ber", res)
+    res = re.sub(r"(?i)\b(?:yozvor(?:chi|gin)?|yozib\s*vor)\b", "yozchi", res)
+    res = re.sub(r"(?i)\b(?:aytvor(?:chi|gin)?|aytib\s*vor)\b", "aytchi", res)
+    res = re.sub(r"(?i)\b(?:xabar\s*olchi|habar\s*olchi)\b", "xabar olchi", res)
+    return res
+
+
+def extract_clean_human_name(raw: str) -> str:
+    """
+    Extracts a clean human first name from display names or telegram usernames (e.g. 'axtamov_0777' -> 'Axtam').
+    Strips digits, relationship suffixes, and converts surnames to given roots.
+    Returns empty string if no genuine alphabetic name can be formed.
+    """
+    if not raw:
+        return ""
+    s = raw.lstrip("@").strip()
+    # Strip relationship tags
+    s = re.sub(r"(?i)\b(?:jura|jo['`’‘]?ra|do['`’‘]?st|dost|tanish|og['`’‘]?ayni|bro|jigar|aka|uka)\b", "", s).strip()
+    tokens = re.split(r"[\s_]+", s)
+    for tok in tokens:
+        c = re.sub(r"\d+", "", tok).strip()
+        if len(c) >= 3 and c.isalpha():
+            # If token ends in -ov, -yev, -ova, -yeva: extract root name (axtamov -> Axtam)
+            m_sur = re.match(r"(?i)^([A-Za-zА-Яа-яЎўҚқҒғҲҳ]{3,})(?:ov|yev|ova|yeva)$", c)
+            if m_sur:
+                return m_sur.group(1).capitalize()
+            return c.capitalize()
+    return ""
+
+
 def extract_clean_first_name(full_name: str) -> str:
     """Extracts genuine first name, stripping relationship tags like 'jura', 'do'st', 'tanish'."""
     if not full_name:
         return ""
+    human = extract_clean_human_name(full_name)
+    if human:
+        return human
     cleaned = re.sub(r"(?i)\b(?:jura|jo['`’‘]?ra|do['`’‘]?st|dost|tanish|og['`’‘]?ayni|bro|jigar|aka|uka)\b", "", full_name).strip()
     parts = cleaned.split()
     return parts[0] if parts else full_name.split()[0]
@@ -61,10 +105,13 @@ def extract_clean_first_name(full_name: str) -> str:
 def sanitize_outreach_constraints(text: str, user_query: str, contact_name: str = "") -> str:
     """
     Deterministically enforces negative constraints and cleans styling.
-    Strictly guarantees that if the boss commanded 'aka dema', 'aka' is NEVER present in the outreach.
+    - Guaranteed negative constraint enforcement (e.g. 'aka dema')
+    - Strips robotic username greetings with numbers/underscores (e.g. 'Assalomu alaykum axtamov_0777' -> 'Assalomu alaykum Axtam')
+    - Cleans accidental 'suratchi bo'yicha' hallucinations when boss commanded 'surachi'
     """
     res = text.strip()
     lower_query = user_query.lower()
+    clean_human = extract_clean_human_name(contact_name)
 
     # 1. Negative constraint on "aka" (e.g. 'aka dema', 'akamas', 'aka deb aytma')
     has_no_aka_constraint = bool(re.search(
@@ -88,10 +135,23 @@ def sanitize_outreach_constraints(text: str, user_query: str, contact_name: str 
         res = re.sub(r"\b([A-Z\w]+)\s+ukajon\b", r"\1", res, flags=re.IGNORECASE)
         res = re.sub(r"\b(?:uka|ukajon)\b", "", res, flags=re.IGNORECASE)
 
-    # 3. Strip accidental relationship labels from greeting (e.g. "Assalomu alaykum Umid jura" -> "Assalomu alaykum Umid")
+    # 3. Clean accidental usernames with digits/underscores from greeting
+    # e.g. "Assalomu alaykum axtamov_0777" -> "Assalomu alaykum Axtam" or "Assalomu alaykum"
+    res = re.sub(
+        r"(?i)\b(Assalomu\s+alaykum|Salom)\s+@?[a-zA-Z0-9_]*[0-9_]+[a-zA-Z0-9_]*\b",
+        rf"\1 {clean_human}".strip() if clean_human else r"\1",
+        res
+    )
+
+    # 4. Fix accidental 'suratchi bo'yicha' hallucination when user commanded 'surachi' / 'so'rachi'
+    if not any(w in lower_query for w in ["surat", "rasm", "foto", "photo"]):
+        res = re.sub(r"(?i)\bsuratchi\s+bo['`’‘]?yicha\b", "ishlar bo'yicha", res)
+        res = re.sub(r"(?i)\bsuratchi\b", "yangiliklar", res)
+
+    # 5. Strip accidental relationship labels from greeting (e.g. "Assalomu alaykum Umid jura" -> "Assalomu alaykum Umid")
     res = re.sub(r"(?i)\b(Assalomu\s+alaykum|Salom)\s+([A-Z\w]+)\s+(?:jura|jo['`’‘]?ra|do['`’‘]?st|dost)\b", r"\1 \2", res)
 
-    # 4. Clean up punctuation and whitespace artifacts
+    # 6. Clean up punctuation and whitespace artifacts
     res = re.sub(r"\s+([,.:!?])", r"\1", res)
     res = re.sub(r",\s*,+", ",", res)
     res = re.sub(r"\s{2,}", " ", res)
@@ -644,11 +704,12 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
             "mission_goal": Optional[str],
         }
         """
-        clean_first_name = extract_clean_first_name(contact_name)
+        clean_first_name = extract_clean_human_name(contact_name) or extract_clean_human_name(username) or extract_clean_first_name(contact_name)
+        norm_query = normalize_colloquial_uzbek_query(user_query)
 
         prompt = f"""You are Antigravity (JARVIS), an ultra-smart executive AI assistant for Radjabov Mansur (Tony Stark level intelligence, precise instruction-following, zero hallucinations).
-The boss gave this command: "{user_query}"
-Target contact: {clean_first_name} (@{username})
+The boss gave this command: "{norm_query}"
+Target contact: {clean_first_name or contact_name} (@{username})
 CRM addressing style: '{addressing_style}'
 
 Recent chat history (chronological):
@@ -666,25 +727,32 @@ Analyze the boss's command, extract all instructions and negative constraints, i
   "direct_message": null,
   "is_delegation_mission": true,
   "is_direct_action": true or false,
-  "mission_goal": "Concise Uzbek description of what to determine (e.g. 'Ertangi rejalari va bandligini aniqlash')"
+  "mission_goal": "Concise Uzbek description of what to determine (e.g. '{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash')"
 }}
 
 CRITICAL INSTRUCTION-FOLLOWING RULES:
-1. STRICT NEGATIVE CONSTRAINTS (HIGHEST PRIORITY):
+1. COLLOQUIAL UZBEK VERBS ('surachi' / 'so'rachi'):
+   - 'surachi' / 'so'rachi' is an Uzbek colloquial imperative meaning 'ask him / check in on him'.
+   - It has ABSOLUTELY NOTHING to do with 'suratchi' (photographer) or pictures!
+   - If the boss says 'dan surachi nima gaplar ekan', it simply means: 'ask him what is new / check in on him'.
+   - NEVER hallucinate topics like 'suratchi' (photographer) or pictures!
+2. STRICT GREETING & NAME RULES:
+   - NEVER address the contact by their telegram username or technical handle (e.g. NEVER write 'Assalomu alaykum axtamov_0777')!
+   - Use their clean human first name '{clean_first_name}' (e.g. 'Axtam'). If clean first name is empty, greet politely WITHOUT ANY NAME (e.g. 'Assalomu alaykum, yaxshimisiz?' or 'Salom, qalaysan?').
+   - Never include relationship markers like 'jura' or 'do'st'.
+3. STRICT NEGATIVE CONSTRAINTS (HIGHEST PRIORITY):
    - You MUST inspect the boss's command for any negative constraints (e.g. 'aka dema', 'senlama', 'sizlama', 'falon narsani aytma').
-   - If the boss says 'aka dema' (or 'akamas', 'aka deb murojaat qilma'): You are STRICTLY FORBIDDEN from including the word 'aka' or 'akaxon' anywhere in the message! You must address the contact simply by their clean first name without any honorific suffix (e.g. 'Assalomu alaykum {clean_first_name}, yaxshimisiz?'). Violating this constraint is completely forbidden!
+   - If the boss says 'aka dema' (or 'akamas', 'aka deb murojaat qilma'): You are STRICTLY FORBIDDEN from including the word 'aka' or 'akaxon' anywhere in the message!
    - If the boss says 'sizlab murojat qilsang yetarli': Use polite 'siz' forms ('yaxshimisiz', 'rejalaringiz'), without adding 'aka'.
-2. CLEAN FIRST NAME:
-   - Always use clean first name '{clean_first_name}' in greetings. Never include relationship markers like 'jura' or 'do'st'.
-3. SUMMARY INTEGRITY (NO PARROTING):
+4. SUMMARY INTEGRITY (NO PARROTING):
    - 'summary': Summarize ONLY the historical messages in the chat history.
    - NEVER say 'Xo'jayin Mansur falon narsani buyurdi' or repeat the boss's current prompt in 'summary'! The boss already knows what he just commanded.
-4. DIRECT ACTION DETECTION ('is_direct_action'):
-   - If the boss gave an imperative order to write or send right now ('yozchi', 'yoz', 'jo'natchi', 'jo'nat', 'yuborchi', 'yubor', 'so'rachi', 'surishtirchi'):
+5. DIRECT ACTION DETECTION ('is_direct_action'):
+   - If the boss gave an imperative order to write, send, or ask right now ('yozchi', 'yoz', 'jo'natchi', 'jo'nat', 'yuborchi', 'yubor', 'so'rachi', 'surachi', 'sorachi', 'surishtirchi'):
      Set "is_direct_action" to true!
    - If the boss only asked a passive question or asked to prepare ('nimalar qilyapti ekan', 'tayyorlab ber'):
      Set "is_direct_action" to false.
-5. Never output markdown fences in your response, just valid JSON.
+6. Never output markdown fences in your response, just valid JSON.
 """
         for candidate_model in self._get_candidate_models():
             try:
@@ -698,12 +766,16 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
                 raw = re.sub(r"\s*```$", "", raw)
                 data = json.loads(raw)
                 if "summary" in data and "suggested_outreach" in data:
-                    # Sanitize any accidental negative constraint violations
+                    # Sanitize any accidental negative constraint violations or username greetings
                     data["suggested_outreach"] = sanitize_outreach_constraints(
                         data["suggested_outreach"],
                         user_query,
                         clean_first_name
                     )
+                    # Fix mission_goal if 'suratchi' hallucination slipped through
+                    m_goal = data.get("mission_goal", "")
+                    if "suratchi" in m_goal.lower():
+                        data["mission_goal"] = f"{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash"
                     # Clean any accidental parroting in summary
                     summary_text = data.get("summary", "")
                     if any(w in summary_text.lower() for w in ["xo'jayin", "xojayin", "radjabov", "mansur", "buyurdi", "vazifa yukladi"]):
@@ -723,27 +795,35 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
         is_delegation = any(k in lower_query for k in [
             "shugullanyapti", "shug'ullanyapti", "vaqti bormikin", "vaqti bormi",
             "rejalari", "rejelari", "menga yetkaz", "menga ayt", "menga xabar",
-            "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti", "yozchi", "yoz"
+            "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti", "yozchi", "yoz",
+            "surachi", "so'rachi", "sorachi"
         ])
         is_direct_action = bool(re.search(
-            r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?)\b",
+            r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?|surachi|sorachi)\b",
             lower_query
         ))
 
         has_no_aka = bool(re.search(r"\b(?:aka\s+dema|akamas|aka\s+deb\s+(?:aytma|yozma|murojaat\s+qilma))\b", lower_query))
         use_siz = ("siz" in lower_query) or (addressing_style == "siz")
         greeting = "Assalomu alaykum" if use_siz else "Salom"
-        name_token = clean_first_name if has_no_aka else (f"{clean_first_name} aka" if (use_siz and not has_no_aka) else clean_first_name)
+
+        if clean_first_name:
+            name_token = clean_first_name if has_no_aka else (f"{clean_first_name} aka" if (use_siz and not has_no_aka) else clean_first_name)
+            greeting_str = f"{greeting} {name_token}"
+        else:
+            greeting_str = greeting
 
         if "ertang" in lower_query:
             time_focus = "Ertangi rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Ertangi rejalaring qanaqa, nimalar bilan bandsan?"
+        elif any(w in lower_query for w in ["nima gap", "nima yangilik", "surachi", "so'rachi"]):
+            time_focus = "Ishlaringiz qanday ketyapti, nima yangiliklar bor?" if use_siz else "Ishlaring qanday ketyapti, nima gaplar?"
         else:
             time_focus = "Bugun rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Bugun rejalaring qanaqa, nimalar bilan bandsan?"
 
-        fallback_outreach = f"{greeting} {name_token}, yaxshimisiz? {time_focus} Shuni bilmoqchi edim." if use_siz else f"{greeting} {name_token}, qandaysan? {time_focus}"
+        fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
         fallback_outreach = sanitize_outreach_constraints(fallback_outreach, user_query, clean_first_name)
 
-        fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:80]}\"." if messages else f"@{username} bilan oldingi yozishmalar mavjud emas."
+        goal_label = f"{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash" if any(w in lower_query for w in ["nima gap", "surachi", "so'rachi"]) else ("Ertangi rejalarni aniqlash" if "ertang" in lower_query else "Rejalar va holatni aniqlash")
 
         return {
             "summary": fallback_summary,
@@ -752,7 +832,7 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
             "direct_message": None,
             "is_delegation_mission": is_delegation,
             "is_direct_action": is_direct_action,
-            "mission_goal": "Ertangi rejalarni aniqlash" if "ertang" in lower_query else "Rejalar va holatni aniqlash",
+            "mission_goal": goal_label,
         }
 
     async def ask_jarvis(

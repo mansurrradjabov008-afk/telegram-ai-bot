@@ -24,7 +24,13 @@ from aiogram.exceptions import TelegramBadRequest
 from config import settings
 from database.crud import DatabaseManager
 from database.models import Draft
-from services.ai_engine import AIEngine, extract_clean_first_name, sanitize_outreach_constraints
+from services.ai_engine import (
+    AIEngine,
+    extract_clean_first_name,
+    extract_clean_human_name,
+    normalize_colloquial_uzbek_query,
+    sanitize_outreach_constraints,
+)
 from services.scheduler_service import SchedulerService
 from services.digest_service import DigestService
 from services.schedule_parser import (
@@ -1258,7 +1264,8 @@ class AdminBotService:
                 "shugullanyapti", "shug'ullanyapti", "nima qilyapti", "nimalar bilan",
                 "vaqti bormikin", "vaqti bormi", "kurishishga vaqti", "ko'rishishga vaqti",
                 "rejelari qanaqa", "rejalari qanaqa", "rejalari nima", "rejelari nima",
-                "surishtir", "so'rab ber", "sorab ber", "aniqlab ber", "gacha"
+                "surishtir", "so'rab ber", "sorab ber", "aniqlab ber", "gacha",
+                "surachi", "so'rachi", "sorachi", "surabchi", "so'rabchi", "surab ko'r", "so'rab ko'r"
             ]
             if not any(k in lower_text for k in inquiry_keywords):
                 return False
@@ -1358,7 +1365,7 @@ class AdminBotService:
                 resolved_title = contact.full_name or resolved_title
 
             # 1. Clean first name for display & greetings
-            clean_display_name = extract_clean_first_name(resolved_title) or resolved_title
+            clean_display_name = extract_clean_human_name(resolved_title) or extract_clean_human_name(clean_username) or extract_clean_first_name(resolved_title) or clean_username
             addressing_style = contact.addressing_style if contact else "siz"
 
             # 2. Call AI Engine for Intelligence Synthesis
@@ -1398,7 +1405,8 @@ class AdminBotService:
             is_delegation = ai_res.get("is_delegation_mission") or any(k in lower_text for k in [
                 "shugullanyapti", "shug'ullanyapti", "vaqti bormikin", "vaqti bormi",
                 "rejalari", "rejelari", "menga yetkaz", "menga ayt", "menga xabar",
-                "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti"
+                "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti",
+                "surachi", "so'rachi", "sorachi"
             ])
 
             # Extract optional deadline (e.g. '20:00gacha', 'bugun 20:00 gacha')
@@ -1409,11 +1417,13 @@ class AdminBotService:
                 t_val = dl_match.group(2)
                 deadline_str = f"{prefix.strip()} soat {t_val} gacha"
 
-            mission_goal = ai_res.get("mission_goal") or "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash."
+            mission_goal = ai_res.get("mission_goal") or f"{clean_display_name} bilan bog'lanib, hol-ahvol va yangiliklarni aniqlash."
+            if "suratchi" in mission_goal.lower():
+                mission_goal = f"{clean_display_name} bilan bog'lanib, hol-ahvol va yangiliklarni aniqlash"
 
-            # Check if direct action was explicitly commanded ('yozchi', 'yoz', 'jo'natchi', etc.)
+            # Check if direct action was explicitly commanded ('yozchi', 'yoz', 'jo'natchi', 'so'rachi', 'surachi', etc.)
             is_direct_action = ai_res.get("is_direct_action") or bool(re.search(
-                r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?)\b",
+                r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?|surachi|sorachi)\b",
                 lower_text
             ))
 
