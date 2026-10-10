@@ -24,6 +24,7 @@ from services.rate_limiter import HumanRateLimiter
 from services.digest_service import DigestService
 from services.scheduler_service import SchedulerService
 from services.memory_service import MemoryService
+from services.style_service import StyleService
 from bot.admin_bot import AdminBotService
 from bot.userbot import UserbotService
 
@@ -57,6 +58,8 @@ async def main():
     memory_service = MemoryService(db_manager)
     await memory_service.startup_self_check()
     await memory_service.purge_retention()
+    style_service = StyleService(db_manager)
+    await style_service.purge_retention()
 
     # 3. Initialize Bot Services
     admin_bot_service = AdminBotService(
@@ -65,6 +68,7 @@ async def main():
         scheduler_service=scheduler_service,
         digest_service=digest_service,
         memory_service=memory_service,
+        style_service=style_service,
     )
     userbot_service = UserbotService(
         db_manager=db_manager,
@@ -72,6 +76,7 @@ async def main():
         rate_limiter=rate_limiter,
         digest_service=digest_service,
         memory_service=memory_service,
+        style_service=style_service,
     )
 
     # 4. Wire cross-service callbacks

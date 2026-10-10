@@ -1882,5 +1882,327 @@ class DatabaseManager:
                 "embeddings": embeddings,
             }
 
+    # ------------------ WRITING STYLE CRUD METHODS (D1 - D11) ------------------
+
+    async def init_style_schema(self) -> None:
+        """Initializes tables and indexes for Writing Style system (Migration v10)."""
+        migration_sql = """
+        CREATE TABLE IF NOT EXISTS style_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_user_id INTEGER,
+            tg_message_id INTEGER,
+            text_redacted TEXT NOT NULL,
+            char_len INTEGER NOT NULL,
+            token_len INTEGER NOT NULL,
+            lang TEXT NOT NULL,
+            register TEXT,
+            sent_at TIMESTAMP NOT NULL,
+            source TEXT NOT NULL CHECK(source IN ('import', 'live')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_style_samples_contact ON style_samples(contact_user_id);
+        CREATE INDEX IF NOT EXISTS idx_style_samples_lang ON style_samples(lang);
+        CREATE INDEX IF NOT EXISTS idx_style_samples_register ON style_samples(register);
+        CREATE INDEX IF NOT EXISTS idx_style_samples_sent_at ON style_samples(sent_at);
+        CREATE INDEX IF NOT EXISTS idx_style_samples_source ON style_samples(source);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_style_samples_contact_tg_msg 
+        ON style_samples(contact_user_id, tg_message_id) 
+        WHERE contact_user_id IS NOT NULL AND tg_message_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS style_notes (
+            scope TEXT PRIMARY KEY,
+            note_text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS style_profiles (
+            scope TEXT NOT NULL,
+            lang TEXT NOT NULL,
+            stats_json TEXT NOT NULL,
+            phrases_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            sample_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (scope, lang)
+        );
+
+        INSERT OR IGNORE INTO schema_versions (version, description)
+        VALUES (10, 'Add Writing Style schema (style_samples, style_notes, style_profiles)');
+        """
+        async with self.serialized_transaction() as db:
+            await db.executescript(migration_sql)
+
+    async def insert_style_sample(
+        self,
+        contact_user_id: Optional[int],
+        tg_message_id: Optional[int],
+        text_redacted: str,
+        char_len: int,
+        token_len: int,
+        lang: str,
+        register: Optional[str],
+        sent_at: str,
+        source: str,
+    ) -> Optional[int]:
+        """Inserts a validated style sample into style_samples."""
+        query = """
+        INSERT OR IGNORE INTO style_samples (
+            contact_user_id, tg_message_id, text_redacted, char_len, token_len, lang, register, sent_at, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                query,
+                (contact_user_id, tg_message_id, text_redacted, char_len, token_len, lang, register, sent_at, source),
+            )
+            return cur.lastrowid if cur.rowcount > 0 else None
+
+    async def get_style_samples(
+        self,
+        contact_user_id: Optional[int] = None,
+        lang: Optional[str] = None,
+        register: Optional[str] = None,
+        source: Optional[str] = None,
+        window_days: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves style samples matching criteria within active window."""
+        conditions = []
+        params: List[Any] = []
+
+        if contact_user_id is not None:
+            conditions.append("contact_user_id = ?")
+            params.append(contact_user_id)
+        if lang is not None:
+            conditions.append("lang = ?")
+            params.append(lang)
+        if register is not None:
+            conditions.append("register = ?")
+            params.append(register)
+        if source is not None:
+            conditions.append("source = ?")
+            params.append(source)
+        if window_days is not None:
+            cutoff = (datetime.now() - timedelta(days=window_days)).isoformat()
+            conditions.append("sent_at >= ?")
+            params.append(cutoff)
+
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        order_clause = " ORDER BY sent_at DESC"
+        limit_clause = f" LIMIT {int(limit)}" if limit is not None else ""
+
+        query = f"SELECT * FROM style_samples{where_clause}{order_clause}{limit_clause}"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    async def count_style_samples(
+        self,
+        contact_user_id: Optional[int] = None,
+        lang: Optional[str] = None,
+        register: Optional[str] = None,
+        window_days: Optional[int] = None,
+    ) -> int:
+        """Counts style samples within window."""
+        conditions = []
+        params: List[Any] = []
+
+        if contact_user_id is not None:
+            conditions.append("contact_user_id = ?")
+            params.append(contact_user_id)
+        if lang is not None:
+            conditions.append("lang = ?")
+            params.append(lang)
+        if register is not None:
+            conditions.append("register = ?")
+            params.append(register)
+        if window_days is not None:
+            cutoff = (datetime.now() - timedelta(days=window_days)).isoformat()
+            conditions.append("sent_at >= ?")
+            params.append(cutoff)
+
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        query = f"SELECT COUNT(*) FROM style_samples{where_clause}"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, params) as cur:
+                row = await cur.fetchone()
+                return row[0] if row else 0
+
+    async def get_bot_sent_texts_for_contact(self, contact_user_id: int) -> set[str]:
+        """
+        Gathers normalized texts of all bot-sent messages associated with this contact
+        across conversation_history, drafts, scheduled_tasks, and mem_messages (bot_*).
+        """
+        texts: set[str] = set()
+        async with get_db(self.db_path) as db:
+            # 1. conversation_history assistant rows
+            async with db.execute(
+                "SELECT content FROM conversation_history WHERE chat_id = ? AND role IN ('assistant', 'model')",
+                (contact_user_id,),
+            ) as cur:
+                for row in await cur.fetchall():
+                    if row[0]:
+                        texts.add(row[0].strip())
+
+            # 2. drafts proposed_reply and edited_reply
+            async with db.execute(
+                "SELECT proposed_reply FROM drafts WHERE contact_user_id = ?",
+                (contact_user_id,),
+            ) as cur:
+                for row in await cur.fetchall():
+                    if row[0]:
+                        texts.add(row[0].strip())
+
+            # 3. scheduled_tasks targeting this contact
+            async with db.execute(
+                "SELECT message_text FROM scheduled_tasks WHERE target_peer = ? OR target_peer = ?",
+                (str(contact_user_id), f"@{contact_user_id}"),
+            ) as cur:
+                for row in await cur.fetchall():
+                    if row[0]:
+                        texts.add(row[0].strip())
+
+            # 4. mem_messages bot_* rows
+            async with db.execute(
+                "SELECT text_redacted FROM mem_messages WHERE contact_user_id = ? AND sender IN ('bot_auto', 'bot_approved', 'owner_edited')",
+                (contact_user_id,),
+            ) as cur:
+                for row in await cur.fetchall():
+                    if row[0]:
+                        texts.add(row[0].strip())
+
+        return texts
+
+    async def delete_style_samples_for_contact(self, contact_user_id: int) -> int:
+        """Deletes all style samples for a specific contact (D10)."""
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute("DELETE FROM style_samples WHERE contact_user_id = ?", (contact_user_id,))
+                return cur.rowcount
+        except Exception:
+            return 0
+
+    async def delete_style_profiles_for_contact(self, contact_user_id: int) -> int:
+        """Deletes style profiles scoped to contact:<id> (D10)."""
+        scope = f"contact:{contact_user_id}"
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute("DELETE FROM style_profiles WHERE scope = ?", (scope,))
+                return cur.rowcount
+        except Exception:
+            return 0
+
+    async def delete_all_style_data(self) -> Dict[str, int]:
+        """Deletes ALL writing style data: samples, notes, and profiles (D10 /style forget)."""
+        try:
+            async with self.serialized_transaction() as db:
+                cur_s = await db.execute("DELETE FROM style_samples")
+                samples_deleted = cur_s.rowcount
+                cur_n = await db.execute("DELETE FROM style_notes")
+                notes_deleted = cur_n.rowcount
+                cur_p = await db.execute("DELETE FROM style_profiles")
+                profiles_deleted = cur_p.rowcount
+                return {
+                    "samples": samples_deleted,
+                    "notes": notes_deleted,
+                    "profiles": profiles_deleted,
+                }
+        except Exception:
+            return {"samples": 0, "notes": 0, "profiles": 0}
+
+    async def purge_old_style_samples(self, retention_days: Optional[int] = None) -> int:
+        """Purges samples older than STYLE_SAMPLE_RETENTION_DAYS (D10)."""
+        days = retention_days or getattr(settings, "STYLE_SAMPLE_RETENTION_DAYS", 365)
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute("DELETE FROM style_samples WHERE sent_at < ?", (cutoff,))
+                return cur.rowcount
+        except Exception:
+            return 0
+
+    async def upsert_style_note(self, scope: str, note_text: str) -> None:
+        """Upserts a style note for the specified scope."""
+        now_iso = datetime.now().isoformat()
+        query = """
+        INSERT INTO style_notes (scope, note_text, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(scope) DO UPDATE SET
+            note_text = excluded.note_text,
+            updated_at = excluded.updated_at
+        """
+        async with self.serialized_transaction() as db:
+            await db.execute(query, (scope, note_text.strip(), now_iso, now_iso))
+
+    async def get_style_note(self, scope: str) -> Optional[str]:
+        """Retrieves style note text for a given scope."""
+        try:
+            async with get_db(self.db_path) as db:
+                async with db.execute("SELECT note_text FROM style_notes WHERE scope = ?", (scope,)) as cur:
+                    row = await cur.fetchone()
+                    return row[0] if row else None
+        except Exception:
+            return None
+
+    async def get_all_style_notes(self) -> Dict[str, str]:
+        """Returns all style notes as a {scope: note_text} dictionary."""
+        try:
+            async with get_db(self.db_path) as db:
+                async with db.execute("SELECT scope, note_text FROM style_notes") as cur:
+                    rows = await cur.fetchall()
+                    return {r[0]: r[1] for r in rows}
+        except Exception:
+            return {}
+
+    async def delete_style_note(self, scope: str) -> bool:
+        """Deletes a style note for the specified scope."""
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute("DELETE FROM style_notes WHERE scope = ?", (scope,))
+                return cur.rowcount > 0
+        except Exception:
+            return False
+
+    async def upsert_style_profile(
+        self,
+        scope: str,
+        lang: str,
+        stats_json: str,
+        phrases_json: str,
+        sample_count: int,
+    ) -> None:
+        """Upserts a computed style profile into style_profiles."""
+        now_iso = datetime.now().isoformat()
+        query = """
+        INSERT INTO style_profiles (scope, lang, stats_json, phrases_json, updated_at, sample_count)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(scope, lang) DO UPDATE SET
+            stats_json = excluded.stats_json,
+            phrases_json = excluded.phrases_json,
+            updated_at = excluded.updated_at,
+            sample_count = excluded.sample_count
+        """
+        async with self.serialized_transaction() as db:
+            await db.execute(query, (scope, lang, stats_json, phrases_json, now_iso, sample_count))
+
+    async def get_style_profile(self, scope: str, lang: str) -> Optional[Dict[str, Any]]:
+        """Retrieves style profile for scope and language."""
+        async with get_db(self.db_path) as db:
+            async with db.execute(
+                "SELECT * FROM style_profiles WHERE scope = ? AND lang = ?", (scope, lang)
+            ) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def list_style_profiles(self) -> List[Dict[str, Any]]:
+        """Lists all stored style profiles."""
+        async with get_db(self.db_path) as db:
+            async with db.execute("SELECT * FROM style_profiles ORDER BY scope, lang") as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+
 
 

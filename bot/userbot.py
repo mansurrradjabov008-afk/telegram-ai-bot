@@ -34,12 +34,14 @@ class UserbotService:
         rate_limiter: HumanRateLimiter,
         digest_service: DigestService,
         memory_service: Optional[Any] = None,
+        style_service: Optional[Any] = None,
     ):
         self.db_manager = db_manager
         self.ai_engine = ai_engine
         self.rate_limiter = rate_limiter
         self.digest_service = digest_service
         self.memory_service = memory_service
+        self.style_service = style_service
 
         self.session_path = Path("data") / settings.TELEGRAM_SESSION_NAME
         self.client: Optional[TelegramClient] = None
@@ -56,6 +58,10 @@ class UserbotService:
     def set_memory_service(self, memory_service: Any):
         """Sets the Contact Memory service instance."""
         self.memory_service = memory_service
+
+    def set_style_service(self, style_service: Any):
+        """Sets the Writing Style service instance."""
+        self.style_service = style_service
 
     def set_escalation_callback(self, callback: Callable):
         """Callback to notify Admin Bot Cockpit when an escalation happens."""
@@ -474,6 +480,19 @@ class UserbotService:
                 logger.warning(f"Failed to fetch memory context for {peer_repr}: {type(e).__name__}")
                 memory_context = ""
 
+        # Writing Style Hook (Phase 5, D1, D8)
+        if getattr(self, "style_service", None) and contact and getattr(contact, "user_id", None):
+            try:
+                style_ctx = await self.style_service.get_style_context(
+                    contact_user_id=contact.user_id,
+                    incoming_text=combined_text,
+                    timeout=getattr(settings, "STYLE_CONTEXT_TIMEOUT_SECONDS", 1.0),
+                )
+                if style_ctx:
+                    memory_context = f"{memory_context}\n\n{style_ctx}" if memory_context else style_ctx
+            except Exception as e:
+                logger.warning(f"Failed to fetch style context for {peer_repr}: {type(e).__name__}")
+
         reply_text = await self.ai_engine.generate_reply(
             incoming_text=combined_text,
             sender_name=first_name,
@@ -494,6 +513,18 @@ class UserbotService:
         )
         is_sensitive = guard_result.is_sensitive
         sensitive_reason = guard_result.primary_reason
+
+        # Writing Style Honesty Guard (Phase 5, Rule D6)
+        # If incoming message asks whether AI/bot or owner, route to draft with "Muhim - tasdiq kerak"
+        if getattr(self, "style_service", None) and contact and getattr(contact, "user_id", None):
+            try:
+                is_style_active = await self.style_service.is_style_enabled_for_contact(contact.user_id)
+                if is_style_active and self.style_service.check_honesty_question(combined_text):
+                    is_sensitive = True
+                    sensitive_reason = "Muhim - tasdiq kerak"
+                    logger.info(f"Honesty check triggered for {peer_repr}. Routing to draft.")
+            except Exception as e:
+                logger.warning(f"Error during style honesty check for {peer_repr}: {type(e).__name__}")
 
         # Step 7: Auto mode and NOT sensitive
         if mode == "auto" and not is_sensitive:

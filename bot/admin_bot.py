@@ -375,6 +375,7 @@ class AdminBotService:
         scheduler_service: SchedulerService,
         digest_service: Optional[DigestService] = None,
         memory_service: Optional[Any] = None,
+        style_service: Optional[Any] = None,
         token: Optional[str] = None,
         admin_id: Optional[int] = None,
     ):
@@ -383,6 +384,7 @@ class AdminBotService:
         self.scheduler_service = scheduler_service
         self.digest_service = digest_service
         self.memory_service = memory_service
+        self.style_service = style_service
         self.token = token or settings.ADMIN_BOT_TOKEN
         self.admin_id = admin_id if admin_id is not None else settings.owner_id_effective
 
@@ -398,6 +400,10 @@ class AdminBotService:
     def set_memory_service(self, memory_service: Any):
         """Sets Contact Memory service instance."""
         self.memory_service = memory_service
+
+    def set_style_service(self, style_service: Any):
+        """Sets Writing Style service instance."""
+        self.style_service = style_service
 
     def set_userbot_sender(self, fn: Callable):
         self._userbot_send_fn = fn
@@ -417,6 +423,7 @@ class AdminBotService:
             types.BotCommand(command="drafts", description="📝 Kutilayotgan qoralamalar va tasdiqlash"),
             types.BotCommand(command="crm", description="👤 Kontakt munosabati va ko'rsatma"),
             types.BotCommand(command="status", description="📊 Tizim holati va avtonomiya hisoboti"),
+            types.BotCommand(command="style", description="✍️ Shaxsiy yozish uslubi (Writing Style)"),
             types.BotCommand(command="memory", description="🧠 Kontakt xotirasi boshqaruvi"),
             types.BotCommand(command="digest", description="📰 Executive yangiliklar xulosasi"),
             types.BotCommand(command="tasks", description="⏰ Rejalashtirilgan vazifalar"),
@@ -583,6 +590,13 @@ class AdminBotService:
             facts_count = mem_stats.get("facts", 0)
             contacts_enabled = mem_stats.get("contacts_enabled", 0)
 
+            try:
+                style_glob = await self.db_manager.get_style_note("global:state") if self.db_manager else None
+            except Exception:
+                style_glob = None
+            is_style_on = (style_glob == "on" or getattr(settings, "STYLE_ENABLED", False)) and (style_glob != "off")
+            style_status_str = "🟢 Faol" if is_style_on else "⏸ O'chiq"
+
             text = (
                 "👑 <b>ANTIGRAVITY EXECUTIVE COCKPIT</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -592,6 +606,7 @@ class AdminBotService:
                 f"├ 👥 Kontaktlar (CRM): <b>{total_contacts} ta</b> (100% ⚡ auto)\n"
                 f"├ 📝 Kutilayotgan qoralamalar: <b>{pending_drafts} ta</b>\n"
                 f"├ ⏰ Rejalashtirilgan vazifalar: <b>{pending_tasks} ta</b>\n"
+                f"├ ✍️ Yozish uslubi (Style): <b>{style_status_str}</b>\n"
                 f"└ 🧠 Faol xotira faktlari: <b>{facts_count} ta</b> ({contacts_enabled} kontakt)\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🤖 <b>To'liq avtonom va suhbatdosh boshqaruv:</b>\n"
@@ -599,6 +614,7 @@ class AdminBotService:
                 "Barcha amallarni oddiy xabar sifatida yozishingiz mumkin:\n"
                 "• <i>\"Mansurjonni senla\"</i> yoki <i>\"Alini sizla\"</i> — murojaat uslubi\n"
                 "• <i>\"Ertaga soat 10 da Aliga salom deb yoz\"</i> — reja qo'shish\n"
+                "• <i>\"/style\"</i> — shaxsiy yozish uslubi va namunalari\n"
                 "• <i>\"Sherzod haqida ma'lumot\"</i> — xotira ma'lumotlari\n"
                 "• <i>\"Dayjest\"</i> — so'nggi yangiliklar va dayjest\n"
                 "• <i>\"Hammasini yubor\"</i> — barcha qoralamalarni tasdiqlash"
@@ -3607,6 +3623,10 @@ class AdminBotService:
 
             if action == "wipe":
                 await self.db_manager.wipe_contact_memory(contact.user_id)
+                await self.db_manager.delete_style_samples_for_contact(contact.user_id)
+                await self.db_manager.delete_style_profiles_for_contact(contact.user_id)
+                await self.db_manager.delete_style_note(f"contact:{contact.user_id}")
+                await self.db_manager.delete_style_note(f"contact:{contact.user_id}:state")
                 await self.db_manager.delete_contact(contact.user_id)
                 await callback.answer(f"🔥 @{username} va uning barcha xotiralari to'liq o'chirildi!", show_alert=True)
             else:
@@ -3747,6 +3767,22 @@ class AdminBotService:
                 builder = InlineKeyboardBuilder()
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
                 return await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+            if args.lower().startswith("off"):
+                target_part = args[3:].strip()
+                if target_part:
+                    contact = await _resolve_target_contact(target_part)
+                    if contact:
+                        await self.db_manager.pause_mem_contact(contact.user_id, reason="owner_memory_off")
+                        await self.db_manager.delete_style_samples_for_contact(contact.user_id)
+                        await self.db_manager.delete_style_profiles_for_contact(contact.user_id)
+                        await self.db_manager.delete_style_note(f"contact:{contact.user_id}")
+                        await self.db_manager.delete_style_note(f"contact:{contact.user_id}:state")
+                        return await safe_reply(
+                            message,
+                            f"⏸ <b>{html.escape(contact.full_name)}</b> uchun xotira va uslub profili o'chirildi/tozalandi.",
+                            parse_mode="HTML",
+                        )
 
             contact = await _resolve_target_contact(args)
             if not contact:
@@ -4048,6 +4084,10 @@ class AdminBotService:
                 return
             user_id = int(callback.data.split(":")[1])
             counts = await self.db_manager.wipe_contact_memory(user_id)
+            await self.db_manager.delete_style_samples_for_contact(user_id)
+            await self.db_manager.delete_style_profiles_for_contact(user_id)
+            await self.db_manager.delete_style_note(f"contact:{user_id}")
+            await self.db_manager.delete_style_note(f"contact:{user_id}:state")
             report = (
                 f"✅ <b>Xotira to'liq o'chirildi!</b>\n\n"
                 f"• O'chirilgan xabarlar: <code>{counts.get('messages', 0)}</code> ta\n"
@@ -4324,6 +4364,273 @@ class AdminBotService:
             )
             await state.update_data(prompt_msg_id=prompt_msg.message_id)
             await callback.answer()
+
+        # ------------------ WRITING STYLE MANAGEMENT (D1 - D11) ------------------
+        async def _render_style_panel(target_msg: types.Message, is_callback: bool = False):
+            """Renders the Writing Style management control panel with live metrics and toggles."""
+            glob_note = await self.db_manager.get_style_note("global:state")
+            is_glob_on = (glob_note == "on" or getattr(settings, "STYLE_ENABLED", False)) and (glob_note != "off")
+            glob_status = "🟢 Yoqilgan (Faol)" if is_glob_on else "⏸ O'chirilgan"
+
+            total_samples = await self.db_manager.count_style_samples()
+            profiles = await self.db_manager.list_style_profiles()
+            all_notes = await self.db_manager.get_all_style_notes()
+            active_notes_count = len([k for k in all_notes if not k.endswith(":state")])
+
+            text = (
+                "✍️ <b>SHAXSIY YOZISH USLUBI (WRITING STYLE)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Umumiy holat:</b> {glob_status}\n"
+                f"• <b>Saqlangan namunalar (style_samples):</b> <code>{total_samples}</code> ta\n"
+                f"• <b>Hisoblangan profillar:</b> <code>{len(profiles)}</code> ta\n"
+                f"• <b>Faol uslubiy eslatmalar:</b> <code>{active_notes_count}</code> ta\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 <b>Mavjud buyruqlar:</b>\n"
+                "• <code>/style on</code> / <code>/style off</code> — umumiy uslubni yoqish/o'chirish\n"
+                "• <code>/style on @user</code> / <code>/style off @user</code> — kontakt bo'yicha yoqish\n"
+                "• <code>/style note &lt;matn&gt;</code> — umumiy uslubiy eslatma kiritish\n"
+                "• <code>/style note clear</code> — eslatmani o'chirish\n"
+                "• <code>/style rebuild</code> — profillarni qayta hisoblash\n"
+                "• <code>/style test @user</code> — A/B uslub sinovi (yubormasdan)\n"
+                "• <code>/style forget</code> — barcha uslub ma'lumotlarini tozalash"
+            )
+
+            builder = InlineKeyboardBuilder()
+            if is_glob_on:
+                builder.button(text="⏸ Uslubni o'chirish", callback_data="style:off")
+            else:
+                builder.button(text="🟢 Uslubni yoqish", callback_data="style:on")
+            builder.button(text="🔄 Qayta hisoblash", callback_data="style:rebuild")
+            builder.button(text="🗑 Hammasini tozalash", callback_data="style:forget_prompt")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(2, 1, 1)
+
+            if is_callback:
+                await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(Command("style"))
+        async def cmd_style(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            args = message.text[len("/style"):].strip()
+            if not args or args.lower() in ("panel", "status", "help"):
+                return await _render_style_panel(message, is_callback=False)
+
+            parts = args.split(maxsplit=1)
+            subcmd = parts[0].lower()
+
+            if subcmd == "on":
+                if len(parts) > 1:
+                    target_str = parts[1].strip()
+                    contact = await _resolve_target_contact(target_str)
+                    if not contact:
+                        return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(target_str)}'</b> topilmadi.", parse_mode="HTML")
+                    if self.style_service:
+                        await self.style_service.set_contact_enabled(contact.user_id, True)
+                    else:
+                        await self.db_manager.upsert_style_note(f"contact:{contact.user_id}:state", "on")
+                    return await safe_reply(
+                        message,
+                        f"🟢 <b>{html.escape(contact.full_name)}</b> uchun shaxsiy yozish uslubi yoqildi!",
+                        parse_mode="HTML",
+                    )
+                else:
+                    if self.style_service:
+                        await self.style_service.set_global_enabled(True)
+                    else:
+                        await self.db_manager.upsert_style_note("global:state", "on")
+                    return await safe_reply(message, "🟢 Shaxsiy yozish uslubi umumiy tizimda yoqildi!", parse_mode="HTML")
+
+            elif subcmd == "off":
+                if len(parts) > 1:
+                    target_str = parts[1].strip()
+                    contact = await _resolve_target_contact(target_str)
+                    if not contact:
+                        return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(target_str)}'</b> topilmadi.", parse_mode="HTML")
+                    if self.style_service:
+                        await self.style_service.set_contact_enabled(contact.user_id, False)
+                    else:
+                        await self.db_manager.upsert_style_note(f"contact:{contact.user_id}:state", "off")
+                    return await safe_reply(
+                        message,
+                        f"⏸ <b>{html.escape(contact.full_name)}</b> uchun shaxsiy yozish uslubi o'chirildi.",
+                        parse_mode="HTML",
+                    )
+                else:
+                    if self.style_service:
+                        await self.style_service.set_global_enabled(False)
+                    else:
+                        await self.db_manager.upsert_style_note("global:state", "off")
+                    return await safe_reply(message, "⏸ Shaxsiy yozish uslubi umumiy tizimda o'chirildi.", parse_mode="HTML")
+
+            elif subcmd == "note":
+                if len(parts) < 2:
+                    curr_note = await self.db_manager.get_style_note("global")
+                    note_str = html.escape(curr_note) if curr_note else "<i>(mavjud emas)</i>"
+                    return await safe_reply(
+                        message,
+                        f"📝 <b>Joriy uslubiy eslatma:</b>\n{note_str}\n\nO'zgartirish: <code>/style note &lt;matn&gt;</code>\nTozalash: <code>/style note clear</code>",
+                        parse_mode="HTML",
+                    )
+                note_text = parts[1].strip()
+                if note_text.lower() == "clear":
+                    await self.db_manager.delete_style_note("global")
+                    return await safe_reply(message, "🗑 Umumiy uslubiy eslatma o'chirildi.", parse_mode="HTML")
+
+                if len(note_text) > 200:
+                    note_text = note_text[:200]
+
+                # Check security / injection guard (D7)
+                from services.style_renderer import validate_owner_note
+                validated = validate_owner_note(note_text)
+                if not validated:
+                    return await safe_reply(
+                        message,
+                        "⚠️ <b>Xavfsizlik ogohlantirishi:</b> Eslatmada taqiqlangan buyruq, shubhali ko'rsatma yoki majburiyat so'zlari aniqlandi. Rad etildi.",
+                        parse_mode="HTML",
+                    )
+                note_text = validated
+
+                await self.db_manager.upsert_style_note("global", note_text)
+                return await safe_reply(
+                    message,
+                    f"✅ <b>Yangi uslubiy eslatma saqlandi:</b>\n<i>\"{html.escape(note_text)}\"</i>\n\n🛡️ <i>Eslatma tizim xavfsizlik qoidalariga bo'ysunadi.</i>",
+                    parse_mode="HTML",
+                )
+
+            elif subcmd == "rebuild":
+                if self.style_service:
+                    res = await self.style_service.rebuild_all_profiles()
+                    built_cnt = res.get("built", 0)
+                else:
+                    built_cnt = 0
+                return await safe_reply(
+                    message,
+                    f"✅ <b>Uslub profillari qayta hisoblandi!</b>\nHisoblangan profillar: <code>{built_cnt}</code> ta",
+                    parse_mode="HTML",
+                )
+
+            elif subcmd == "forget":
+                text = (
+                    "⚠️ <b>DIQQAT: Barcha uslub ma'lumotlarini tozalash!</b>\n\n"
+                    "Siz yozish uslubi bo'yicha to'plangan barcha namunalarni, profillarni va eslatmalarni butunlay o'chirmoqchimisiz?\n\n"
+                    "<i>Eslatma: Ushbu amal qaytarilmasdir.</i>"
+                )
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔥 Ha, barchasini tozalash", callback_data="style:forget_confirm")
+                builder.button(text="❌ Bekor qilish", callback_data="style:panel")
+                builder.adjust(1)
+                return await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+            elif subcmd == "test":
+                if len(parts) < 2:
+                    return await safe_reply(
+                        message,
+                        "ℹ️ <b>Uslub A/B sinovi:</b>\nFormat: <code>/style test @username</code> yoki <code>/style test &lt;user_id&gt;</code>",
+                        parse_mode="HTML",
+                    )
+                contact = await _resolve_target_contact(parts[1].strip())
+                if not contact:
+                    return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(parts[1].strip())}'</b> topilmadi.", parse_mode="HTML")
+
+                test_incoming = "Salom, qalaysiz? Ishlar qalay ketmoqda?"
+                reply_a = await self.ai_engine.generate_reply(
+                    incoming_text=test_incoming,
+                    sender_name=contact.full_name,
+                    contact_profile=contact,
+                    history=[],
+                    memory_context="",
+                )
+                style_ctx = ""
+                if self.style_service:
+                    style_ctx = await self.style_service.get_style_context(contact.user_id, test_incoming)
+                reply_b = await self.ai_engine.generate_reply(
+                    incoming_text=test_incoming,
+                    sender_name=contact.full_name,
+                    contact_profile=contact,
+                    history=[],
+                    memory_context=style_ctx,
+                )
+
+                report = (
+                    f"🧪 <b>USLUB A/B TAQQOSLASH SINOVI:</b>\n"
+                    f"👤 <b>Kontakt:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
+                    f"📩 <b>Test xabari:</b> <i>\"{test_incoming}\"</i>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🅰️ <b>A VARIANT (Uslubsiz / Standart):</b>\n"
+                    f"<code>{html.escape(reply_a or '')}</code>\n\n"
+                    f"🅱️ <b>B VARIANT (Shaxsiy uslubingiz bilan):</b>\n"
+                    f"<code>{html.escape(reply_b or '')}</code>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"<i>Eslatma: Bu sinov xabari bo'lib, kontaktga hech narsa yuborilmadi.</i>"
+                )
+                return await safe_reply(message, report, parse_mode="HTML")
+
+            return await _render_style_panel(message, is_callback=False)
+
+        @dp.callback_query(F.data == "style:panel")
+        async def handle_style_panel(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await _render_style_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "style:on")
+        async def handle_style_on(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            if self.style_service:
+                await self.style_service.set_global_enabled(True)
+            else:
+                await self.db_manager.upsert_style_note("global:state", "on")
+            await callback.answer("🟢 Shaxsiy yozish uslubi yoqildi!")
+            await _render_style_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "style:off")
+        async def handle_style_off(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            if self.style_service:
+                await self.style_service.set_global_enabled(False)
+            else:
+                await self.db_manager.upsert_style_note("global:state", "off")
+            await callback.answer("⏸ Shaxsiy yozish uslubi o'chirildi.")
+            await _render_style_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "style:rebuild")
+        async def handle_style_rebuild(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            if self.style_service:
+                res = await self.style_service.rebuild_all_profiles()
+                await callback.answer(f"✅ Qayta hisoblandi ({res.get('built', 0)} ta profil)!", show_alert=True)
+            else:
+                await callback.answer("Uslub servisi topilmadi.", show_alert=True)
+            await _render_style_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "style:forget_prompt")
+        async def handle_style_forget_prompt(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            text = (
+                "⚠️ <b>DIQQAT: Barcha uslub ma'lumotlarini tozalash!</b>\n\n"
+                "Siz yozish uslubi bo'yicha to'plangan barcha namunalarni, profillarni va eslatmalarni butunlay o'chirmoqchimisiz?\n\n"
+                "<i>Eslatma: Ushbu amal qaytarilmasdir.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔥 Ha, barchasini tozalash", callback_data="style:forget_confirm")
+            builder.button(text="❌ Bekor qilish", callback_data="style:panel")
+            builder.adjust(1)
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data == "style:forget_confirm")
+        async def handle_style_forget_confirm(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            res = await self.db_manager.delete_all_style_data()
+            await callback.answer(f"🔥 Barcha uslub ma'lumotlari tozalandi ({res.get('samples', 0)} ta namuna)!", show_alert=True)
+            await _render_style_panel(callback.message, is_callback=True)
 
     async def send_draft_for_approval(self, draft: Draft):
         """Sends interactive draft approval request to Boss with inline action buttons."""
