@@ -584,15 +584,21 @@ class AdminBotService:
             )
 
             builder = InlineKeyboardBuilder()
-            builder.button(text="🧠 Xotira boshqaruvi", callback_data="menu:memory")
-            builder.button(text="👥 Kontaktlar (CRM)", callback_data="menu:contacts")
+            if pending_drafts > 0:
+                builder.button(text=f"🚀 Barcha qoralamalarni tasdiqlash ({pending_drafts})", callback_data="draft_bulk:send_all")
+
+            builder.button(text="🧠 Xotira", callback_data="menu:memory")
+            builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
             builder.button(text=draft_btn_text, callback_data="menu:drafts")
             builder.button(text=task_btn_text, callback_data="menu:tasks")
             builder.button(text="📰 Executive Digest", callback_data="digest:open")
-            builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
             builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-            builder.button(text="🔄 Yangilash", callback_data="menu:main")
-            builder.adjust(2, 2, 2, 2)
+
+            adjust_layout = []
+            if pending_drafts > 0:
+                adjust_layout.append(1)
+            adjust_layout.extend([2, 2, 2])
+            builder.adjust(*adjust_layout)
 
             if is_callback:
                 await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")

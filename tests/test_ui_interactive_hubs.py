@@ -172,9 +172,10 @@ async def test_dashboard_renders_live_metrics_and_hubs(temp_db):
     assert "menu:drafts" in callbacks
     assert "menu:tasks" in callbacks
     assert "digest:open" in callbacks
-    assert "menu:mode" in callbacks
     assert "menu:status" in callbacks
-    assert "menu:main" in callbacks
+    # Obsolete clutter buttons must NOT be present
+    assert "menu:mode" not in callbacks, "menu:mode should be removed from dashboard"
+    assert "menu:main" not in callbacks, "menu:main (refresh) should be removed from dashboard"
 
 
 @pytest.mark.asyncio
