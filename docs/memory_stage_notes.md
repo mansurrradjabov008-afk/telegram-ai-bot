@@ -509,3 +509,15 @@ Current Branch: `stage-memory-hardening`
   - GREEN: All tests passed cleanly after fixes.
   - Regression Suite: 43/43 tests passed in 17.56s. Zero regressions across all test suites.
 
+---
+
+## 14. Pure Conversational / Buttonless Autonomy Mode (Zero Buttons)
+- **100% Buttonless Executive UX**:
+  - `get_main_reply_keyboard`: Returns `ReplyKeyboardRemove(remove_keyboard=True)` to wipe persistent reply keyboards from the user's client on `/start`.
+  - `_render_dashboard`: Eliminated all inline button grids (`reply_markup=None` / `ReplyKeyboardRemove`). Renders pure executive text briefing with live metrics and conversational tips.
+  - Full Automation: All 8 contacts in `data/butler.db` run in `⚡ auto` hands-free mode.
+  - Conversational Control: All butler operations (CRM styles, memory facts, scheduling, digests, bulk drafts, tasks) operate via natural Uzbek text and standard slash commands without requiring button taps.
+- **Verification (P7 Red-Green Protocol)**:
+  - Tests updated: `test_main_reply_keyboard_structure`, `test_cmd_start_sends_keyboards`, `test_dashboard_renders_live_metrics_and_hubs` in `tests/test_ui_interactive_hubs.py`.
+  - RED: All 3 failed before fix (asserting keyboard remove and zero inline buttons).
+  - GREEN: All 3 passed in 5.60s. Full suite: 43/43 passed in 17.11s. Zero regressions.

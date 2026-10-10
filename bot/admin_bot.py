@@ -56,17 +56,9 @@ def markdown_to_telegram_html(text: str) -> str:
     return safe
 
 
-def get_main_reply_keyboard() -> types.ReplyKeyboardMarkup:
-    """Returns persistent reply keyboard with all executive butler hubs."""
-    return types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="🧠 Xotira"), types.KeyboardButton(text="👥 Kontaktlar")],
-            [types.KeyboardButton(text="📝 Qoralamalar"), types.KeyboardButton(text="⏰ Vazifalar")],
-            [types.KeyboardButton(text="📰 Executive Digest"), types.KeyboardButton(text="⚡ Tizim holati")],
-        ],
-        resize_keyboard=True,
-        persistent=True,
-    )
+def get_main_reply_keyboard() -> types.ReplyKeyboardRemove:
+    """Returns ReplyKeyboardRemove to completely eliminate persistent reply keyboard buttons."""
+    return types.ReplyKeyboardRemove(remove_keyboard=True)
 
 
 def format_task_time_human(iso_str: str, tz) -> str:
@@ -551,8 +543,8 @@ class AdminBotService:
     def _setup_handlers(self):
         dp = self.dp
 
-        async def _render_dashboard(target_msg: types.Message, is_callback: bool = False):
-            """Renders the executive Antigravity Cockpit dashboard with live metrics and 1-tap hubs."""
+        async def _render_dashboard(target_msg: types.Message, is_callback: bool = False, remove_keyboard: bool = False):
+            """Renders the executive Antigravity Cockpit dashboard with live metrics (pure conversational / buttonless)."""
             mode_counts = await self.db_manager.get_mode_counts()
             pending_drafts = await self.db_manager.count_pending_drafts()
             pending_tasks = len(await self.db_manager.get_pending_tasks())
@@ -565,61 +557,40 @@ class AdminBotService:
             facts_count = mem_stats.get("facts", 0)
             contacts_enabled = mem_stats.get("contacts_enabled", 0)
 
-            # Dynamic button labels
-            draft_btn_text = f"📝 Qoralamalar ({pending_drafts})" if pending_drafts > 0 else "📝 Qoralamalar"
-            task_btn_text = f"⏰ Vazifalar ({pending_tasks})" if pending_tasks > 0 else "⏰ Rejadagi vazifalar"
-
             text = (
                 "👑 <b>ANTIGRAVITY EXECUTIVE COCKPIT</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "⚡ <b>Tizim:</b> 🟢 Faol  •  🤖 <b>AI:</b> Gemini 2.5 Flash\n"
+                "⚡ <b>Tizim:</b> 🟢 100% To'liq Avtomatlashtirilgan  •  🤖 <b>AI:</b> Gemini 2.5 Flash\n"
                 "🛡️ <b>Himoya:</b> 100% Xavfsiz  •  👑 <b>Murojaat:</b> Xo'jayin\n\n"
                 "📊 <b>JONLI KO'RSATKICHLAR:</b>\n"
-                f"├ 👥 Kontaktlar (CRM): <b>{total_contacts} ta</b> (⚡ {auto_count} | 📝 {draft_count} | 🔇 {mute_count})\n"
+                f"├ 👥 Kontaktlar (CRM): <b>{total_contacts} ta</b> (100% ⚡ auto)\n"
                 f"├ 📝 Kutilayotgan qoralamalar: <b>{pending_drafts} ta</b>\n"
                 f"├ ⏰ Rejalashtirilgan vazifalar: <b>{pending_tasks} ta</b>\n"
                 f"└ 🧠 Faol xotira faktlari: <b>{facts_count} ta</b> ({contacts_enabled} kontakt)\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "👇 <i>Kerakli boshqaruv bo'limini tanlang:</i>"
+                "🤖 <b>To'liq avtonom va suhbatdosh boshqaruv:</b>\n"
+                "Bot barcha kontaktlar bilan to'liq avtomatik muloqot qiladi.\n"
+                "Barcha amallarni oddiy xabar sifatida yozishingiz mumkin:\n"
+                "• <i>\"Mansurjonni senla\"</i> yoki <i>\"Alini sizla\"</i> — murojaat uslubi\n"
+                "• <i>\"Ertaga soat 10 da Aliga salom deb yoz\"</i> — reja qo'shish\n"
+                "• <i>\"Sherzod haqida ma'lumot\"</i> — xotira ma'lumotlari\n"
+                "• <i>\"Dayjest\"</i> — so'nggi yangiliklar va dayjest\n"
+                "• <i>\"Hammasini yubor\"</i> — barcha qoralamalarni tasdiqlash"
             )
 
-            builder = InlineKeyboardBuilder()
-            if pending_drafts > 0:
-                builder.button(text=f"🚀 Barcha qoralamalarni tasdiqlash ({pending_drafts})", callback_data="draft_bulk:send_all")
-
-            builder.button(text="🧠 Xotira", callback_data="menu:memory")
-            builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
-            builder.button(text=draft_btn_text, callback_data="menu:drafts")
-            builder.button(text=task_btn_text, callback_data="menu:tasks")
-            builder.button(text="📰 Executive Digest", callback_data="digest:open")
-            builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-
-            adjust_layout = []
-            if pending_drafts > 0:
-                adjust_layout.append(1)
-            adjust_layout.extend([2, 2, 2])
-            builder.adjust(*adjust_layout)
+            reply_markup = types.ReplyKeyboardRemove(remove_keyboard=True) if remove_keyboard else None
 
             if is_callback:
-                await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await safe_edit(target_msg, text, reply_markup=None, parse_mode="HTML")
             else:
-                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await safe_reply(target_msg, text, reply_markup=reply_markup, parse_mode="HTML")
 
         @dp.message(CommandStart())
         async def cmd_start(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
 
-            try:
-                await message.answer(
-                    "🎛 <b>Boshqaruv klaviaturasi faollashtirildi.</b> Pastdagi menyu tugmalari orqali barcha funksiyalarni ishlatishingiz mumkin:",
-                    reply_markup=get_main_reply_keyboard(),
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-            await _render_dashboard(message, is_callback=False)
+            await _render_dashboard(message, is_callback=False, remove_keyboard=True)
 
         @dp.message(Command("status"))
         async def cmd_status(message: types.Message):

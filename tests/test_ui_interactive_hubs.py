@@ -28,30 +28,15 @@ async def temp_db(tmp_path: Path):
 
 
 def test_main_reply_keyboard_structure():
-    """Verify persistent reply keyboard has all 6 streamlined executive hubs and resize options."""
+    """Verify get_main_reply_keyboard returns ReplyKeyboardRemove for pure buttonless UX."""
     kb = get_main_reply_keyboard()
-    assert isinstance(kb, types.ReplyKeyboardMarkup)
-    assert kb.resize_keyboard is True
-    assert kb.persistent is True
-
-    # Check button texts
-    all_texts = [btn.text for row in kb.keyboard for btn in row]
-    assert len(all_texts) == 6, f"Expected 6 buttons, got {len(all_texts)}: {all_texts}"
-    expected_buttons = [
-        "🧠 Xotira",
-        "👥 Kontaktlar",
-        "📝 Qoralamalar",
-        "⏰ Vazifalar",
-        "📰 Executive Digest",
-        "⚡ Tizim holati",
-    ]
-    for exp in expected_buttons:
-        assert exp in all_texts, f"Missing expected button: {exp}"
+    assert isinstance(kb, types.ReplyKeyboardRemove)
+    assert kb.remove_keyboard is True
 
 
 @pytest.mark.asyncio
 async def test_cmd_start_sends_keyboards(temp_db):
-    """Verify cmd_start activates reply keyboard and sends inline dashboard."""
+    """Verify cmd_start removes persistent reply keyboards and renders clean cockpit."""
     db_mgr = temp_db
     owner_id = 999111
     service = AdminBotService(
@@ -78,10 +63,12 @@ async def test_cmd_start_sends_keyboards(temp_db):
 
     await cmd_start_fn(mock_msg)
 
-    # Verify answer was called (reply keyboard activation)
-    assert mock_msg.answer.called
-    call_kwargs = mock_msg.answer.call_args.kwargs
-    assert isinstance(call_kwargs.get("reply_markup"), types.ReplyKeyboardMarkup)
+    # Verify reply was called with ReplyKeyboardRemove to clear keyboard from client
+    assert mock_msg.reply.called
+    call_kwargs = mock_msg.reply.call_args.kwargs
+    markup = call_kwargs.get("reply_markup")
+    assert isinstance(markup, types.ReplyKeyboardRemove)
+    assert markup.remove_keyboard is True
 
 
 @pytest.mark.asyncio
@@ -165,17 +152,9 @@ async def test_dashboard_renders_live_metrics_and_hubs(temp_db):
     assert "JONLI KO'RSATKICHLAR" in text
 
     markup = mock_msg.reply.call_args.kwargs.get("reply_markup")
-    assert markup is not None
-    callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-    assert "menu:memory" in callbacks
-    assert "menu:contacts" in callbacks
-    assert "menu:drafts" in callbacks
-    assert "menu:tasks" in callbacks
-    assert "digest:open" in callbacks
-    assert "menu:status" in callbacks
-    # Obsolete clutter buttons must NOT be present
-    assert "menu:mode" not in callbacks, "menu:mode should be removed from dashboard"
-    assert "menu:main" not in callbacks, "menu:main (refresh) should be removed from dashboard"
+    # In pure buttonless mode, dashboard has NO inline keyboard buttons
+    has_inline = hasattr(markup, "inline_keyboard") and bool(getattr(markup, "inline_keyboard", []))
+    assert not has_inline, "Dashboard must have ZERO inline buttons in buttonless mode"
 
 
 @pytest.mark.asyncio
