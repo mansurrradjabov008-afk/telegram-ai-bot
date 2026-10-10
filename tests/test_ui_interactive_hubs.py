@@ -245,3 +245,128 @@ async def test_callback_crm_add_prompt(temp_db):
     assert cb.message.edit_text.called
     edited_text = cb.message.edit_text.call_args[0][0]
     assert "YANGI KONTAKT QO'SHISH" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_unified_contact_card_renders_all_facets(temp_db):
+    """Verify unified contact card renders CRM, mode, memory stats, and 1-tap toggles."""
+    db_mgr = temp_db
+    await db_mgr.upsert_contact(
+        user_id=5001,
+        username="alisher_dev",
+        full_name="Alisher Dev",
+        addressing_style="siz",
+        mode="draft",
+        custom_instructions="Hurmat bilan gaplash",
+    )
+    await db_mgr.create_mem_fact(
+        contact_user_id=5001,
+        category="preference",
+        text="Ertalab qora kofe ichadi",
+        source_type="owner_confirmed",
+        source_message_ids=[-1],
+        confidence=1.0,
+    )
+
+    owner_id = 999111
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=MagicMock(),
+        scheduler_service=MagicMock(),
+        digest_service=MagicMock(),
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+
+    mem_back_fn = None
+    for h in service.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_mem_back":
+            mem_back_fn = h.callback
+            break
+    assert mem_back_fn is not None
+
+    cb = MagicMock()
+    cb.from_user.id = owner_id
+    cb.data = "mem_back:5001"
+    cb.answer = AsyncMock()
+    cb.message = MagicMock()
+    cb.message.edit_text = AsyncMock()
+
+    await mem_back_fn(cb)
+    assert cb.message.edit_text.called
+    text = cb.message.edit_text.call_args[0][0]
+    markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+
+    # Verify all facets in unified card text
+    assert "KONTAKT" in text
+    assert "Murojaat uslubi:" in text
+    assert "Avtonomiya rejimi:" in text
+    assert "Saqlangan xabarlar:" in text
+    assert "Faol faktlar:" in text
+
+    # Verify 1-tap buttons in markup
+    callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+    assert "crm_style:alisher_dev:sen" in callbacks
+    assert "mode_set:5001:auto" in callbacks
+    assert "mode_set:5001:draft" in callbacks
+    assert "mode_set:5001:mute" in callbacks
+    assert "mem_facts_view:5001" in callbacks
+    assert "mem_forget_prompt:5001" in callbacks
+    assert "menu:contacts" in callbacks
+    assert "menu:main" in callbacks
+
+
+@pytest.mark.asyncio
+async def test_natural_language_contact_actions(temp_db):
+    """Verify natural language without @ updates contact style and mode."""
+    db_mgr = temp_db
+    await db_mgr.upsert_contact(
+        user_id=6001,
+        username="dilshod_pro",
+        full_name="Dilshod Aka",
+        addressing_style="siz",
+        mode="draft",
+    )
+
+    owner_id = 999111
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=MagicMock(),
+        scheduler_service=MagicMock(),
+        digest_service=MagicMock(),
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+
+    fallback_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_fallback_natural_text":
+            fallback_fn = h.callback
+            break
+    assert fallback_fn is not None
+
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value=None)
+
+    # 1. Test "Dilshodni senla"
+    msg1 = MagicMock()
+    msg1.from_user.id = owner_id
+    msg1.text = "Dilshodni senla"
+    msg1.reply_to_message = None
+    msg1.reply = AsyncMock()
+
+    await fallback_fn(msg1, state)
+    contact_after_1 = await db_mgr.get_contact_by_id(6001)
+    assert contact_after_1.addressing_style == "sen"
+
+    # 2. Test "Dilshodni auto qil"
+    msg2 = MagicMock()
+    msg2.from_user.id = owner_id
+    msg2.text = "Dilshodni auto qil"
+    msg2.reply_to_message = None
+    msg2.reply = AsyncMock()
+
+    await fallback_fn(msg2, state)
+    contact_after_2 = await db_mgr.get_contact_by_id(6001)
+    assert contact_after_2.mode == "auto"
+

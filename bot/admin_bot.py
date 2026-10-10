@@ -1264,14 +1264,14 @@ class AdminBotService:
                     return c
             return None
 
-        async def _render_single_contact_mode(target_msg: types.Message, contact: Any, is_callback: bool = False):
-            """Renders individual contact mode switch card with clear buttons."""
+        async def _render_unified_contact_card(target_msg: types.Message, contact: Any, is_callback: bool = False):
+            """Renders the Unified VIP Contact Card combining CRM tone, autonomy mode, memory stats and 1-tap controls."""
             mode = getattr(contact, "mode", "draft") or "draft"
             uname = f"@{contact.username}" if contact.username else f"ID:{contact.user_id}"
             safe_uname = html.escape(uname)
             safe_name = html.escape(contact.full_name or "Noma'lum")
             style = getattr(contact, "addressing_style", "siz") or "siz"
-            safe_style = "🔵 SIZ (Sizlash)" if style == "siz" else "🟢 SEN (Sensirash)"
+            safe_style = "🔵 SIZ (Sizlash / Hurmat)" if style == "siz" else "🟢 SEN (Sensirash / Yaqin do'st)"
             safe_instr = html.escape(contact.custom_instructions or "Mavjud emas")
 
             mode_badges = {
@@ -1280,17 +1280,54 @@ class AdminBotService:
                 "mute": "🔇 mute (Ovozsiz / E'tiborsiz)",
             }
 
+            mem_contact = await self.db_manager.get_mem_contact(contact.user_id)
+            stats = await self.db_manager.get_mem_stats(contact.user_id)
+            summary = await self.db_manager.get_latest_mem_summary(contact.user_id)
+            open_items = await self.db_manager.get_mem_open_items(contact.user_id, status="open")
+
+            status_str = "🟢 Faol" if (mem_contact and mem_contact.memory_enabled) else "⏸ To'xtatilgan"
+            if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
+                status_str += f" (Sabab: {mem_contact.paused_reason})"
+
+            formatted_summary = html.escape(summary.summary_text) if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
+            open_items_text = ""
+            if open_items:
+                open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
+                    [f"• {html.escape(it.text)}" for it in open_items[:5]]
+                )
+
+            embed_count = stats.get("embeddings", 0)
+            embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
+
             text = (
-                f"⚙️ <b>KONTAKT AVTONOMIYA REJIMI:</b>\n\n"
-                f"👤 <b>Kontakt:</b> <code>{safe_uname}</code> ({safe_name})\n"
+                f"🧠 <b>KONTAKT XOTIRASI VA BOSHQARUV KARTASI:</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Kontakt:</b> <b>{safe_name}</b> (<code>{safe_uname}</code>)\n"
                 f"🆔 <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
-                f"🔄 <b>Hozirgi rejim:</b> <b>{mode_badges.get(mode, mode)}</b>\n"
                 f"🗣 <b>Murojaat uslubi:</b> {safe_style}\n"
-                f"📜 <b>Ko'rsatma:</b> <i>\"{safe_instr}\"</i>\n\n"
-                f"💡 <i>Rejimni o'zgartirish uchun kerakli tugmani bosing:</i>"
+                f"🔄 <b>Avtonomiya rejimi:</b> <b>{mode_badges.get(mode, mode)}</b>\n"
+                f"📜 <b>Ko'rsatma:</b> <i>\"{safe_instr}\"</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Xotira holati:</b> {status_str}\n"
+                f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
+                f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
+                f"• <b>Vektorlar:</b> {embed_str}\n\n"
+                f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
+                f"{formatted_summary}"
+                f"{open_items_text}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 <i>Quyidagi tezkor tugmalar orqali uslub, rejim va xotirani 1 ta bosishda boshqaring:</i>"
             )
 
             builder = InlineKeyboardBuilder()
+
+            # Row 1: SIZ / SEN 1-tap toggle
+            switch_to = "sen" if style == "siz" else "siz"
+            switch_btn = "🟢 'SEN' ga o'tkazish" if style == "siz" else "🔵 'SIZ' ga o'tkazish"
+            target_user = contact.username or str(contact.user_id)
+            builder.button(text=switch_btn, callback_data=f"crm_style:{target_user}:{switch_to}")
+
+            # Row 2: Mode 1-tap toggles with checkmark
             builder.button(
                 text="✅ ⚡ Auto" if mode == "auto" else "⚡ Auto",
                 callback_data=f"mode_set:{contact.user_id}:auto",
@@ -1303,14 +1340,25 @@ class AdminBotService:
                 text="✅ 🔇 Mute" if mode == "mute" else "🔇 Mute",
                 callback_data=f"mode_set:{contact.user_id}:mute",
             )
-            builder.button(text="📋 Barcha rejimlar", callback_data="mode:refresh")
+
+            # Row 3: Memory actions
+            builder.button(text=f"📋 Faktlar ({stats.get('facts', 0)})", callback_data=f"mem_facts_view:{contact.user_id}")
+            builder.button(text="🗑 Xotirani tozalash (/forget)", callback_data=f"mem_forget_prompt:{contact.user_id}")
+
+            # Row 4: Navigation
+            builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(3, 2)
+
+            builder.adjust(1, 3, 2, 2)
 
             if is_callback:
                 await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
             else:
                 await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        async def _render_single_contact_mode(target_msg: types.Message, contact: Any, is_callback: bool = False):
+            """Renders individual contact card by delegating to unified card."""
+            await _render_unified_contact_card(target_msg, contact, is_callback=is_callback)
 
         async def _render_mode_panel(target_msg: types.Message, is_callback: bool = False):
             """Renders interactive autonomy mode management cockpit with one-tap toggle buttons."""
@@ -2441,6 +2489,111 @@ class AdminBotService:
                 return
             await cmd_start(message)
 
+        async def _handle_natural_contact_action(message: types.Message) -> bool:
+            """
+            Parses natural language commands targeting contacts without requiring '@'.
+            Recognizes:
+            - Tone: 'Alisherni senla', 'Dilshodni sizla', 'Farruxni sensirab gaplash'
+            - Mode: 'Alisherni auto qil', 'Dilshodni draft rejimiga o'tkaz', 'Murodni mute qil'
+            - Info/Memory: 'Alisher haqida', 'Alisher kartasi', 'Alisher xotirasi'
+            """
+            raw_text = (message.text or "").strip()
+            if not raw_text:
+                return False
+
+            contacts = await self.db_manager.list_contacts()
+            if not contacts:
+                return False
+
+            lower_text = raw_text.lower()
+
+            # Find matching contact from text
+            matched_contact = None
+            for c in contacts:
+                keys = []
+                if c.username:
+                    keys.append(c.username.lower().lstrip("@"))
+                if c.full_name:
+                    parts = [p.lower() for p in re.split(r"[\s_]+", c.full_name) if len(p) >= 3]
+                    keys.extend(parts)
+                keys.append(str(c.user_id))
+
+                for k in keys:
+                    if re.search(rf"(?i)\b{re.escape(k)}(?:ni|ga|da|dan|ning)?\b", lower_text):
+                        matched_contact = c
+                        break
+                if matched_contact:
+                    break
+
+            if not matched_contact:
+                return False
+
+            # Check 1: Tone/Style intent (senla / sizla)
+            is_sen = any(w in lower_text for w in ["senla", "sensira", "sensirab", "sen deb", " sen ", "sen bo'l", "sen bol", "dost", "do'st"])
+            is_siz = any(w in lower_text for w in ["sizla", "sizlab", "siz deb", " siz ", "hurmat", "rasmiy"])
+
+            if is_sen and not is_siz:
+                await self.db_manager.update_addressing_style(matched_contact.user_id, "sen")
+                display_name = matched_contact.full_name or matched_contact.username or str(matched_contact.user_id)
+                await safe_reply(
+                    message,
+                    f"✅ <b>{html.escape(display_name)}</b> endi 🟢 <b>SEN (Sensirash)</b> deb muloqot qilinadi!",
+                    parse_mode="HTML",
+                )
+                updated_c = await self.db_manager.get_contact_by_id(matched_contact.user_id)
+                await _render_unified_contact_card(message, updated_c, is_callback=False)
+                return True
+
+            if is_siz and not is_sen:
+                await self.db_manager.update_addressing_style(matched_contact.user_id, "siz")
+                display_name = matched_contact.full_name or matched_contact.username or str(matched_contact.user_id)
+                await safe_reply(
+                    message,
+                    f"✅ <b>{html.escape(display_name)}</b> endi 🔵 <b>SIZ (Sizlash)</b> deb muloqot qilinadi!",
+                    parse_mode="HTML",
+                )
+                updated_c = await self.db_manager.get_contact_by_id(matched_contact.user_id)
+                await _render_unified_contact_card(message, updated_c, is_callback=False)
+                return True
+
+            # Check 2: Mode intent (auto / draft / mute)
+            is_auto = any(w in lower_text for w in ["auto", "avto", "avtomatik"])
+            is_draft = any(w in lower_text for w in ["draft", "qoralama", "tasdiq"])
+            is_mute = any(w in lower_text for w in ["mute", "ovozsiz", "o'chir", "ochir", "jim"])
+
+            target_mode = None
+            if is_auto and not is_draft and not is_mute:
+                target_mode = "auto"
+            elif is_draft and not is_auto and not is_mute:
+                target_mode = "draft"
+            elif is_mute and not is_auto and not is_draft:
+                target_mode = "mute"
+
+            if target_mode:
+                await self.db_manager.update_contact_mode(matched_contact.user_id, target_mode)
+                labels = {
+                    "auto": "⚡ auto (Avtomatik javob)",
+                    "draft": "📝 draft (Qoralama / Tasdiq bilan)",
+                    "mute": "🔇 mute (Ovozsiz)",
+                }
+                display_name = matched_contact.full_name or matched_contact.username or str(matched_contact.user_id)
+                await safe_reply(
+                    message,
+                    f"✅ <b>{html.escape(display_name)}</b> avtonomiya rejimi <b>{labels.get(target_mode, target_mode)}</b> ga o'zgartirildi!",
+                    parse_mode="HTML",
+                )
+                updated_c = await self.db_manager.get_contact_by_id(matched_contact.user_id)
+                await _render_unified_contact_card(message, updated_c, is_callback=False)
+                return True
+
+            # Check 3: Card / Memory query intent
+            is_card_query = any(w in lower_text for w in ["kartasi", "karta", "xotirasi", "xotira", "haqida", "profil", "kim bu"])
+            if is_card_query:
+                await _render_unified_contact_card(message, matched_contact, is_callback=False)
+                return True
+
+            return False
+
         @dp.message(StateFilter(None), F.text & ~F.text.startswith("/"))
         async def handle_fallback_natural_text(message: types.Message, state: FSMContext):
             if not self._is_admin(message.from_user.id):
@@ -2470,6 +2623,10 @@ class AdminBotService:
 
             handled = await _schedule_and_respond(message, message.text)
             if handled:
+                return
+
+            handled_contact = await _handle_natural_contact_action(message)
+            if handled_contact:
                 return
 
             text = (
@@ -2635,14 +2792,18 @@ class AdminBotService:
             username = parts[1]
             new_style = parts[2]
 
-            contact = await self.db_manager.get_contact_by_username(username)
+            contact = await self.db_manager.find_contact(username)
             if not contact:
                 return await callback.answer("Kontakt topilmadi.", show_alert=True)
 
             await self.db_manager.update_addressing_style(contact.user_id, new_style)
             style_name = "SIZ (Sizlash / Hurmat)" if new_style == "siz" else "SEN (Sensirash / Do'st)"
-            await callback.answer(f"✅ @{username} endi {style_name} deb gaplashiladi!", show_alert=True)
-            await _render_contacts_list(callback.message, is_callback=True)
+            await callback.answer(f"✅ @{contact.username or username} endi {style_name} deb gaplashiladi!", show_alert=True)
+            if "KONTAKT" in (callback.message.text or ""):
+                updated_c = await self.db_manager.get_contact_by_id(contact.user_id)
+                await _render_unified_contact_card(callback.message, updated_c, is_callback=True)
+            else:
+                await _render_contacts_list(callback.message, is_callback=True)
 
         @dp.callback_query(F.data.startswith("crm_del:"))
         async def handle_crm_delete(callback: types.CallbackQuery):
@@ -2747,10 +2908,10 @@ class AdminBotService:
             display_name = f"@{contact.username}" if contact.username else contact.full_name
             await callback.answer(f"✅ {display_name} rejimi {labels.get(new_mode, new_mode)} ga o'zgartirildi!")
 
-            # If inside single-contact card, refresh single-contact card, else full panel
-            if "KONTAKT AVTONOMIYA REJIMI:" in (callback.message.text or ""):
+            # If inside contact card, refresh contact card in-place, else full panel
+            if "KONTAKT" in (callback.message.text or ""):
                 updated_c = await self.db_manager.get_contact_by_id(user_id)
-                await _render_single_contact_mode(callback.message, updated_c, is_callback=True)
+                await _render_unified_contact_card(callback.message, updated_c, is_callback=True)
             else:
                 await _render_mode_panel(callback.message, is_callback=True)
 
@@ -2827,46 +2988,7 @@ class AdminBotService:
                     parse_mode="HTML",
                 )
 
-            mem_contact = await self.db_manager.get_mem_contact(contact.user_id)
-            stats = await self.db_manager.get_mem_stats(contact.user_id)
-            summary = await self.db_manager.get_latest_mem_summary(contact.user_id)
-            open_items = await self.db_manager.get_mem_open_items(contact.user_id, status="open")
-
-            status_str = "🟢 Faol" if (mem_contact and mem_contact.memory_enabled) else "⏸ To'xtatilgan"
-            if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
-                status_str += f" (Sabab: {mem_contact.paused_reason})"
-
-            formatted_summary = html.escape(summary.summary_text) if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
-
-            open_items_text = ""
-            if open_items:
-                open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
-                    [f"• {html.escape(it.text)}" for it in open_items[:5]]
-                )
-
-            embed_count = stats.get("embeddings", 0)
-            embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
-
-            report = (
-                f"🧠 <b>KONTAKT XOTIRASI:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"• <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
-                f"• <b>Xotira holati:</b> {status_str}\n"
-                f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
-                f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
-                f"• <b>Vektorlar:</b> {embed_str}\n\n"
-                f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
-                f"{formatted_summary}"
-                f"{open_items_text}"
-            )
-
-            builder = InlineKeyboardBuilder()
-            builder.button(text="📋 Faktlarni ko'rish", callback_data=f"mem_facts_view:{contact.user_id}")
-            builder.button(text="🗑 Xotirani o'chirish (/forget)", callback_data=f"mem_forget_prompt:{contact.user_id}")
-            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(2, 1)
-
-            await safe_reply(message, report, reply_markup=builder.as_markup(), parse_mode="HTML")
+            await _render_unified_contact_card(message, contact, is_callback=False)
 
         @dp.message(Command("remember"))
         async def cmd_remember(message: types.Message):
@@ -3179,46 +3301,8 @@ class AdminBotService:
             contact = await self.db_manager.get_contact_by_id(user_id)
             if not contact:
                 return await callback.answer("Kontakt topilmadi.", show_alert=True)
-            mem_contact = await self.db_manager.get_mem_contact(contact.user_id)
-            stats = await self.db_manager.get_mem_stats(contact.user_id)
-            summary = await self.db_manager.get_latest_mem_summary(contact.user_id)
-            open_items = await self.db_manager.get_mem_open_items(contact.user_id, status="open")
-
-            status_str = "🟢 Faol" if (mem_contact and mem_contact.memory_enabled) else "⏸ To'xtatilgan"
-            if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
-                status_str += f" (Sabab: {mem_contact.paused_reason})"
-
-            formatted_summary = html.escape(summary.summary_text) if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
-            open_items_text = ""
-            if open_items:
-                open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
-                    [f"• {html.escape(it.text)}" for it in open_items[:5]]
-                )
-
-            embed_count = stats.get('embeddings', 0)
-            embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
-
-            report = (
-                f"🧠 <b>KONTAKT XOTIRASI:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"• <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
-                f"• <b>Xotira holati:</b> {status_str}\n"
-                f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
-                f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
-                f"• <b>Vektorlar:</b> {embed_str}\n\n"
-                f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
-                f"{formatted_summary}"
-                f"{open_items_text}"
-            )
-
-            builder = InlineKeyboardBuilder()
-            builder.button(text="📋 Faktlarni ko'rish", callback_data=f"mem_facts_view:{contact.user_id}")
-            builder.button(text="🗑 Xotirani o'chirish (/forget)", callback_data=f"mem_forget_prompt:{contact.user_id}")
-            builder.button(text="🧠 Barcha kontaktlar", callback_data="menu:memory")
-            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(2, 2)
-
-            await callback.message.edit_text(report, reply_markup=builder.as_markup(), parse_mode="HTML")
+            await callback.answer()
+            await _render_unified_contact_card(callback.message, contact, is_callback=True)
 
         @dp.callback_query(F.data.startswith("task_send:"))
         async def handle_task_send_now(callback: types.CallbackQuery):

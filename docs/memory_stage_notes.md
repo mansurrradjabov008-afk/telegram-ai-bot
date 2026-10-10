@@ -446,5 +446,30 @@ Current Branch: `stage-memory-hardening`
   - `tests/test_ui_interactive_hubs.py` expanded to 6 comprehensive tests (100% pass).
   - Regression suite: 22/22 passed in 11.06s. Full suite: 288/288 passed.
 
+---
+
+## 11. Unified VIP Contact Card & Natural Language Actions
+- **Unified VIP Contact Card (`_render_unified_contact_card`)**:
+  - Unifies CRM profile (tone/addressing style: SIZ vs SEN, instructions), Autonomy Mode (Auto/Draft/Mute), and Contact Memory (status, message count, active facts, vectors, rolling summary, open items) into a single 1-tap screen.
+  - Eliminates fragmented submenus. In-place interactive buttons:
+    - Row 1: SIZ / SEN 1-tap toggle (`crm_style:...`)
+    - Row 2: Mode 1-tap toggles with active checkmarks (`mode_set:...:auto|draft|mute`)
+    - Row 3: Memory actions (`mem_facts_view:...`, `mem_forget_prompt:...`)
+    - Row 4: Navigation (`menu:contacts`, `menu:main`)
+  - Both `handle_crm_style_toggle` and `handle_mode_set` detect the card context and refresh the card in-place with zero page jumping.
+- **Natural Language Actions (`_handle_natural_contact_action`)**:
+  - Enables the owner to speak/type naturally without `@`:
+    - Tone/Style: `"Alisherni senla"`, `"Dilshodni sizla"`
+    - Autonomy Mode: `"Alisherni auto qil"`, `"Dilshodni draft rejimiga o'tkaz"`, `"Murodni mute qil"`
+    - Info/Memory: `"Alisher haqida"`, `"Alisher kartasi"`, `"Alisher xotirasi"`
+  - Automatically matches contacts by username, full name, or ID with Uzbek case endings (`-ni`, `-ga`, `-da`, `-dan`).
+  - Executes instant updates and displays the Unified VIP Contact Card immediately.
+- **Verification (P7 Red-Green Protocol)**:
+  - Added `test_unified_contact_card_renders_all_facets` and `test_natural_language_contact_actions` to `tests/test_ui_interactive_hubs.py`.
+  - RED: Both failed before implementation (assertion errors on missing facets and unparsed natural text).
+  - GREEN: Both passed after implementation in 4.70s.
+  - Regression Suite: 24/24 tests passed in 12.08s.
+
+
 
 
