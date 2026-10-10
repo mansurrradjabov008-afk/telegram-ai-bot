@@ -56,6 +56,20 @@ def markdown_to_telegram_html(text: str) -> str:
     return safe
 
 
+def get_main_reply_keyboard() -> types.ReplyKeyboardMarkup:
+    """Returns persistent reply keyboard with all executive butler hubs."""
+    return types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="🧠 Xotira"), types.KeyboardButton(text="👥 Kontaktlar")],
+            [types.KeyboardButton(text="📝 Qoralamalar"), types.KeyboardButton(text="⏰ Vazifalar")],
+            [types.KeyboardButton(text="📰 Executive Digest"), types.KeyboardButton(text="⚙️ Avtonomiya (Mode)")],
+            [types.KeyboardButton(text="⚡ Tizim holati"), types.KeyboardButton(text="❓ Yordam")],
+        ],
+        resize_keyboard=True,
+        persistent=True,
+    )
+
+
 def format_task_time_human(iso_str: str, tz) -> str:
     """Formats raw ISO time string into clean, human-readable Uzbek label with relative delta."""
     try:
@@ -380,6 +394,7 @@ class AdminBotService:
         if not self.bot:
             return
         commands = [
+            types.BotCommand(command="start", description="👑 Boshqaruv paneli (Cockpit)"),
             types.BotCommand(command="mode", description="⚙️ Kontaktlar avtonomiya rejimlarini boshqarish"),
             types.BotCommand(command="contacts", description="👥 Saqlangan kontaktlar ro'yxati"),
             types.BotCommand(command="drafts", description="📝 Kutilayotgan qoralamalar va tasdiqlash"),
@@ -537,35 +552,69 @@ class AdminBotService:
     def _setup_handlers(self):
         dp = self.dp
 
+        async def _render_dashboard(target_msg: types.Message, is_callback: bool = False):
+            """Renders the executive Antigravity Cockpit dashboard with live metrics and 1-tap hubs."""
+            mode_counts = await self.db_manager.get_mode_counts()
+            pending_drafts = await self.db_manager.count_pending_drafts()
+            pending_tasks = len(await self.db_manager.get_pending_tasks())
+            mem_stats = await self.db_manager.get_overall_mem_stats()
+
+            total_contacts = mode_counts.get("total", mode_counts.get("auto", 0) + mode_counts.get("draft", 0) + mode_counts.get("mute", 0))
+            auto_count = mode_counts.get("auto", 0)
+            draft_count = mode_counts.get("draft", 0)
+            mute_count = mode_counts.get("mute", 0)
+            facts_count = mem_stats.get("facts", 0)
+            contacts_enabled = mem_stats.get("contacts_enabled", 0)
+
+            # Dynamic button labels
+            draft_btn_text = f"📝 Qoralamalar ({pending_drafts})" if pending_drafts > 0 else "📝 Qoralamalar"
+            task_btn_text = f"⏰ Vazifalar ({pending_tasks})" if pending_tasks > 0 else "⏰ Rejadagi vazifalar"
+
+            text = (
+                "👑 <b>ANTIGRAVITY EXECUTIVE COCKPIT</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚡ <b>Tizim:</b> 🟢 Faol  •  🤖 <b>AI:</b> Gemini 2.5 Flash\n"
+                "🛡️ <b>Himoya:</b> 100% Xavfsiz  •  👑 <b>Murojaat:</b> Xo'jayin\n\n"
+                "📊 <b>JONLI KO'RSATKICHLAR:</b>\n"
+                f"├ 👥 Kontaktlar (CRM): <b>{total_contacts} ta</b> (⚡ {auto_count} | 📝 {draft_count} | 🔇 {mute_count})\n"
+                f"├ 📝 Kutilayotgan qoralamalar: <b>{pending_drafts} ta</b>\n"
+                f"├ ⏰ Rejalashtirilgan vazifalar: <b>{pending_tasks} ta</b>\n"
+                f"└ 🧠 Faol xotira faktlari: <b>{facts_count} ta</b> ({contacts_enabled} kontakt)\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "👇 <i>Kerakli boshqaruv bo'limini tanlang:</i>"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🧠 Xotira boshqaruvi", callback_data="menu:memory")
+            builder.button(text="👥 Kontaktlar (CRM)", callback_data="menu:contacts")
+            builder.button(text=draft_btn_text, callback_data="menu:drafts")
+            builder.button(text=task_btn_text, callback_data="menu:tasks")
+            builder.button(text="📰 Executive Digest", callback_data="digest:open")
+            builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
+            builder.button(text="⚡ Tizim holati", callback_data="menu:status")
+            builder.button(text="🔄 Yangilash", callback_data="menu:main")
+            builder.adjust(2, 2, 2, 2)
+
+            if is_callback:
+                await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
         @dp.message(CommandStart())
         async def cmd_start(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
 
-            text = (
-                "👑 <b>Salom, Xo'jayin! Antigravity AI Butler Kokpiti tayyor.</b>\n\n"
-                "Men sizning shaxsiy profilingizni to'liq boshqaruvchi markazman.\n\n"
-                "📌 <b>Asosiy buyruqlar:</b>\n"
-                "• <code>/mode @username auto|draft|mute</code> — Kontakt avtonomiya rejimini belgilash\n"
-                "• <code>/contacts</code> — Saqlangan kontaktlar va ularning rejimlari\n"
-                "• <code>/drafts</code> — Kutilayotgan qoralamalar ro'yxati va tasdiqlash\n"
-                "• <code>/crm @username [rol] [ko'rsatma]</code> — Kontakt munosabatini belgilash\n"
-                "• <code>/schedule @username HH:MM Matn</code> — Belgilangan vaqtga xabar rejalashtirish\n"
-                "• <code>/tasks</code> — Kutilayotgan rejalashtirilgan xabarlar\n"
-                "• <code>/digest</code> — Kanallar va guruhlardan xulosalar\n"
-                "• <code>/memory @username</code> — Kontakt xotirasini boshqarish va ko'rish\n"
-                "• <code>/status</code> — Tizim holati va avtonomiya hisoboti"
-            )
-            builder = InlineKeyboardBuilder()
-            builder.button(text="📰 Executive Digest", callback_data="digest:open")
-            builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
-            builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
-            builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
-            builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
-            builder.button(text="🧠 Xotira", callback_data="menu:memory")
-            builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-            builder.adjust(2, 2, 2, 1)
-            await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            try:
+                await message.answer(
+                    "🎛 <b>Boshqaruv klaviaturasi faollashtirildi.</b> Pastdagi menyu tugmalari orqali barcha funksiyalarni ishlatishingiz mumkin:",
+                    reply_markup=get_main_reply_keyboard(),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+            await _render_dashboard(message, is_callback=False)
 
         @dp.message(Command("status"))
         async def cmd_status(message: types.Message):
@@ -580,19 +629,31 @@ class AdminBotService:
             mode_counts = await self.db_manager.get_mode_counts()
             pending_drafts = await self.db_manager.count_pending_drafts()
             total_contacts = mode_counts.get("total", mode_counts.get("auto", 0) + mode_counts.get("draft", 0) + mode_counts.get("mute", 0))
+            mem_stats = await self.db_manager.get_overall_mem_stats()
 
             status_text = (
-                "⚡ <b>ANTIGRAVITY BUTLER TIZIM HOLATI:</b>\n\n"
-                f"• <b>AI Modeli:</b> <code>{model_str}</code>\n"
-                f"• <b>Avto-javob holati:</b> <code>{auto_reply_str}</code>\n"
-                f"• <b>Vaqt mintaqasi:</b> <code>{tz_str}</code>\n"
-                f"• <b>Telegram Profil:</b> <code>{phone_str}</code>\n"
-                "• <b>Kontaktlar filtri:</b> 🛡 Faol (Faqat /contacts dagi insonlar)\n"
-                f"• <b>Avtonomiya rejimlari:</b> ⚡ auto: {mode_counts.get('auto', 0)} | 📝 draft: {mode_counts.get('draft', 0)} | 🔇 mute: {mode_counts.get('mute', 0)} (Jami: {total_contacts})\n"
-                f"• <b>Kutilayotgan qoralamalar:</b> <code>{pending_drafts}</code> ta\n"
-                "• <b>Holat:</b> Barcha xizmatlar 100% faol."
+                "⚡ <b>ANTIGRAVITY BUTLER — TIZIM HOLATI</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🟢 <b>Holat:</b> Barcha xizmatlar 100% faol va barqaror\n"
+                f"🤖 <b>AI Modeli:</b> <code>{model_str}</code>\n"
+                f"⚡ <b>Avto-javob:</b> <code>{auto_reply_str}</code>\n"
+                f"⏰ <b>Vaqt mintaqasi:</b> <code>{tz_str}</code>\n"
+                f"📱 <b>Telegram Profil:</b> <code>{phone_str}</code>\n"
+                "🛡️ <b>Kontaktlar filtri:</b> 🟢 Faol (Qat'iy izolyatsiya)\n\n"
+                "📊 <b>AVTONOMIYA VA MA'LUMOTLAR:</b>\n"
+                f"├ 👥 Jami kontaktlar: <b>{total_contacts} ta</b>\n"
+                f"│  ├ ⚡ Auto: <b>{mode_counts.get('auto', 0)} ta</b>\n"
+                f"│  ├ 📝 Draft: <b>{mode_counts.get('draft', 0)} ta</b>\n"
+                f"│  └ 🔇 Mute: <b>{mode_counts.get('mute', 0)} ta</b>\n"
+                f"├ 📝 Kutilayotgan qoralamalar: <b>{pending_drafts} ta</b>\n"
+                f"└ 🧠 Xotira faktlari: <b>{mem_stats.get('facts', 0)} ta</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
-            await safe_reply(message, status_text, parse_mode="HTML")
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔄 Yangilash", callback_data="menu:status")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(2)
+            await safe_reply(message, status_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.message(Command("restart"))
         async def cmd_restart(message: types.Message):
@@ -1257,12 +1318,14 @@ class AdminBotService:
             counts = await self.db_manager.get_mode_counts()
 
             lines = [
-                "⚙️ <b>AVTONOMIYA REJIMLARI BOSHQARUVI:</b>\n",
-                "💡 <b>Rejimlar:</b>",
-                "• ⚡ <b>auto</b> — Bot avtomatik javob beradi (xavfsiz mavzularda)",
-                "• 📝 <b>draft</b> — Qoralama tayyorlaydi, faqat siz tasdiqlagach yuboriladi",
-                "• 🔇 <b>mute</b> — Bot bu kontaktni to'liq e'tiborsiz qoldiradi\n",
-                f"📊 <b>Statistika:</b> ⚡ auto: {counts.get('auto', 0)} | 📝 draft: {counts.get('draft', 0)} | 🔇 mute: {counts.get('mute', 0)} (Jami: {counts.get('total', 0)})\n",
+                "⚙️ <b>AVTONOMIYA REJIMLARI BOSHQARUVI:</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 <b>Mavjud rejimlar:</b>\n"
+                "• ⚡ <b>auto</b> — AI darhol va avtomatik javob beradi (xavfsiz mavzularda)\n"
+                "• 📝 <b>draft</b> — Qoralama tayyorlaydi, faqat siz tasdiqlagach yuboriladi\n"
+                "• 🔇 <b>mute</b> — AI bu kontaktni to'liq e'tiborsiz qoldiradi\n\n"
+                f"📊 <b>Statistika:</b> ⚡ auto: <b>{counts.get('auto', 0)}</b> | 📝 draft: <b>{counts.get('draft', 0)}</b> | 🔇 mute: <b>{counts.get('mute', 0)}</b> (Jami: <b>{counts.get('total', 0)} ta</b>)\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             ]
 
             builder = InlineKeyboardBuilder()
@@ -1805,6 +1868,47 @@ class AdminBotService:
                 logger.error(f"Error creating wizard scheduled task: {type(e).__name__}")
                 await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(type(e).__name__)}", parse_mode="HTML")
 
+        async def _render_memory_panel(target_msg: types.Message, is_callback: bool = False):
+            """Renders rich interactive contact memory hub with one-tap contact memory buttons."""
+            stats = await self.db_manager.get_overall_mem_stats()
+            embed_count = stats.get("embeddings", 0)
+            embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS5 faol)"
+            contacts = await self.db_manager.list_contacts()
+
+            text = (
+                "🧠 <b>XOTIRA MARKAZI (CONTACT MEMORY)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💡 <i>AI kontaktlaringiz haqidagi muhim faktlar, kelishuvlar va suhbat xulosalarini xavfsiz saqlaydi.</i>\n\n"
+                "📊 <b>STATISTIKA:</b>\n"
+                f"├ 👤 Xotirasi faol kontaktlar: <b>{stats.get('contacts_enabled', 0)} ta</b>\n"
+                f"├ 💬 Saqlangan xabarlar: <b>{stats.get('messages', 0)} ta</b>\n"
+                f"├ 💡 Faol faktlar: <b>{stats.get('facts', 0)} ta</b>\n"
+                f"├ 📝 Aylanma xulosalar: <b>{stats.get('summaries', 0)} ta</b>\n"
+                f"└ ⚡ Qidiruv tizimi: <b>{embed_str}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "👇 <b>Kontakt xotirasini boshqarish uchun tanlang:</b>"
+            )
+
+            builder = InlineKeyboardBuilder()
+            adjust_layout = []
+            if contacts:
+                for c in contacts:
+                    c_name = c.full_name or c.username or str(c.user_id)
+                    builder.button(text=f"👤 {c_name}"[:28], callback_data=f"mem_back:{c.user_id}")
+                    adjust_layout.append(1)
+            else:
+                text += "\n\n<i>(Hozircha saqlangan kontaktlar yo'q. /contacts orqali kontakt qo'shing)</i>"
+
+            builder.button(text="👥 Kontaktlar ro'yxati", callback_data="menu:contacts")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            adjust_layout.append(2)
+            builder.adjust(*adjust_layout)
+
+            if is_callback:
+                await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
         async def _render_contacts_list(target_msg: types.Message, is_callback: bool = False):
             """Renders rich contacts list with addressing style badges, autonomy mode badges and instant toggle buttons."""
             contacts = await self.db_manager.list_contacts()
@@ -1829,9 +1933,10 @@ class AdminBotService:
                 return
 
             lines = [
-                f"📋 <b>SAQLANGAN KONTAKTLAR ({len(contacts)} ta):</b>\n"
-                f"🛡 <i>Xavfsizlik: Bot FAQAT shu ro'yxatdagi insonlargagina avtomatik yoki tasdiq bilan javob beradi. Boshqa barcha xabarlar sizga to'g'ridan-to'g'ri yetkaziladi.</i>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 <b>SAQLANGAN KONTAKTLAR ({len(contacts)} ta):</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🛡 <i>AI FAQAT shu ro'yxatdagi insonlar bilan muloqot qiladi va ularning xotirasini yuritadi.</i>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             ]
             builder = InlineKeyboardBuilder()
 
@@ -1862,10 +1967,10 @@ class AdminBotService:
 
                 lines.append(
                     f"👤 <b>{safe_uname}</b>\n"
-                    f"⚙️ Rejim: {mode_badge}\n"
-                    f"🗣 Murojaat: {style_badge}\n"
-                    f"🎭 Munosabat: <code>{safe_rel}</code>\n"
-                    f"📜 Ko'rsatma: <i>\"{safe_instr}\"</i>\n"
+                    f"   ├ ⚙️ Rejim: {mode_badge}\n"
+                    f"   ├ 🗣 Murojaat: {style_badge}\n"
+                    f"   ├ 🎭 Munosabat: <code>{safe_rel}</code>\n"
+                    f"   └ 📜 Ko'rsatma: <i>\"{safe_instr}\"</i>\n"
                 )
                 # Row 1: SIZ/SEN switch and Delete
                 builder.button(text=f"{switch_btn} ({safe_uname})", callback_data=f"crm_style:{target_user}:{switch_to}")
@@ -1885,13 +1990,21 @@ class AdminBotService:
                     callback_data=f"crm_mode:{target_user}:mute",
                 )
 
+                # Row 3: Memory shortcut button
+                builder.button(
+                    text=f"🧠 Xotira ({safe_uname})",
+                    callback_data=f"mem_back:{c.user_id}",
+                )
+
+            builder.button(text="➕ Yangi kontakt", callback_data="crm:add_prompt")
             builder.button(text="🔄 Yangilash", callback_data="crm:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
             adjust_layout = []
             for _ in contacts:
-                adjust_layout.extend([2, 3])
+                adjust_layout.extend([2, 3, 1])
             adjust_layout.append(2)
+            adjust_layout.append(1)
             builder.adjust(*adjust_layout)
 
             content = "\n".join(lines)
@@ -1963,12 +2076,13 @@ class AdminBotService:
 
             if not tasks:
                 empty_text = (
-                    "⏳ <b>KUTILAYOTGAN REJADAGI VAZIFALAR:</b>\n\n"
-                    "<i>Hozircha hech qanday rejalashtirilgan vazifalar yo'q.</i>\n\n"
-                    "💡 <b>Yangi reja qo'shish (AI yordamida):</b>\n"
-                    "Istalgan tabiiy tilda yozishingiz mumkin, masalan:\n"
-                    "• <code>Ertaga soat 10 da @ali ga salom deb yoz</code>\n"
-                    "• <code>15 daqiqadan keyin @umid_namozov ga loyiha tayyor deb jo'nat</code>\n"
+                    "⏰ <b>REJALASHTIRILGAN VAZIFALAR:</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "<i>Hozircha kutilayotgan xabarlar mavjud emas.</i>\n\n"
+                    "💡 <b>Yangi reja qo'shish juda oson (AI yordamida):</b>\n"
+                    "Chatga shunchaki yozing, AI o'zi tushunadi:\n"
+                    "• <i>\"Ertaga soat 10 da @ali ga salom deb yoz\"</i>\n"
+                    "• <i>\"15 daqiqadan keyin @umid_namozov ga loyiha tayyor deb jo'nat\"</i>\n"
                     "• <code>/schedule @username 14:00 Matn</code>"
                 )
                 builder = InlineKeyboardBuilder()
@@ -1983,7 +2097,7 @@ class AdminBotService:
                     await safe_reply(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 return
 
-            lines = [f"⏳ <b>KUTILAYOTGAN REJADAGI VAZIFALAR ({len(tasks)} ta):</b>\n━━━━━━━━━━━━━━━━━━━━\n"]
+            lines = [f"⏰ <b>REJALASHTIRILGAN VAZIFALAR ({len(tasks)} ta):</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"]
             builder = InlineKeyboardBuilder()
 
             for t in tasks:
@@ -1995,7 +2109,7 @@ class AdminBotService:
                     f"📌 <b>Vazifa #{t.id}</b>\n"
                     f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
                     f"⏰ <b>Vaqti:</b> <code>{formatted_time}</code>\n"
-                    f"💬 <b>Matn:</b> <i>\"{safe_msg}\"</i>\n"
+                    f"💬 <b>Matn:</b>\n<blockquote>{safe_msg}</blockquote>\n"
                 )
                 builder.button(text=f"🚀 Yuborish #{t.id}", callback_data=f"task_send:{t.id}")
                 builder.button(text=f"❌ Bekor #{t.id}", callback_data=f"task_cancel:{t.id}")
@@ -2278,6 +2392,55 @@ class AdminBotService:
                 card_msg_id=card_msg_id,
             )
 
+        # ------------------ PERSISTENT REPLY KEYBOARD DISPATCHERS ------------------
+        @dp.message(F.text.in_(["🧠 Xotira", "Xotira"]))
+        async def handle_btn_memory(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_memory_panel(message, is_callback=False)
+
+        @dp.message(F.text.in_(["👥 Kontaktlar", "Kontaktlar", "CRM", "Kontaktlar (CRM)"]))
+        async def handle_btn_contacts(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_contacts_list(message, is_callback=False)
+
+        @dp.message(F.text.in_(["📝 Qoralamalar", "Qoralamalar", "Drafts"]))
+        async def handle_btn_drafts(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_drafts_list(message, is_callback=False)
+
+        @dp.message(F.text.in_(["⏰ Vazifalar", "Vazifalar", "⏰ Rejadagi vazifalar", "Rejalar"]))
+        async def handle_btn_tasks(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_tasks_list(message, is_callback=False)
+
+        @dp.message(F.text.in_(["📰 Executive Digest", "Executive Digest", "Digest", "📰 Dayjest", "Dayjest"]))
+        async def handle_btn_digest(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _execute_digest(message, is_callback=False)
+
+        @dp.message(F.text.in_(["⚙️ Avtonomiya (Mode)", "Avtonomiya", "Mode", "⚙️ Rejimlar", "Rejimlar"]))
+        async def handle_btn_mode(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_mode_panel(message, is_callback=False)
+
+        @dp.message(F.text.in_(["⚡ Tizim holati", "Tizim holati", "Status", "⚡ Holat", "Holat"]))
+        async def handle_btn_status(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await cmd_status(message)
+
+        @dp.message(F.text.in_(["❓ Yordam", "Yordam", "Help", "🏠 Bosh menyu", "Bosh menyu", "🏠 Bosh sahifa", "Bosh sahifa", "Asosiy menyu", "Cockpit"]))
+        async def handle_btn_help(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await cmd_start(message)
+
         @dp.message(StateFilter(None), F.text & ~F.text.startswith("/"))
         async def handle_fallback_natural_text(message: types.Message, state: FSMContext):
             if not self._is_admin(message.from_user.id):
@@ -2310,11 +2473,14 @@ class AdminBotService:
                 return
 
             text = (
-                "👑 <b>Xo'jayin, yangi buyruq kutmoqdaman.</b>\n\n"
-                "Quyidagi imkoniyatlardan foydalanishingiz mumkin:\n"
-                "• <b>Vazifa rejalashtirish (AI):</b> <code>Ertaga soat 10 da @ali ga salom deb yoz</code>\n"
-                "• <b>Muloqot uslubini belgilash:</b> <code>@ali bu inson bilan samimiy bo'l</code>\n"
-                "• <b>Brifing olish:</b> <code>/digest</code>"
+                "👑 <b>Xo'jayin, buyruq qabul qilindi.</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Menga istalgan tabiiy tilda topshiriq bera olasiz:\n\n"
+                "• <b>Vazifa rejalashtirish (AI):</b> <i>\"Ertaga soat 10:00 da @ali ga loyiha tayyor deb yoz\"</i>\n"
+                "• <b>Muloqot uslubini sozlash:</b> <i>\"@dilshod ni sizla, u muhim hamkor\"</i>\n"
+                "• <b>Avtonomiya rejimi:</b> <i>\"@bobur ni auto rejimiga o'tkaz\"</i>\n"
+                "• <b>Boshqaruv markazi:</b> Pastdagi menyu tugmalaridan foydalaning\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
             builder = InlineKeyboardBuilder()
             builder.button(text="📰 Executive Digest", callback_data="digest:open")
@@ -2386,54 +2552,10 @@ class AdminBotService:
             action = callback.data.split(":")[1]
             if action == "main":
                 await callback.answer()
-                text = (
-                    "👑 <b>Salom, Xo'jayin! Antigravity AI Butler Kokpiti:</b>\n\n"
-                    "Sizning shaxsiy profilingizni to'liq boshqaruvchi markaz.\n\n"
-                    "📌 <b>Asosiy buyruqlar:</b>\n"
-                    "• <code>/mode @username auto|draft|mute</code> — Kontakt avtonomiya rejimini belgilash\n"
-                    "• <code>/contacts</code> — Saqlangan kontaktlar va ularning rejimlari\n"
-                    "• <code>/drafts</code> — Kutilayotgan qoralamalar ro'yxati va tasdiqlash\n"
-                    "• <code>/crm @username [rol] [ko'rsatma]</code> — Kontakt uslubini belgilash\n"
-                    "• <code>/schedule @username HH:MM Matn</code> — Xabar rejalashtirish\n"
-                    "• <code>/tasks</code> — Kutilayotgan rejalashtirilgan xabarlar\n"
-                    "• <code>/digest</code> — Kanallar va guruhlardan xulosalar\n"
-                    "• <code>/memory @username</code> — Kontakt xotirasini boshqarish va ko'rish\n"
-                    "• <code>/status</code> — Tizim holati"
-                )
-                builder = InlineKeyboardBuilder()
-                builder.button(text="📰 Executive Digest", callback_data="digest:open")
-                builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
-                builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
-                builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
-                builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
-                builder.button(text="🧠 Xotira", callback_data="menu:memory")
-                builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-                builder.adjust(2, 2, 2, 1)
-                await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await _render_dashboard(callback.message, is_callback=True)
             elif action == "memory":
                 await callback.answer()
-                stats = await self.db_manager.get_overall_mem_stats()
-                embed_count = stats.get('embeddings', 0)
-                embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
-                text = (
-                    "🧠 <b>CONTACT MEMORY (KONTAKT XOTIRASI) BOSHQARUVI:</b>\n\n"
-                    f"• <b>Xotirasi faol kontaktlar:</b> <code>{stats.get('contacts_enabled', 0)}</code> ta\n"
-                    f"• <b>Jami xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
-                    f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
-                    f"• <b>Aylanma xulosalar:</b> <code>{stats.get('summaries', 0)}</code> ta\n"
-                    f"• <b>Vektorlar:</b> {embed_str}\n\n"
-                    "📌 <b>Xotira buyruqlari:</b>\n"
-                    "• <code>/memory @username</code> — Kontakt xotirasini ko'rish va aylanma xulosa\n"
-                    "• <code>/memory_facts @username</code> — Faktlarni ko'rish, tasdiqlash yoki o'chirish\n"
-                    "• <code>/remember @username [kategoriya] fakt</code> — Faktni qo'lda kiritish (tasdiqlangan holda)\n"
-                    "• <code>/forget @username</code> — Kontakt xotirasini butunlay o'chirish\n"
-                    "• <code>/memory stats</code> — To'liq xotira statistikasi"
-                )
-                builder = InlineKeyboardBuilder()
-                builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
-                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1, 1)
-                await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await _render_memory_panel(callback.message, is_callback=True)
             elif action == "mode":
                 await callback.answer()
                 await _render_mode_panel(callback.message, is_callback=True)
@@ -2456,21 +2578,54 @@ class AdminBotService:
                 mode_counts = await self.db_manager.get_mode_counts()
                 pending_drafts = await self.db_manager.count_pending_drafts()
                 total_contacts = mode_counts.get("total", mode_counts.get("auto", 0) + mode_counts.get("draft", 0) + mode_counts.get("mute", 0))
+                mem_stats = await self.db_manager.get_overall_mem_stats()
 
-                text = (
-                    "⚡ <b>ANTIGRAVITY BUTLER TIZIM HOLATI:</b>\n\n"
-                    f"• <b>AI Modeli:</b> <code>{model_str}</code>\n"
-                    f"• <b>Avto-javob holati:</b> <code>{auto_reply_str}</code>\n"
-                    f"• <b>Vaqt mintaqasi:</b> <code>{tz_str}</code>\n"
-                    f"• <b>Telegram Profil:</b> <code>{phone_str}</code>\n"
-                    "• <b>Kontaktlar filtri:</b> 🛡 Faol (Faqat /contacts dagi insonlar)\n"
-                    f"• <b>Avtonomiya rejimlari:</b> ⚡ auto: {mode_counts.get('auto', 0)} | 📝 draft: {mode_counts.get('draft', 0)} | 🔇 mute: {mode_counts.get('mute', 0)} (Jami: {total_contacts})\n"
-                    f"• <b>Kutilayotgan qoralamalar:</b> <code>{pending_drafts}</code> ta\n"
-                    "• <b>Holat:</b> Barcha xizmatlar 100% faol."
+                status_text = (
+                    "⚡ <b>ANTIGRAVITY BUTLER — TIZIM HOLATI</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "🟢 <b>Holat:</b> Barcha xizmatlar 100% faol va barqaror\n"
+                    f"🤖 <b>AI Modeli:</b> <code>{model_str}</code>\n"
+                    f"⚡ <b>Avto-javob:</b> <code>{auto_reply_str}</code>\n"
+                    f"⏰ <b>Vaqt mintaqasi:</b> <code>{tz_str}</code>\n"
+                    f"📱 <b>Telegram Profil:</b> <code>{phone_str}</code>\n"
+                    "🛡️ <b>Kontaktlar filtri:</b> 🟢 Faol (Qat'iy izolyatsiya)\n\n"
+                    "📊 <b>AVTONOMIYA VA MA'LUMOTLAR:</b>\n"
+                    f"├ 👥 Jami kontaktlar: <b>{total_contacts} ta</b>\n"
+                    f"│  ├ ⚡ Auto: <b>{mode_counts.get('auto', 0)} ta</b>\n"
+                    f"│  ├ 📝 Draft: <b>{mode_counts.get('draft', 0)} ta</b>\n"
+                    f"│  └ 🔇 Mute: <b>{mode_counts.get('mute', 0)} ta</b>\n"
+                    f"├ 📝 Kutilayotgan qoralamalar: <b>{pending_drafts} ta</b>\n"
+                    f"└ 🧠 Xotira faktlari: <b>{mem_stats.get('facts', 0)} ta</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
                 builder = InlineKeyboardBuilder()
+                builder.button(text="🔄 Yangilash", callback_data="menu:status")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                builder.adjust(2)
+                await callback.message.edit_text(status_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data == "crm:add_prompt")
+        async def handle_crm_add_prompt(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer()
+            help_text = (
+                "➕ <b>YANGI KONTAKT QO'SHISH</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "AI bilan muloqot qilishi uchun yangi kontakt qo'shish juda oson.\n\n"
+                "💡 <b>1-usul: Tabiiy tilda yozing:</b>\n"
+                "• <i>\"@alisher_dev ni do'stim sifatida qo'sh va senla\"</i>\n"
+                "• <i>\"@dilshod_aka ni hurmatli mijoz sifatida qo'sh, sizla\"</i>\n\n"
+                "💡 <b>2-usul: Buyruq orqali:</b>\n"
+                "• <code>/crm @username siz [ko'rsatma]</code>\n"
+                "• <code>/crm @username sen [ko'rsatma]</code>\n\n"
+                "<i>Kontakt qo'shilgach, u avtomatik ravishda CRM va Xotira tizimiga kiritiladi.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="👥 Kontaktlar ro'yxati", callback_data="menu:contacts")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(1, 1)
+            await safe_edit(callback.message, help_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.callback_query(F.data.startswith("crm_style:"))
         async def handle_crm_style_toggle(callback: types.CallbackQuery):
@@ -2644,18 +2799,7 @@ class AdminBotService:
                 return
             args = message.text[len("/memory"):].strip()
             if not args or args.lower() == "help":
-                return await safe_reply(
-                    message,
-                    "🧠 <b>Contact Memory Boshqaruvi:</b>\n\n"
-                    "📌 <b>Buyruqlar:</b>\n"
-                    "• <code>/memory @username</code> yoki <code>/memory &lt;user_id&gt;</code> — Kontakt xotirasi ko'rish\n"
-                    "• <code>/memory stats</code> — Barcha kontaktlar bo'yicha umumiy statistika\n"
-                    "• <code>/memory_facts @username</code> — Faktlarni ko'rish va tasdiqlash\n"
-                    "• <code>/remember @username [kategoriya] fakt</code> — Faktni qo'lda kiritish (tasdiqlangan holda)\n"
-                    "• <code>/forget @username</code> — Kontakt xotirasini butunlay o'chirish\n\n"
-                    "💡 <b>Kategoriyalar:</b> <code>identity</code>, <code>preference</code>, <code>interest</code>, <code>important_date</code>, <code>relationship_note</code>, <code>ongoing_topic</code>, <code>other</code>",
-                    parse_mode="HTML",
-                )
+                return await _render_memory_panel(message, is_callback=False)
 
             if args.lower() == "stats":
                 stats = await self.db_manager.get_overall_mem_stats()
@@ -3070,8 +3214,9 @@ class AdminBotService:
             builder = InlineKeyboardBuilder()
             builder.button(text="📋 Faktlarni ko'rish", callback_data=f"mem_facts_view:{contact.user_id}")
             builder.button(text="🗑 Xotirani o'chirish (/forget)", callback_data=f"mem_forget_prompt:{contact.user_id}")
+            builder.button(text="🧠 Barcha kontaktlar", callback_data="menu:memory")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(2, 1)
+            builder.adjust(2, 2)
 
             await callback.message.edit_text(report, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -3118,11 +3263,12 @@ class AdminBotService:
 
             if not drafts:
                 empty_text = (
-                    "📝 <b>KUTILAYOTGAN QORALAMALAR:</b>\n\n"
-                    "<i>Hozircha tasdiq kutayotgan qoralamalar yo'q.</i>\n\n"
-                    "💡 <b>Qoralama qanday hosil bo'ladi?</b>\n"
+                    "📝 <b>KUTILAYOTGAN QORALAMALAR:</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "✨ <b>Qoralamalar qutisi bo'sh.</b> Hozircha tasdiq kutayotgan xabarlar yo'q.\n\n"
+                    "💡 <b>Qoralama qachon hosil bo'ladi?</b>\n"
                     "• <code>draft</code> rejimdagi kontaktlardan xabar kelganda\n"
-                    "• <code>auto</code> rejimdagi kontakt xabarida nozik/xavfli mavzu (to'lov, karta, uchrashuv) aniqlanganda"
+                    "• <code>auto</code> rejimdagi kontakt xabarida nozik mavzu (to'lov, karta, uchrashuv) aniqlanganda"
                 )
                 builder = InlineKeyboardBuilder()
                 builder.button(text="🔄 Yangilash", callback_data="drafts:refresh")
@@ -3134,25 +3280,30 @@ class AdminBotService:
                     await safe_reply(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 return
 
-            lines = [f"📝 <b>KUTILAYOTGAN QORALAMALAR ({len(drafts)} ta):</b>\n━━━━━━━━━━━━━━━━━━━━\n"]
+            lines = [
+                f"📝 <b>KUTILAYOTGAN QORALAMALAR ({len(drafts)} ta):</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>AI tayyorlagan javobni yuborish uchun tasdiqlang yoki tahrirlang:</i>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            ]
             builder = InlineKeyboardBuilder()
 
             for d in drafts:
                 contact_str = f"@{d.contact_username}" if d.contact_username else str(d.contact_user_id or "Noma'lum")
                 safe_contact = html.escape(contact_str)
-                safe_incoming = html.escape(d.incoming_text[:150] + ("..." if len(d.incoming_text) > 150 else ""))
-                safe_reply_text = html.escape(d.proposed_reply[:200] + ("..." if len(d.proposed_reply) > 200 else ""))
+                safe_incoming = html.escape(d.incoming_text[:200] + ("..." if len(d.incoming_text) > 200 else ""))
+                safe_reply_text = html.escape(d.proposed_reply[:250] + ("..." if len(d.proposed_reply) > 250 else ""))
 
                 sens_badge = ""
                 if d.is_sensitive:
                     sens_reason = html.escape(d.sensitive_reason or "Nozik mavzu")
-                    sens_badge = f"\n⚠️ <b>Muhim - tasdiq kerak!</b> (Sabab: <i>{sens_reason}</i>)"
+                    sens_badge = f"\n⚠️ <b>Diqqat - Tasdiq talab etiladi!</b> (<i>{sens_reason}</i>)"
 
                 lines.append(
                     f"📌 <b>Qoralama #{d.id}</b>{sens_badge}\n"
                     f"👤 <b>Kimdan:</b> <code>{safe_contact}</code>\n"
-                    f"📩 <b>Kelgan xabar:</b> <i>\"{safe_incoming}\"</i>\n"
-                    f"💡 <b>Tavsiya etilgan javob:</b>\n<code>{safe_reply_text}</code>\n"
+                    f"📩 <b>Kelgan xabar:</b>\n<blockquote>{safe_incoming}</blockquote>\n"
+                    f"🤖 <b>AI tavsiya qilgan javob:</b>\n<code>{safe_reply_text}</code>\n"
                 )
 
                 builder.button(text=f"✅ Yuborish #{d.id}", callback_data=f"draft_send:{d.id}")

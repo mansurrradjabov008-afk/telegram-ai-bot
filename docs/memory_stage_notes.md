@@ -423,4 +423,28 @@ Current Branch: `stage-memory-hardening`
 | **F9** | Tests or scratch scripts write to production DB | `isolation_guard.py` enforces isolation. `shadow_check.py` and `search_targets.py` safely run on temp DBs and reject production DB path. Verified in `tests/test_isolation_guard.py`. | **RESOLVED** |
 | **F10** | Project folder inside cloud-synced folder | Refuted in Phase 0 audit inspection. Located in scratch folder, outside OneDrive. | **VERIFIED (SAFE)** |
 
+---
+
+## 10. Executive Cockpit UI/UX Overhaul & Interactive Hubs
+- **Persistent Ergonomic Bottom Reply Keyboard**:
+  - Maintained 8 hub buttons:
+    `[🧠 Xotira] [👥 Kontaktlar]`
+    `[📝 Qoralamalar] [⏰ Vazifalar]`
+    `[📰 Executive Digest] [⚙️ Avtonomiya (Mode)]`
+    `[⚡ Tizim holati] [❓ Yordam]`
+  - Added multi-keyword synonym support for dispatchers (e.g. `Dayjest`, `Rejimlar`, `Bosh menyu`, `Cockpit`).
+- **Unified Executive Cockpit (`_render_dashboard`)**:
+  - Replaces text dumps with live real-time metrics: contacts count by mode (Auto/Draft/Mute), pending drafts count, scheduled tasks count, and active memory facts.
+  - Symmetrical 2x4 inline hub navigation with dynamic counter badges (`📝 Qoralamalar (N)`, `⏰ Vazifalar (N)`).
+  - Linked seamlessly to `menu:main` callback for lightning-fast 1-tap navigation without command walls.
+- **Polished Hubs**:
+  - **Memory Hub (`_render_memory_panel` & `handle_mem_back`)**: Contact selection buttons, clean metadata overview, native `<blockquote>` rolling summary view.
+  - **CRM Hub (`_render_contacts_list`)**: Beautiful contact cards, SIZ/SEN toggle, direct memory jumping, one-tap mode switches, and guided `➕ Yangi kontakt qo'shish` wizard.
+  - **Drafts Hub (`_render_drafts_list`)**: Visual distinction between incoming message (`<blockquote>`) and proposed AI reply (`<code>`), with instant approve/edit/reject actions.
+  - **Tasks Hub (`_render_tasks_list`)**: Human-readable relative time badges, recipient tags, and instant execution/cancellation.
+- **Verification**:
+  - `tests/test_ui_interactive_hubs.py` expanded to 6 comprehensive tests (100% pass).
+  - Regression suite: 22/22 passed in 11.06s. Full suite: 288/288 passed.
+
+
 
