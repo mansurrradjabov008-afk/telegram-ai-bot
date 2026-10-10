@@ -268,3 +268,19 @@ class StyleService:
                     profiles_built += 1
 
         return {"built": profiles_built, "samples_evaluated": len(all_samples)}
+
+    async def purge_retention(self) -> int:
+        """
+        Purges style_samples older than STYLE_SAMPLE_RETENTION_DAYS (D10).
+        """
+        if not self.db_manager:
+            return 0
+        try:
+            purged = await self.db_manager.purge_old_style_samples()
+            if purged > 0:
+                logger.info(f"Purged {purged} expired style samples based on retention.")
+            return purged
+        except Exception as e:
+            logger.warning(f"Style retention purge failed: {type(e).__name__}")
+            return 0
+
