@@ -620,12 +620,19 @@ class AdminBotService:
                 "• <i>\"Hammasini yubor\"</i> — barcha qoralamalarni tasdiqlash"
             )
 
-            reply_markup = types.ReplyKeyboardRemove(remove_keyboard=True) if remove_keyboard else None
+            builder = InlineKeyboardBuilder()
+            if is_style_on:
+                builder.button(text="✍️ Uslub: ⏸ O'chirish", callback_data="style:toggle_quick")
+            else:
+                builder.button(text="✍️ Uslub: 🟢 Yoqish", callback_data="style:toggle_quick")
+            builder.button(text="🎛️ Uslub Boshqaruvi", callback_data="style:panel")
+            builder.button(text="🔄 Yangilash", callback_data="menu:main")
+            builder.adjust(2, 1)
 
             if is_callback:
-                await safe_edit(target_msg, text, reply_markup=None, parse_mode="HTML")
+                await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
             else:
-                await safe_reply(target_msg, text, reply_markup=reply_markup, parse_mode="HTML")
+                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.message(CommandStart())
         async def cmd_start(message: types.Message):
@@ -3509,6 +3516,9 @@ class AdminBotService:
             elif action == "tasks":
                 await callback.answer()
                 await _render_tasks_list(callback.message, is_callback=True)
+            elif action == "style":
+                await callback.answer()
+                await _render_style_panel(callback.message, is_callback=True)
             elif action == "status":
                 await callback.answer()
                 auto_reply_str = "Yoqilgan" if settings.AUTO_REPLY_ENABLED else "O'chirilgan"
@@ -4376,23 +4386,23 @@ class AdminBotService:
             profiles = await self.db_manager.list_style_profiles()
             all_notes = await self.db_manager.get_all_style_notes()
             active_notes_count = len([k for k in all_notes if not k.endswith(":state")])
+            curr_note = await self.db_manager.get_style_note("global")
+            note_display = f"<i>\"{html.escape(curr_note)}\"</i>" if curr_note else "<i>(Standart — eslatma yo'q)</i>"
 
             text = (
                 "✍️ <b>SHAXSIY YOZISH USLUBI (WRITING STYLE)</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"• <b>Umumiy holat:</b> {glob_status}\n"
-                f"• <b>Saqlangan namunalar (style_samples):</b> <code>{total_samples}</code> ta\n"
+                f"• <b>Joriy uslub:</b> {note_display}\n"
+                f"• <b>Namunalar (style_samples):</b> <code>{total_samples}</code> ta\n"
                 f"• <b>Hisoblangan profillar:</b> <code>{len(profiles)}</code> ta\n"
                 f"• <b>Faol uslubiy eslatmalar:</b> <code>{active_notes_count}</code> ta\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "💡 <b>Mavjud buyruqlar:</b>\n"
-                "• <code>/style on</code> / <code>/style off</code> — umumiy uslubni yoqish/o'chirish\n"
-                "• <code>/style on @user</code> / <code>/style off @user</code> — kontakt bo'yicha yoqish\n"
-                "• <code>/style note &lt;matn&gt;</code> — umumiy uslubiy eslatma kiritish\n"
-                "• <code>/style note clear</code> — eslatmani o'chirish\n"
-                "• <code>/style rebuild</code> — profillarni qayta hisoblash\n"
-                "• <code>/style test @user</code> — A/B uslub sinovi (yubormasdan)\n"
-                "• <code>/style forget</code> — barcha uslub ma'lumotlarini tozalash"
+                "💡 <b>Tezkor boshqaruv tugmalari:</b>\n"
+                "• ⚡ <b>Tayyor Uslublar</b> — 1 bosishda kerakli ohangni (qisqa, samimiy, rasmiy) tanlash\n"
+                "• 🧪 <b>A/B Sinov</b> — uslubingiz qanday ishlashini bevosita sinab ko'rish\n"
+                "• 🔄 <b>Qayta hisoblash</b> — xabarlar statistikasi asosida profillarni yangilash\n\n"
+                "<i>Buyruqlar: <code>/style on</code>, <code>/style on @user</code>, <code>/style note &lt;matn&gt;</code></i>"
             )
 
             builder = InlineKeyboardBuilder()
@@ -4400,21 +4410,29 @@ class AdminBotService:
                 builder.button(text="⏸ Uslubni o'chirish", callback_data="style:off")
             else:
                 builder.button(text="🟢 Uslubni yoqish", callback_data="style:on")
+            builder.button(text="⚡ Tayyor Uslublar", callback_data="style:presets_menu")
+            builder.button(text="🧪 Tezkor A/B Sinov", callback_data="style:test_quick")
             builder.button(text="🔄 Qayta hisoblash", callback_data="style:rebuild")
             builder.button(text="🗑 Hammasini tozalash", callback_data="style:forget_prompt")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(2, 1, 1)
+            builder.adjust(2, 2, 2)
 
             if is_callback:
                 await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
             else:
                 await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
-        @dp.message(Command("style"))
+        @dp.message(Command("style", "stayl", "uslub"))
+        @dp.message(StateFilter(None), F.text.regexp(r"(?i)^[/\s]*(?:style|stayl|uslub)\b.*"))
         async def cmd_style(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
-            args = message.text[len("/style"):].strip()
+            clean_text = (message.text or "").strip()
+            if clean_text.startswith("/"):
+                clean_text = clean_text[1:].strip()
+            parts_cmd = clean_text.split(maxsplit=1)
+            args = parts_cmd[1].strip() if len(parts_cmd) > 1 else ""
+
             if not args or args.lower() in ("panel", "status", "help"):
                 return await _render_style_panel(message, is_callback=False)
 
@@ -4525,30 +4543,34 @@ class AdminBotService:
                 return await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
             elif subcmd == "test":
-                if len(parts) < 2:
-                    return await safe_reply(
-                        message,
-                        "ℹ️ <b>Uslub A/B sinovi:</b>\nFormat: <code>/style test @username</code> yoki <code>/style test &lt;user_id&gt;</code>",
-                        parse_mode="HTML",
-                    )
-                contact = await _resolve_target_contact(parts[1].strip())
-                if not contact:
-                    return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(parts[1].strip())}'</b> topilmadi.", parse_mode="HTML")
+                contact = None
+                if len(parts) >= 2:
+                    contact = await _resolve_target_contact(parts[1].strip())
+                    if not contact:
+                        return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(parts[1].strip())}'</b> topilmadi.", parse_mode="HTML")
+                else:
+                    contacts = await self.db_manager.list_contacts()
+                    if contacts:
+                        contact = contacts[0]
+
+                target_user_id = contact.user_id if contact else 8036556250
+                target_name = contact.full_name if contact else "Mansur"
+                target_handle = f"@{contact.username}" if contact and contact.username else f"ID: {target_user_id}"
 
                 test_incoming = "Salom, qalaysiz? Ishlar qalay ketmoqda?"
                 reply_a = await self.ai_engine.generate_reply(
                     incoming_text=test_incoming,
-                    sender_name=contact.full_name,
+                    sender_name=target_name,
                     contact_profile=contact,
                     history=[],
                     memory_context="",
                 )
                 style_ctx = ""
                 if self.style_service:
-                    style_ctx = await self.style_service.get_style_context(contact.user_id, test_incoming)
+                    style_ctx = await self.style_service.get_style_context(target_user_id, test_incoming)
                 reply_b = await self.ai_engine.generate_reply(
                     incoming_text=test_incoming,
-                    sender_name=contact.full_name,
+                    sender_name=target_name,
                     contact_profile=contact,
                     history=[],
                     memory_context=style_ctx,
@@ -4556,7 +4578,7 @@ class AdminBotService:
 
                 report = (
                     f"🧪 <b>USLUB A/B TAQQOSLASH SINOVI:</b>\n"
-                    f"👤 <b>Kontakt:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
+                    f"👤 <b>Kontakt:</b> {html.escape(target_name)} (<code>{target_handle}</code>)\n"
                     f"📩 <b>Test xabari:</b> <i>\"{test_incoming}\"</i>\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"🅰️ <b>A VARIANT (Uslubsiz / Standart):</b>\n"
@@ -4569,6 +4591,22 @@ class AdminBotService:
                 return await safe_reply(message, report, parse_mode="HTML")
 
             return await _render_style_panel(message, is_callback=False)
+
+        @dp.callback_query(F.data == "style:toggle_quick")
+        async def handle_style_toggle_quick(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            glob_note = await self.db_manager.get_style_note("global:state")
+            is_glob_on = (glob_note == "on" or getattr(settings, "STYLE_ENABLED", False)) and (glob_note != "off")
+            new_state = not is_glob_on
+            if self.style_service:
+                await self.style_service.set_global_enabled(new_state)
+            else:
+                await self.db_manager.upsert_style_note("global:state", "on" if new_state else "off")
+
+            toast = "🟢 Shaxsiy yozish uslubi yoqildi!" if new_state else "⏸ Shaxsiy yozish uslubi o'chirildi."
+            await callback.answer(toast, show_alert=False)
+            await _render_dashboard(callback.message, is_callback=True)
 
         @dp.callback_query(F.data == "style:panel")
         async def handle_style_panel(callback: types.CallbackQuery):
@@ -4597,6 +4635,99 @@ class AdminBotService:
                 await self.db_manager.upsert_style_note("global:state", "off")
             await callback.answer("⏸ Shaxsiy yozish uslubi o'chirildi.")
             await _render_style_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "style:presets_menu")
+        async def handle_style_presets_menu(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            curr_note = await self.db_manager.get_style_note("global")
+            note_display = f"<i>\"{html.escape(curr_note)}\"</i>" if curr_note else "<i>(Standart)</i>"
+            text = (
+                "⚡ <b>TAYYOR YOZISH USLUBLARI (PRESETS)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 <b>Hozirgi uslub:</b> {note_display}\n\n"
+                "O'zingizga mos ohangni tanlang (1 ta bosish kifoya):\n\n"
+                "1️⃣ <b>Qisqa va londa</b> — Juda qisqa, ortiqcha so'zlarsiz, aniq javoblar.\n"
+                "2️⃣ <b>Samimiy va do'stona</b> — Iliq, do'stona va xushmuomala ohang.\n"
+                "3️⃣ <b>Rasmiy va hurmatli</b> — Jiddiy, rasmiy va hurmat saqlagan holda.\n"
+                "4️⃣ <b>Standart (Tozalash)</b> — Qo'shimcha ko'rsatmalarsiz sof statistik uslub."
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="⚡ Qisqa va londa", callback_data="style:preset:short")
+            builder.button(text="🤝 Samimiy va do'stona", callback_data="style:preset:friendly")
+            builder.button(text="👔 Rasmiy va hurmatli", callback_data="style:preset:formal")
+            builder.button(text="🗑 Standart (Tozalash)", callback_data="style:preset:clear")
+            builder.button(text="🔙 Uslub paneli", callback_data="style:panel")
+            builder.adjust(1, 1, 1, 1, 1)
+            await callback.answer()
+            await safe_edit(callback.message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("style:preset:"))
+        async def handle_style_preset_choice(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            preset_type = callback.data.split(":")[2]
+            preset_notes = {
+                "short": "Juda qisqa, londa va aniq javob ber, ortiqcha gap yozma.",
+                "friendly": "Samimiy, do'stona va iliq ohangda yoz.",
+                "formal": "Rasmiy, jiddiy va hurmat bilan javob yoz.",
+            }
+            if preset_type == "clear":
+                await self.db_manager.delete_style_note("global")
+                await callback.answer("🗑 Uslubiy ko'rsatma tozalandi (standart).", show_alert=True)
+            elif preset_type in preset_notes:
+                note_text = preset_notes[preset_type]
+                await self.db_manager.upsert_style_note("global", note_text)
+                await callback.answer("✅ Uslub muvaffaqiyatli o'rnatildi!", show_alert=True)
+            await _render_style_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "style:test_quick")
+        async def handle_style_test_quick(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer("🧪 Sinov javoblari generatsiya qilinmoqda...")
+            contacts = await self.db_manager.list_contacts()
+            target_contact = contacts[0] if contacts else None
+            sender_name = target_contact.full_name if target_contact else "Mansur"
+            contact_user_id = target_contact.user_id if target_contact else 8036556250
+            contact_handle = f"@{target_contact.username}" if target_contact and target_contact.username else f"ID: {contact_user_id}"
+
+            test_incoming = "Salom, qalaysiz? Ishlar qalay ketmoqda?"
+            reply_a = await self.ai_engine.generate_reply(
+                incoming_text=test_incoming,
+                sender_name=sender_name,
+                contact_profile=target_contact,
+                history=[],
+                memory_context="",
+            )
+            style_ctx = ""
+            if self.style_service:
+                style_ctx = await self.style_service.get_style_context(contact_user_id, test_incoming)
+            reply_b = await self.ai_engine.generate_reply(
+                incoming_text=test_incoming,
+                sender_name=sender_name,
+                contact_profile=target_contact,
+                history=[],
+                memory_context=style_ctx,
+            )
+
+            report = (
+                f"🧪 <b>USLUB A/B TAQQOSLASH SINOVI:</b>\n"
+                f"👤 <b>Sinov kontakti:</b> {html.escape(sender_name)} (<code>{contact_handle}</code>)\n"
+                f"📩 <b>Test xabari:</b> <i>\"{test_incoming}\"</i>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🅰️ <b>A VARIANT (Uslubsiz / Standart):</b>\n"
+                f"<code>{html.escape(reply_a or '')}</code>\n\n"
+                f"🅱️ <b>B VARIANT (Sizning shaxsiy uslubingiz):</b>\n"
+                f"<code>{html.escape(reply_b or '')}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>Eslatma: Bu sinov xabari bo'lib, kontaktga hech narsa yuborilmadi.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔄 Yana sinash", callback_data="style:test_quick")
+            builder.button(text="🔙 Uslub paneli", callback_data="style:panel")
+            builder.adjust(1, 1)
+            await safe_edit(callback.message, report, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.callback_query(F.data == "style:rebuild")
         async def handle_style_rebuild(callback: types.CallbackQuery):
