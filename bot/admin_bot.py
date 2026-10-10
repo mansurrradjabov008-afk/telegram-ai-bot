@@ -24,7 +24,7 @@ from aiogram.exceptions import TelegramBadRequest
 from config import settings
 from database.crud import DatabaseManager
 from database.models import Draft
-from services.ai_engine import AIEngine
+from services.ai_engine import AIEngine, extract_clean_first_name, sanitize_outreach_constraints
 from services.scheduler_service import SchedulerService
 from services.digest_service import DigestService
 from services.schedule_parser import (
@@ -1347,11 +1347,13 @@ class AdminBotService:
                 facts_list = [f.text for f in active_facts]
                 resolved_title = contact.full_name or resolved_title
 
+            # 1. Clean first name for display & greetings
+            clean_display_name = extract_clean_first_name(resolved_title) or resolved_title
             addressing_style = contact.addressing_style if contact else "siz"
 
             # 2. Call AI Engine for Intelligence Synthesis
             ai_res = await self.ai_engine.analyze_contact_inquiry(
-                contact_name=resolved_title,
+                contact_name=clean_display_name,
                 username=clean_username,
                 messages=messages_history,
                 user_query=raw_text,
@@ -1368,7 +1370,7 @@ class AdminBotService:
                         await safe_reply(
                             message,
                             f"🚀 <b>Xabar yuborildi!</b>\n\n"
-                            f"👤 <b>Qabul qiluvchi:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(resolved_title)})\n"
+                            f"👤 <b>Qabul qiluvchi:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(clean_display_name)})\n"
                             f"📝 <b>Matn:</b> <i>\"{html.escape(direct_text)}\"</i>",
                             parse_mode="HTML",
                             reply_markup=None,
@@ -1379,7 +1381,8 @@ class AdminBotService:
 
             # Present the executive intelligence briefing + suggested check-in message
             summary = ai_res.get("summary", "Yozishmalar mavjud emas.")
-            suggested = ai_res.get("suggested_outreach", f"Salom {resolved_title}, yaxshimisiz?")
+            suggested = ai_res.get("suggested_outreach", f"Salom {clean_display_name}, yaxshimisiz?")
+            suggested = sanitize_outreach_constraints(suggested, raw_text, clean_display_name)
 
             # Check if this is a JARVIS delegation mission or inquiry
             is_delegation = ai_res.get("is_delegation_mission") or any(k in lower_text for k in [
@@ -1396,10 +1399,51 @@ class AdminBotService:
                 t_val = dl_match.group(2)
                 deadline_str = f"{prefix.strip()} soat {t_val} gacha"
 
+            mission_goal = ai_res.get("mission_goal") or "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash."
+
+            # Check if direct action was explicitly commanded ('yozchi', 'yoz', 'jo'natchi', etc.)
+            is_direct_action = ai_res.get("is_direct_action") or bool(re.search(
+                r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?)\b",
+                lower_text
+            ))
+
+            # IF direct action ordered AND userbot sender available: DISPATCH IMMEDIATELY!
+            if is_direct_action and self._userbot_send_fn and suggested:
+                try:
+                    await self._userbot_send_fn(f"@{clean_username}", suggested)
+                    self._pending_outreach = None
+
+                    if not hasattr(self, "_active_missions"):
+                        self._active_missions = {}
+                    self._active_missions[clean_username.lower()] = {
+                        "peer": f"@{clean_username}",
+                        "display_name": clean_display_name,
+                        "goal": mission_goal,
+                        "deadline": deadline_str,
+                        "dispatched_at": time.time(),
+                    }
+
+                    deadline_line = f"⏰ <b>Muddat (Deadline):</b> <code>{html.escape(deadline_str)}</code>\n" if deadline_str else ""
+                    resp = (
+                        f"🚀 <b>TOPSHIRIQ ZUDLIK BILAN BAJARILDI, JANOB! (JARVIS Protocol)</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 <b>Qabul qiluvchi:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(clean_display_name)})\n"
+                        f"{deadline_line}"
+                        f"🎯 <b>Vazifa:</b> {html.escape(mission_goal)}\n\n"
+                        f"📝 <b>Yuborilgan xabar:</b>\n"
+                        f"<i>\"{html.escape(suggested)}\"</i>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📡 <i>{html.escape(clean_display_name)} javob berishi bilanoq ma'lumotlarni tahlil qilib, sizga hisobot beraman!</i>"
+                    )
+                    await safe_reply(message, resp, parse_mode="HTML", reply_markup=None)
+                    return True
+                except Exception as e:
+                    logger.error(f"Direct dispatch to {clean_username} failed: {type(e).__name__}")
+
             # Save pending outreach for 1-word confirmation ('yubor', 'ha')
             self._pending_outreach = {
                 "peer": f"@{clean_username}",
-                "display_name": resolved_title,
+                "display_name": clean_display_name,
                 "text": suggested,
                 "time": time.time(),
                 "is_mission": is_delegation,
@@ -1407,12 +1451,11 @@ class AdminBotService:
             }
 
             if is_delegation:
-                mission_goal = ai_res.get("mission_goal") or "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash."
                 deadline_line = f"⏰ <b>Muddat (Deadline):</b> <code>{html.escape(deadline_str)}</code>\n" if deadline_str else ""
                 resp = (
                     f"🎯 <b>TOPSHIRIQ QABUL QILINDI, JANOB! (JARVIS Protocol)</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 <b>Aloqa:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(resolved_title)})\n"
+                    f"👤 <b>Aloqa:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(clean_display_name)})\n"
                     f"{deadline_line}"
                     f"🎯 <b>Vazifa:</b> {html.escape(mission_goal)}\n\n"
                     f"📊 <b>Oxirgi yozishmalar tahlili:</b>\n"
@@ -1425,7 +1468,7 @@ class AdminBotService:
                 )
             else:
                 resp = (
-                    f"📋 <b>@{html.escape(clean_username)} ({html.escape(resolved_title)}) bilan muloqot tahlili:</b>\n"
+                    f"📋 <b>@{html.escape(clean_username)} ({html.escape(clean_display_name)}) bilan muloqot tahlili:</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"ℹ️ <b>Holat:</b> {html.escape(summary)}\n\n"
                     f"✍️ <b>Tavsiya etilgan xabar (Hol-ahvol so'rash):</b>\n"

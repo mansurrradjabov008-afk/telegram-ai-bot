@@ -882,5 +882,101 @@ async def test_jarvis_delegation_mission_and_schedule_guard(temp_db):
     assert msg_cancel.reply.call_args[1].get("reply_markup") is None
 
 
+@pytest.mark.asyncio
+async def test_jarvis_direct_action_and_negative_constraints(temp_db):
+    """
+    Test exact scenario from user's latest screenshot:
+    Prompt: '@umid_namozov dustimga yozchi ertangi rejalarini aniqlab menga yetkaz,aka dema sizlab murojat qilsang yetarli'
+    1. 'aka dema' constraint MUST strictly remove any 'aka' or 'akaxon' from the outreach.
+    2. 'dustimga yozchi' direct action verb MUST trigger immediate dispatch via userbot.
+    3. Contact title 'Umid jura' MUST be cleaned to first name 'Umid' in greeting.
+    4. Response to boss MUST report 'TOPSHIRIQ ZUDLIK BILAN BAJARILDI, JANOB!' with zero buttons.
+    """
+    from services.ai_engine import extract_clean_first_name, sanitize_outreach_constraints
+
+    prompt = "@umid_namozov dustimga yozchi ertangi rejalarini aniqlab menga yetkaz,aka dema sizlab murojat qilsang yetarli"
+
+    # 1. Test clean name extraction
+    assert extract_clean_first_name("Umid jura") == "Umid"
+    assert extract_clean_first_name("Umid do'st") == "Umid"
+
+    # 2. Test negative constraint sanitizer
+    raw_ai_outreach = "Assalomu alaykum Umid aka, yaxshimisiz? Ertangi rejalaringiz qanaqa, nimalar bilan bandsiz? Shuni aniqlashtirib qo'ymoqchi edim."
+    sanitized = sanitize_outreach_constraints(raw_ai_outreach, prompt, "Umid")
+    assert "aka" not in sanitized.lower(), "Constraint 'aka dema' must strictly remove 'aka'!"
+    assert "Umid, yaxshimisiz?" in sanitized
+    assert "Ertangi rejalaringiz" in sanitized
+
+    # 3. Test Full AdminBot JARVIS Execution
+    db_mgr = temp_db
+    owner_id = 999111
+    userbot_sender = AsyncMock()
+
+    await db_mgr.upsert_contact(
+        user_id=777666,
+        username="umid_namozov",
+        full_name="Umid jura",
+        mode="auto",
+        addressing_style="siz",
+    )
+
+    ai_engine = MagicMock()
+    # Even if AI hallucinates 'Umid aka' and repeats boss words in summary:
+    ai_engine.analyze_contact_inquiry = AsyncMock(return_value={
+        "summary": "10-oktabrda so'nggi marta suhbatlashilgan. Ertangi rejalar bo'yicha ma'lumot yo'q.",
+        "suggested_outreach": "Assalomu alaykum Umid aka, yaxshimisiz? Ertangi rejalaringiz qanaqa?",
+        "is_direct_send": False,
+        "direct_message": None,
+        "is_delegation_mission": True,
+        "is_direct_action": True,
+        "mission_goal": "Ertangi rejalarini aniqlash",
+    })
+
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=MagicMock(),
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+    service.set_userbot_sender(userbot_sender)
+
+    crm_or_sched_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_natural_crm_or_schedule":
+            crm_or_sched_fn = h.callback
+            break
+    assert crm_or_sched_fn is not None
+
+    msg = MagicMock()
+    msg.from_user.id = owner_id
+    msg.text = prompt
+    msg.reply = AsyncMock()
+
+    await crm_or_sched_fn(msg)
+
+    # 4. Verify Immediate Dispatch
+    userbot_sender.assert_called_once()
+    sent_peer = userbot_sender.call_args[0][0]
+    sent_text = userbot_sender.call_args[0][1]
+
+    assert sent_peer == "@umid_namozov"
+    assert "aka" not in sent_text.lower(), "Dispatched message must NOT contain 'aka'!"
+    assert "Umid" in sent_text
+    assert "Ertangi rejalaringiz" in sent_text
+
+    # 5. Verify Executive Cockpit Report
+    assert msg.reply.called
+    reply_text = msg.reply.call_args[0][0]
+    reply_kwargs = msg.reply.call_args[1]
+
+    assert "TOPSHIRIQ ZUDLIK BILAN BAJARILDI, JANOB! (JARVIS Protocol)" in reply_text
+    assert "@umid_namozov" in reply_text
+    assert "Yuborilgan xabar" in reply_text
+    assert reply_kwargs.get("reply_markup") is None, "Zero buttons expected!"
+
+
+
 
 

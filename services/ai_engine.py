@@ -49,6 +49,55 @@ class ScheduleIntent(BaseModel):
     human_time: Optional[str] = Field(default=None, description="Human readable description in Uzbek")
 
 
+def extract_clean_first_name(full_name: str) -> str:
+    """Extracts genuine first name, stripping relationship tags like 'jura', 'do'st', 'tanish'."""
+    if not full_name:
+        return ""
+    cleaned = re.sub(r"(?i)\b(?:jura|jo['`’‘]?ra|do['`’‘]?st|dost|tanish|og['`’‘]?ayni|bro|jigar|aka|uka)\b", "", full_name).strip()
+    parts = cleaned.split()
+    return parts[0] if parts else full_name.split()[0]
+
+
+def sanitize_outreach_constraints(text: str, user_query: str, contact_name: str = "") -> str:
+    """
+    Deterministically enforces negative constraints and cleans styling.
+    Strictly guarantees that if the boss commanded 'aka dema', 'aka' is NEVER present in the outreach.
+    """
+    res = text.strip()
+    lower_query = user_query.lower()
+
+    # 1. Negative constraint on "aka" (e.g. 'aka dema', 'akamas', 'aka deb aytma')
+    has_no_aka_constraint = bool(re.search(
+        r"\b(?:aka\s+dema|akamas|aka\s+deb\s+(?:aytma|yozma|murojaat\s+qilma)|aka\s+emas|akaxon\s+dema)\b",
+        lower_query
+    ))
+    if has_no_aka_constraint:
+        # Strip aka/akaxon after name: "Umid aka" -> "Umid", "aka Umid" -> "Umid"
+        res = re.sub(r"\b([A-Z\w]+)\s+aka\b", r"\1", res, flags=re.IGNORECASE)
+        res = re.sub(r"\b([A-Z\w]+)\s+akaxon\b", r"\1", res, flags=re.IGNORECASE)
+        res = re.sub(r"\baka\s+([A-Z\w]+)\b", r"\1", res, flags=re.IGNORECASE)
+        res = re.sub(r"\b(?:aka|akaxon)\b", "", res, flags=re.IGNORECASE)
+
+    # 2. Negative constraint on "uka"
+    has_no_uka_constraint = bool(re.search(
+        r"\b(?:uka\s+dema|ukamas|ukajon\s+dema)\b",
+        lower_query
+    ))
+    if has_no_uka_constraint:
+        res = re.sub(r"\b([A-Z\w]+)\s+uka\b", r"\1", res, flags=re.IGNORECASE)
+        res = re.sub(r"\b([A-Z\w]+)\s+ukajon\b", r"\1", res, flags=re.IGNORECASE)
+        res = re.sub(r"\b(?:uka|ukajon)\b", "", res, flags=re.IGNORECASE)
+
+    # 3. Strip accidental relationship labels from greeting (e.g. "Assalomu alaykum Umid jura" -> "Assalomu alaykum Umid")
+    res = re.sub(r"(?i)\b(Assalomu\s+alaykum|Salom)\s+([A-Z\w]+)\s+(?:jura|jo['`’‘]?ra|do['`’‘]?st|dost)\b", r"\1 \2", res)
+
+    # 4. Clean up punctuation and whitespace artifacts
+    res = re.sub(r"\s+([,.:!?])", r"\1", res)
+    res = re.sub(r",\s*,+", ",", res)
+    res = re.sub(r"\s{2,}", " ", res)
+    return res.strip()
+
+
 class AIEngine:
     def __init__(self, api_key: Optional[str] = None, model_name: Optional[str] = None):
         self.api_key = api_key if api_key is not None else settings.GEMINI_API_KEY
@@ -590,12 +639,17 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
             "suggested_outreach": "...",
             "is_direct_send": bool,
             "direct_message": Optional[str],
+            "is_delegation_mission": bool,
+            "is_direct_action": bool,
+            "mission_goal": Optional[str],
         }
         """
-        prompt = f"""You are Antigravity (JARVIS), an elite executive AI butler for Radjabov Mansur.
+        clean_first_name = extract_clean_first_name(contact_name)
+
+        prompt = f"""You are Antigravity (JARVIS), an ultra-smart executive AI assistant for Radjabov Mansur (Tony Stark level intelligence, precise instruction-following, zero hallucinations).
 The boss gave this command: "{user_query}"
-Target contact: {contact_name} (@{username})
-Addressing style: '{addressing_style}' (use {'"siz/sizlar"' if addressing_style == 'siz' else '"sen/sensirash"'})
+Target contact: {clean_first_name} (@{username})
+CRM addressing style: '{addressing_style}'
 
 Recent chat history (chronological):
 {json.dumps(messages, ensure_ascii=False, indent=2)}
@@ -603,25 +657,34 @@ Recent chat history (chronological):
 Known background facts:
 {json.dumps(facts or [], ensure_ascii=False)}
 
-Analyze the situation and return a strict JSON object:
+TASK:
+Analyze the boss's command, extract all instructions and negative constraints, inspect past chat history, and return a strict JSON object:
 {{
-  "summary": "Short 1-2 sentence executive briefing in natural Uzbek explaining what they last discussed, when, and current state.",
-  "suggested_outreach": "A warm, natural, diplomatic check-in or inquiry message to send them in Uzbek.",
+  "summary": "1-2 short sentences in Uzbek summarizing ONLY the past chat history with the contact (e.g. '10-oktabrda so'nggi marta suhbatlashilgan. Ertangi rejalar haqida ma'lumot yo'q.'). NEVER mention, quote, or summarize the boss's current order here!",
+  "suggested_outreach": "A warm, natural, high-touch diplomatic inquiry message in Uzbek from the boss to the contact.",
   "is_direct_send": false,
   "direct_message": null,
-  "is_delegation_mission": false,
-  "mission_goal": null
+  "is_delegation_mission": true,
+  "is_direct_action": true or false,
+  "mission_goal": "Concise Uzbek description of what to determine (e.g. 'Ertangi rejalari va bandligini aniqlash')"
 }}
 
-Guidelines:
-- If the boss is delegating an investigation, inquiry, or reconnaissance mission (e.g. asking what the contact is doing today, whether they have time to meet, what their plans are, or 'menga yetkaz', 'bilib ber', 'aniqlab ber'):
-  * set "is_delegation_mission" to true
-  * set "mission_goal" to a concise Uzbek description of what needs to be determined (e.g., "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash")
-  * set "suggested_outreach" to a polite, natural, high-touch message from the boss to the contact inquiring about those exact things (e.g., "Assalomu alaykum ..., yaxshimisiz? Bugungi rejalaringiz qanaqa, nimalar bilan bandsiz? Bugun ko'rishishga vaqtingiz bo'ladimi?")
-  * set "is_direct_send" to false, and "direct_message" to null.
-- CRITICAL RULE: NEVER set "is_direct_send" to true when the boss is giving instructions to YOU (the butler) to report back ("menga yetkaz", "bilib ber", "vaqti bormikin").
-- Only set "is_direct_send" to true if the boss explicitly dictated a message for the contact (e.g. '@ali ga salom deb yoz').
-- Never output markdown fences in your response, just valid JSON.
+CRITICAL INSTRUCTION-FOLLOWING RULES:
+1. STRICT NEGATIVE CONSTRAINTS (HIGHEST PRIORITY):
+   - You MUST inspect the boss's command for any negative constraints (e.g. 'aka dema', 'senlama', 'sizlama', 'falon narsani aytma').
+   - If the boss says 'aka dema' (or 'akamas', 'aka deb murojaat qilma'): You are STRICTLY FORBIDDEN from including the word 'aka' or 'akaxon' anywhere in the message! You must address the contact simply by their clean first name without any honorific suffix (e.g. 'Assalomu alaykum {clean_first_name}, yaxshimisiz?'). Violating this constraint is completely forbidden!
+   - If the boss says 'sizlab murojat qilsang yetarli': Use polite 'siz' forms ('yaxshimisiz', 'rejalaringiz'), without adding 'aka'.
+2. CLEAN FIRST NAME:
+   - Always use clean first name '{clean_first_name}' in greetings. Never include relationship markers like 'jura' or 'do'st'.
+3. SUMMARY INTEGRITY (NO PARROTING):
+   - 'summary': Summarize ONLY the historical messages in the chat history.
+   - NEVER say 'Xo'jayin Mansur falon narsani buyurdi' or repeat the boss's current prompt in 'summary'! The boss already knows what he just commanded.
+4. DIRECT ACTION DETECTION ('is_direct_action'):
+   - If the boss gave an imperative order to write or send right now ('yozchi', 'yoz', 'jo'natchi', 'jo'nat', 'yuborchi', 'yubor', 'so'rachi', 'surishtirchi'):
+     Set "is_direct_action" to true!
+   - If the boss only asked a passive question or asked to prepare ('nimalar qilyapti ekan', 'tayyorlab ber'):
+     Set "is_direct_action" to false.
+5. Never output markdown fences in your response, just valid JSON.
 """
         for candidate_model in self._get_candidate_models():
             try:
@@ -635,6 +698,17 @@ Guidelines:
                 raw = re.sub(r"\s*```$", "", raw)
                 data = json.loads(raw)
                 if "summary" in data and "suggested_outreach" in data:
+                    # Sanitize any accidental negative constraint violations
+                    data["suggested_outreach"] = sanitize_outreach_constraints(
+                        data["suggested_outreach"],
+                        user_query,
+                        clean_first_name
+                    )
+                    # Clean any accidental parroting in summary
+                    summary_text = data.get("summary", "")
+                    if any(w in summary_text.lower() for w in ["xo'jayin", "xojayin", "radjabov", "mansur", "buyurdi", "vazifa yukladi"]):
+                        last_m = messages[-1]["text"] if messages else ""
+                        data["summary"] = f"Oxirgi xabar ({messages[-1].get('sender', 'Kontakt')}): \"{last_m[:80]}\". Rejalar haqida ma'lumot yo'q." if messages else f"Oldingi yozishmalar mavjud emas."
                     return data
             except Exception as e:
                 logger.warning(f"analyze_contact_inquiry failed on model {candidate_model}: {type(e).__name__}")
@@ -649,27 +723,27 @@ Guidelines:
         is_delegation = any(k in lower_query for k in [
             "shugullanyapti", "shug'ullanyapti", "vaqti bormikin", "vaqti bormi",
             "rejalari", "rejelari", "menga yetkaz", "menga ayt", "menga xabar",
-            "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti"
+            "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti", "yozchi", "yoz"
         ])
+        is_direct_action = bool(re.search(
+            r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?)\b",
+            lower_query
+        ))
 
-        greeting = "Assalomu alaykum" if addressing_style == "siz" else "Salom"
-        if is_delegation and any(w in lower_query for w in ["kurish", "ko'rish", "uchrash", "reja", "reje", "shug'ullan", "shugullan", "band"]):
-            if addressing_style == "siz":
-                fallback_outreach = f"{greeting} {contact_name}! Bugun rejalaringiz qanaqa, nimalar bilan bandsiz? Bugun ko'rishishga vaqtingiz bo'ladimi?"
-            else:
-                fallback_outreach = f"{greeting} {contact_name}! Bugun rejalaring qanaqa, nimalar bilan bandsan? Bugun ko'rishishga vaqting bormi?"
-            fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:100]}\"." if messages else "Oxirgi yozishmalarda bugungi rejalar va ko'rishish bo'yicha ma'lumot yo'q."
-            return {
-                "summary": fallback_summary,
-                "suggested_outreach": fallback_outreach,
-                "is_direct_send": False,
-                "direct_message": None,
-                "is_delegation_mission": True,
-                "mission_goal": "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash",
-            }
+        has_no_aka = bool(re.search(r"\b(?:aka\s+dema|akamas|aka\s+deb\s+(?:aytma|yozma|murojaat\s+qilma))\b", lower_query))
+        use_siz = ("siz" in lower_query) or (addressing_style == "siz")
+        greeting = "Assalomu alaykum" if use_siz else "Salom"
+        name_token = clean_first_name if has_no_aka else (f"{clean_first_name} aka" if (use_siz and not has_no_aka) else clean_first_name)
 
-        fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:100]}\"." if messages else f"@{username} bilan hozircha xabarlar tarixi mavjud emas."
-        fallback_outreach = f"{greeting} {contact_name}, yaxshimisiz? Ishlar qalay, nima yangiliklar bo'lyapti?" if addressing_style == "siz" else f"{greeting} {contact_name}, qandaysan? Ishlar qalay, nima gaplar?"
+        if "ertang" in lower_query:
+            time_focus = "Ertangi rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Ertangi rejalaring qanaqa, nimalar bilan bandsan?"
+        else:
+            time_focus = "Bugun rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Bugun rejalaring qanaqa, nimalar bilan bandsan?"
+
+        fallback_outreach = f"{greeting} {name_token}, yaxshimisiz? {time_focus} Shuni bilmoqchi edim." if use_siz else f"{greeting} {name_token}, qandaysan? {time_focus}"
+        fallback_outreach = sanitize_outreach_constraints(fallback_outreach, user_query, clean_first_name)
+
+        fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:80]}\"." if messages else f"@{username} bilan oldingi yozishmalar mavjud emas."
 
         return {
             "summary": fallback_summary,
@@ -677,7 +751,8 @@ Guidelines:
             "is_direct_send": False,
             "direct_message": None,
             "is_delegation_mission": is_delegation,
-            "mission_goal": "Kontakt bilan bog'lanish va holatni aniqlash" if is_delegation else None,
+            "is_direct_action": is_direct_action,
+            "mission_goal": "Ertangi rejalarni aniqlash" if "ertang" in lower_query else "Rejalar va holatni aniqlash",
         }
 
     def _dynamic_smart_fallback(self, text: str, addressing: str = "siz") -> str:
