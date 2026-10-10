@@ -424,6 +424,49 @@ def run_dryrun_migration_and_rollback(backup_path: Path) -> dict:
     }
 
 
+def apply_live_migration(db_path: Path) -> dict:
+    """
+    Applies migration v10_style_schema.sql to live production database (Phase 7).
+    """
+    import sqlite3
+
+    print("\nApplying migration v10_style_schema.sql to live database...")
+    assert db_path.exists(), f"Production database not found: {db_path}"
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    migration_file = PROJECT_ROOT / "database" / "migrations" / "v10_style_schema.sql"
+    migration_sql = migration_file.read_text(encoding="utf-8")
+    cur.executescript(migration_sql)
+    conn.commit()
+
+    # Verify tables
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'style_%' ORDER BY name")
+    tables = [r[0] for r in cur.fetchall()]
+    assert set(tables) == {"style_notes", "style_profiles", "style_samples"}, f"Missing style tables: {tables}"
+    print(f"  [OK] Live style tables created: {tables}")
+
+    # Verify schema version
+    cur.execute("SELECT version, description, applied_at FROM schema_versions WHERE version = 10")
+    version_row = cur.fetchone()
+    assert version_row is not None, "Schema version 10 not recorded!"
+    print(f"  [OK] Schema version 10 recorded: version={version_row[0]}, description='{version_row[1]}'")
+
+    # Verify integrity
+    cur.execute("PRAGMA integrity_check")
+    integrity = cur.fetchall()
+    assert integrity == [("ok",)], f"Integrity check failed: {integrity}"
+    print("  [OK] Live PRAGMA integrity_check: ok")
+
+    conn.close()
+    return {
+        "tables": tables,
+        "version": version_row,
+        "integrity": "ok",
+    }
+
+
 def main():
     print("=" * 60)
     print("ANTIGRAVITY BUTLER — WRITING STYLE DoD & DESIGN VERIFICATION")
@@ -448,8 +491,12 @@ def main():
         latest_backup = backups[-1]
         run_dryrun_migration_and_rollback(latest_backup)
 
+    if "--apply-live" in sys.argv:
+        live_db = PROJECT_ROOT / "data" / "butler.db"
+        apply_live_migration(live_db)
+
     print("\n" + "=" * 60)
-    print("ALL DoD & D1-D11 CHECKS PASSED SUCCESSFULLY (READY FOR CHECKPOINT 2)")
+    print("ALL DoD & D1-D11 CHECKS PASSED SUCCESSFULLY")
     print("=" * 60)
 
 
