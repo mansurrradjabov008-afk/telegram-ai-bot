@@ -642,3 +642,113 @@ async def test_natural_language_digest_actions(temp_db):
     assert daryo_contact is None, "Channels must NEVER enter contacts table!"
 
 
+@pytest.mark.asyncio
+async def test_natural_language_contact_inquiry_and_outreach(temp_db):
+    """
+    Verifies executive inquiry and check-in:
+    '@gulzodaxursandovadan habar olib quychi nima gaplar ekan hozir'
+    1. Suffix stripping ('-dan' -> 'gulzodaxursandova')
+    2. Telethon / history fetch & AI analysis
+    3. Actionable executive briefing and check-in draft
+    4. 1-word confirmation ('yubor') delivering message via userbot
+    """
+    db_mgr = temp_db
+    owner_id = 999111
+
+    ai_engine = MagicMock()
+    ai_engine.parse_crm_intent = AsyncMock(return_value={"is_crm": False})
+    ai_engine.analyze_contact_inquiry = AsyncMock(return_value={
+        "summary": "29-sentyabr kuni o'qish haqida gaplashilgan. Oxirgi xabar: 'Ok'.",
+        "suggested_outreach": "Assalomu alaykum Gulzoda, yaxshimisiz? Nima yangiliklar bor?",
+        "is_direct_send": False,
+        "direct_message": None,
+    })
+
+    userbot_client = MagicMock()
+    target_entity = MagicMock()
+    target_entity.id = 8173735172
+    target_entity.first_name = "Gulzoda"
+    userbot_client.get_entity = AsyncMock(return_value=target_entity)
+    userbot_client.get_messages = AsyncMock(return_value=[
+        MagicMock(text="Stm uquv markazi yaxshi", out=False, date=None),
+        MagicMock(text="Ok", out=True, date=None),
+    ])
+
+    digest_service = MagicMock()
+    digest_service.get_client.return_value = userbot_client
+
+    userbot_sender = AsyncMock(return_value=True)
+
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=digest_service,
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+    service.set_userbot_sender(userbot_sender)
+
+    crm_or_sched_fn = None
+    fallback_fn = None
+    for h in service.dp.message.handlers:
+        cb_name = getattr(h.callback, "__name__", "")
+        if cb_name == "handle_natural_crm_or_schedule":
+            crm_or_sched_fn = h.callback
+        elif cb_name == "handle_fallback_natural_text":
+            fallback_fn = h.callback
+
+    assert crm_or_sched_fn is not None
+    assert fallback_fn is not None
+
+    # Step 1: User asks: "@gulzodaxursandovadan habar olib quychi nima gaplar ekan hozir"
+    msg_inquiry = MagicMock()
+    msg_inquiry.from_user.id = owner_id
+    msg_inquiry.text = "@gulzodaxursandovadan habar olib quychi nima gaplar ekan hozir"
+    msg_inquiry.reply = AsyncMock()
+
+    await crm_or_sched_fn(msg_inquiry)
+
+    # Verify AI inquiry was invoked with normalized username (without -dan)
+    ai_engine.analyze_contact_inquiry.assert_called_once()
+    call_args = ai_engine.analyze_contact_inquiry.call_args[1]
+    assert call_args["username"] == "gulzodaxursandova"
+    assert call_args["contact_name"] == "Gulzoda"
+
+    # Verify reply sent with briefing & check-in draft
+    assert msg_inquiry.reply.called
+    sent_text = msg_inquiry.reply.call_args[0][0]
+    assert "Gulzoda" in sent_text
+    assert "Assalomu alaykum Gulzoda" in sent_text
+    assert "yubor" in sent_text
+
+    # Verify pending outreach is active
+    assert service._pending_outreach is not None
+    assert service._pending_outreach["peer"] == "@gulzodaxursandova"
+
+    # Step 2: User replies "yubor" to confirm sending
+    state_mock = MagicMock()
+    state_mock.get_state = AsyncMock(return_value=None)
+
+    msg_confirm = MagicMock()
+    msg_confirm.from_user.id = owner_id
+    msg_confirm.text = "yubor"
+    msg_confirm.reply_to_message = None
+    msg_confirm.reply = AsyncMock()
+
+    await fallback_fn(msg_confirm, state=state_mock)
+
+    # Verify userbot sent the message
+    userbot_sender.assert_called_once_with(
+        "@gulzodaxursandova",
+        "Assalomu alaykum Gulzoda, yaxshimisiz? Nima yangiliklar bor?",
+    )
+    # Verify pending outreach is cleared
+    assert service._pending_outreach is None
+    # Verify confirmation sent
+    assert msg_confirm.reply.called
+    confirm_text = msg_confirm.reply.call_args[0][0]
+    assert "Xabar muvaffaqiyatli yuborildi" in confirm_text
+
+
+

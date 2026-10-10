@@ -573,6 +573,82 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
 
         return None
 
+    async def analyze_contact_inquiry(
+        self,
+        contact_name: str,
+        username: str,
+        messages: List[Dict[str, Any]],
+        user_query: str,
+        addressing_style: str = "siz",
+        facts: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Analyzes contact status, recent chat history, and owner's inquiry/outreach intent.
+        Returns:
+        {
+            "summary": "...",
+            "suggested_outreach": "...",
+            "is_direct_send": bool,
+            "direct_message": Optional[str],
+        }
+        """
+        prompt = f"""You are Antigravity, an elite executive AI butler for Radjabov Mansur.
+The boss gave this command: "{user_query}"
+Target contact: {contact_name} (@{username})
+Addressing style: '{addressing_style}' (use {'"siz/sizlar"' if addressing_style == 'siz' else '"sen/sensirash"'})
+
+Recent chat history (chronological):
+{json.dumps(messages, ensure_ascii=False, indent=2)}
+
+Known background facts:
+{json.dumps(facts or [], ensure_ascii=False)}
+
+Analyze the situation and return a strict JSON object:
+{{
+  "summary": "Short 1-2 sentence executive briefing in natural Uzbek explaining what they last discussed, when, and current state.",
+  "suggested_outreach": "A warm, natural, context-aware check-in or follow-up message to send them in Uzbek.",
+  "is_direct_send": false,
+  "direct_message": null
+}}
+
+Guidelines:
+- If the boss explicitly specified what message to send (e.g. 'salom deb yoz', 'kechki 8 da uchrashamiz deb jo'nat'), set is_direct_send to true and direct_message to that text.
+- If the boss asked to check in or inquire ('xabar ol', 'nima gaplar ekan hozir', 'hol-ahvol so'ra'), set is_direct_send to false and provide a high-touch suggested_outreach.
+- Never output markdown fences in your response, just valid JSON.
+"""
+        for candidate_model in self._get_candidate_models():
+            try:
+                raw = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                )
+                raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+                raw = re.sub(r"\s*```$", "", raw)
+                data = json.loads(raw)
+                if "summary" in data and "suggested_outreach" in data:
+                    return data
+            except Exception as e:
+                logger.warning(f"analyze_contact_inquiry failed on model {candidate_model}: {type(e).__name__}")
+                continue
+
+        # Heuristic fallback if AI is offline
+        last_msg = messages[-1]["text"] if messages else "Yozishmalar mavjud emas"
+        last_sender = messages[-1].get("sender", "Noma'lum") if messages else ""
+        last_time = messages[-1].get("time", "") if messages else ""
+
+        fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:100]}\"." if messages else f"@{username} bilan hozircha xabarlar tarixi mavjud emas."
+        greeting = "Assalomu alaykum" if addressing_style == "siz" else "Salom"
+        fallback_outreach = f"{greeting} {contact_name}, yaxshimisiz? Ishlar qalay, nima yangiliklar bo'lyapti?" if addressing_style == "siz" else f"{greeting} {contact_name}, qandaysan? Ishlar qalay, nima gaplar?"
+
+        return {
+            "summary": fallback_summary,
+            "suggested_outreach": fallback_outreach,
+            "is_direct_send": False,
+            "direct_message": None,
+        }
+
     def _dynamic_smart_fallback(self, text: str, addressing: str = "siz") -> str:
         """
         Context-aware offline fallback that strictly respects 'SIZ' vs 'SEN' addressing style.

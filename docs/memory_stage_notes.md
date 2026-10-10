@@ -540,3 +540,22 @@ Current Branch: `stage-memory-hardening`
   - RED: Failed as expected (TypeError on unawaited mock and crm interception).
   - GREEN: Passed in 5.83s.
   - Regression Suite: 44/44 passed in 15.67s across `test_ui_interactive_hubs.py`, `test_modes_commands.py`, `test_memory_commands_phase6.py`, `test_memory_guards_hardening.py`. 0 regressions.
+
+---
+
+## 16. Contact Intelligence Inquiry & Outreach Dispatch (Smart Assistant Mode)
+- **User Challenge Addressed**:
+  - The owner requested in casual Uzbek: `"@gulzodaxursandovadan habar olib quychi nima gaplar ekan hozir"` ("Check in on @gulzodaxursandova, see what's happening right now").
+  - Previous regex captured `@gulzodaxursandovadan` with attached grammatical case suffix `-dan` ("from"), failing entity resolution.
+  - Furthermore, there was no handler to inspect real-time chat history with contacts, generate executive status briefings, draft check-in messages, or execute 1-word confirmations (`yubor`, `ha`).
+- **Architectural & AI Enhancements**:
+  - `normalize_uzbek_username_token`: Added robust Uzbek grammatical case suffix stripping (`-dan`, `-den`, `-ga`, `-ka`, `-qa`, `-ni`, `-ning`, `-da`, `-dagi`, `-bilan`, `-la`), perfectly normalizing `@gulzodaxursandovadan` to `gulzodaxursandova`.
+  - `AIEngine.analyze_contact_inquiry`: New AI pipeline synthesizing real-time conversation messages, contact addressing style (`siz`/`sen`), background facts, and owner request into an executive summary, conversational status, and high-touch personalized check-in message.
+  - `_handle_contact_inquiry_or_outreach`: Resolves contact via MTProto Telethon client in real-time, extracts recent messages, retrieves DB memory, generates Gemini intelligence analysis, and formats an executive briefing with suggested check-in message (zero buttons).
+  - `_handle_pending_outreach_confirmation`: Supports natural 1-word confirmation (`"yubor"`, `"ha"`, `"jo'nat"`, `"ok"`) to dispatch the drafted message directly via MTProto Userbot (`_userbot_send_fn`), or cancel (`"yo'q"`, `"bekor qil"`).
+  - Direct Sending: Recognizes explicit direct instructions (e.g. `"@usernamega salom deb yoz"`) and delivers immediately.
+- **Verification (P7 Red-Green Protocol)**:
+  - Test added: `test_natural_language_contact_inquiry_and_outreach` in `tests/test_ui_interactive_hubs.py`.
+  - RED: Failed on missing `time` and `asyncio` imports, and `get_mem_facts` method name.
+  - GREEN: Passed in 4.31s after resolving imports and method names.
+  - Regression Suite: 45/45 passed in 12.85s. 100% pass rate. 0 regressions.

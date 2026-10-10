@@ -4,12 +4,14 @@ Provides an interactive command center and inline keyboard escalation alerts for
 Bulletproof HTML escaping and fail-safe error handling.
 """
 
+import asyncio
 import html
 import logging
 import re
 from datetime import datetime, timedelta
 from typing import Optional, Callable, Dict, Any, List
 import pytz
+import time
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -301,6 +303,23 @@ def normalize_and_validate_username(raw: str) -> Optional[str]:
     return None
 
 
+def normalize_uzbek_username_token(raw_token: str) -> str:
+    """
+    Cleans Uzbek grammatical case suffixes attached to @username:
+    e.g. '@gulzodaxursandovadan' -> 'gulzodaxursandova'
+         '@umid_namozovga' -> 'umid_namozov'
+         '@sah_60ni' -> 'sah_60'
+    """
+    clean = raw_token.lstrip("@").strip()
+    suffixes = [
+        "dagi", "bilan", "ning", "dan", "den", "ga", "ka", "qa", "ni", "da", "la"
+    ]
+    for sfx in suffixes:
+        if clean.lower().endswith(sfx) and len(clean) - len(sfx) >= 3:
+            return clean[:-len(sfx)]
+    return clean
+
+
 MODE_ALIASES: Dict[str, str] = {
     "auto": "auto",
     "avto": "auto",
@@ -366,6 +385,7 @@ class AdminBotService:
         self._userbot_send_fn: Optional[Callable] = None
         self._manual_reply_check_fn: Optional[Callable] = None
         self._pending_escalations: Dict[str, Dict[str, Any]] = {}
+        self._pending_outreach: Optional[Dict[str, Any]] = None
 
         self._setup_handlers()
 
@@ -1199,6 +1219,244 @@ class AdminBotService:
             # 4. Run/Generate digest
             if has_digest_kw and any(w in lower_text for w in ["tayyorla", "chiqar", "ber", "tuz", "yarat", "bugungi", "ko'rsat", "korsat"]):
                 await _execute_digest(message, is_callback=False)
+                return True
+
+            return False
+
+        async def _handle_contact_inquiry_or_outreach(message: types.Message) -> bool:
+            """
+            Handles natural language contact inquiries, check-ins, and direct outreach:
+            - '@gulzodaxursandovadan habar olib quychi nima gaplar ekan hozir'
+            - 'Gulzodadan xabar olib qo'y'
+            - '@umid_namozovga salom deb yoz'
+            - '@ali bilan oxirgi marta nima gaplashgan edik'
+            """
+            raw_text = (message.text or "").strip()
+            if not raw_text:
+                return False
+
+            lower_text = raw_text.lower()
+
+            # Inquiry / outreach intent keywords
+            inquiry_keywords = [
+                "habar ol", "xabar ol", "habar olib", "xabar olib", "nima gap",
+                "nima yangilik", "hol-ahvol", "bilib ber", "ko'rib ber", "gaplashgan",
+                "nima dedi", "nima yozgan", "salom deb", "deb yoz", "deb jo'nat",
+                "deb yubor", "xabar yoz", "habar yoz", "xabar jo'nat", "habar jo'nat",
+                "yozib qo'y", "yozvor", "yozib yubor", "xabar yubor", "habar yubor"
+            ]
+            if not any(k in lower_text for k in inquiry_keywords):
+                return False
+
+            # Don't intercept digest or channel actions
+            if any(w in lower_text for w in ["kanal", "channel", "dayjest", "digest", "manba"]):
+                return False
+
+            # Extract target username (@username) or name
+            target_username = None
+            target_match = re.search(r"@([a-zA-Z0-9_]{3,32})", raw_text)
+            if target_match:
+                raw_handle = target_match.group(1)
+                target_username = normalize_uzbek_username_token(raw_handle)
+            else:
+                # Check if an existing contact is mentioned by name
+                contacts = await self.db_manager.list_contacts()
+                for c in contacts:
+                    keys = []
+                    if c.username:
+                        keys.append(c.username.lower())
+                    if c.full_name:
+                        parts = [p.lower() for p in re.split(r"[\s_]+", c.full_name) if len(p) >= 3]
+                        keys.extend(parts)
+                    for k in keys:
+                        if re.search(rf"(?i)\b{re.escape(k)}(?:ni|ga|da|dan|ning)?\b", lower_text):
+                            target_username = c.username or str(c.user_id)
+                            break
+                    if target_username:
+                        break
+
+            if not target_username:
+                return False
+
+            clean_username = target_username.lstrip("@").strip()
+
+            # 1. Fetch real-time Telegram context via Userbot client
+            messages_history: List[Dict[str, Any]] = []
+            resolved_title = clean_username
+            resolved_peer_id = None
+            client = self.digest_service.get_client() if self.digest_service else None
+
+            if client:
+                try:
+                    entity = await asyncio.wait_for(client.get_entity(clean_username), timeout=10.0)
+                    resolved_peer_id = getattr(entity, "id", None)
+                    resolved_title = getattr(entity, "first_name", None) or clean_username
+                    raw_msgs = await asyncio.wait_for(client.get_messages(entity, limit=8), timeout=10.0)
+                    tz = pytz.timezone(settings.TIMEZONE)
+                    for m in reversed(raw_msgs):
+                        if not getattr(m, "text", None):
+                            continue
+                        sender_label = "Siz (Xo'jayin)" if getattr(m, "out", False) else resolved_title
+                        msg_dt = m.date.astimezone(tz) if getattr(m, "date", None) else None
+                        time_str = msg_dt.strftime("%d-%B, %H:%M") if msg_dt else ""
+                        messages_history.append({
+                            "sender": sender_label,
+                            "time": time_str,
+                            "text": m.text,
+                        })
+                except Exception as e:
+                    logger.warning(f"Userbot entity/messages fetch for '{clean_username}' failed: {type(e).__name__}")
+
+            # Check local DB contact and messages
+            contact = await self.db_manager.get_contact_by_username(clean_username)
+            if not contact and resolved_peer_id:
+                contact = await self.db_manager.get_contact_by_id(resolved_peer_id)
+
+            if contact and not messages_history:
+                local_msgs = await self.db_manager.get_mem_messages(contact.user_id, limit=8)
+                for lm in local_msgs:
+                    sender_label = "Siz (Xo'jayin)" if lm.sender in ["owner_manual", "bot_auto", "bot_approved"] else contact.full_name
+                    messages_history.append({
+                        "sender": sender_label,
+                        "time": str(lm.created_at or ""),
+                        "text": lm.text,
+                    })
+
+            # Auto-register contact if newly resolved from Telegram
+            if not contact and resolved_peer_id:
+                try:
+                    contact = await self.db_manager.upsert_contact(
+                        user_id=resolved_peer_id,
+                        username=clean_username,
+                        full_name=resolved_title,
+                        mode="auto",
+                        addressing_style="siz",
+                    )
+                except Exception as e:
+                    logger.warning(f"Auto-register contact for '{clean_username}' failed: {type(e).__name__}")
+
+            # Background memory facts
+            facts_list = []
+            if contact:
+                active_facts = await self.db_manager.get_mem_facts(contact.user_id)
+                facts_list = [f.text for f in active_facts]
+                resolved_title = contact.full_name or resolved_title
+
+            addressing_style = contact.addressing_style if contact else "siz"
+
+            # 2. Call AI Engine for Intelligence Synthesis
+            ai_res = await self.ai_engine.analyze_contact_inquiry(
+                contact_name=resolved_title,
+                username=clean_username,
+                messages=messages_history,
+                user_query=raw_text,
+                addressing_style=addressing_style,
+                facts=facts_list,
+            )
+
+            # Check if this is a direct send instruction (e.g. '@usernamega salom deb yoz')
+            if ai_res.get("is_direct_send") and ai_res.get("direct_message"):
+                direct_text = ai_res["direct_message"]
+                if self._userbot_send_fn:
+                    try:
+                        await self._userbot_send_fn(f"@{clean_username}", direct_text)
+                        await safe_reply(
+                            message,
+                            f"🚀 <b>Xabar yuborildi!</b>\n\n"
+                            f"👤 <b>Qabul qiluvchi:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(resolved_title)})\n"
+                            f"📝 <b>Matn:</b> <i>\"{html.escape(direct_text)}\"</i>",
+                            parse_mode="HTML",
+                            reply_markup=None,
+                        )
+                        return True
+                    except Exception as e:
+                        logger.error(f"Direct send to {clean_username} failed: {type(e).__name__}")
+
+            # Present the executive intelligence briefing + suggested check-in message
+            summary = ai_res.get("summary", "Yozishmalar mavjud emas.")
+            suggested = ai_res.get("suggested_outreach", f"Salom {resolved_title}, yaxshimisiz?")
+
+            # Save pending outreach for 1-word confirmation ('yubor', 'ha')
+            self._pending_outreach = {
+                "peer": f"@{clean_username}",
+                "display_name": resolved_title,
+                "text": suggested,
+                "time": time.time(),
+            }
+
+            resp = (
+                f"📋 <b>@{html.escape(clean_username)} ({html.escape(resolved_title)}) bilan muloqot tahlili:</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"ℹ️ <b>Holat:</b> {html.escape(summary)}\n\n"
+                f"✍️ <b>Tavsiya etilgan xabar (Hol-ahvol so'rash):</b>\n"
+                f"<i>\"{html.escape(suggested)}\"</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚀 <b>Xabarni yuborish uchun:</b> Chatga <b>\"yubor\"</b> yoki <b>\"ha\"</b> deb yozing.\n"
+                f"✏️ <i>Yoki o'zingiz xohlagan matnni yozishingiz mumkin.</i>"
+            )
+
+            await safe_reply(message, resp, parse_mode="HTML", reply_markup=None)
+            return True
+
+        async def _handle_pending_outreach_confirmation(message: types.Message) -> bool:
+            if not getattr(self, "_pending_outreach", None):
+                return False
+
+            raw_text = (message.text or "").strip().lower()
+            pending = self._pending_outreach
+            # Expiry: 15 minutes
+            if time.time() - pending.get("time", 0) > 900:
+                self._pending_outreach = None
+                return False
+
+            # Positive confirmation
+            if raw_text in ["yubor", "ha", "jo'nat", "yuborilsin", "yoz", "yozib yubor", "send", "yes", "ok"]:
+                peer = pending["peer"]
+                text_to_send = pending["text"]
+                dname = pending.get("display_name", peer)
+
+                if self._userbot_send_fn:
+                    try:
+                        await self._userbot_send_fn(peer, text_to_send)
+                        self._pending_outreach = None
+                        await safe_reply(
+                            message,
+                            f"🚀 <b>Xabar muvaffaqiyatli yuborildi!</b>\n\n"
+                            f"👤 <b>Qabul qiluvchi:</b> <code>{html.escape(peer)}</code> ({html.escape(dname)})\n"
+                            f"📝 <b>Yuborilgan matn:</b> <i>\"{html.escape(text_to_send)}\"</i>",
+                            parse_mode="HTML",
+                            reply_markup=None,
+                        )
+                        return True
+                    except Exception as e:
+                        logger.error(f"Error sending outreach to {peer}: {type(e).__name__}")
+                        self._pending_outreach = None
+                        await safe_reply(
+                            message,
+                            f"❌ <b>Xabarni yuborishda xatolik yuz berdi:</b> <code>{html.escape(type(e).__name__)}</code>",
+                            parse_mode="HTML",
+                            reply_markup=None,
+                        )
+                        return True
+                else:
+                    self._pending_outreach = None
+                    await safe_reply(
+                        message,
+                        "⚠️ Userbot yuborish xizmati faol emas.",
+                        parse_mode="HTML",
+                        reply_markup=None,
+                    )
+                    return True
+
+            # Negative confirmation / cancellation
+            if raw_text in ["yo'q", "yoq", "kerak emas", "bekor qil", "no", "cancel"]:
+                self._pending_outreach = None
+                await safe_reply(
+                    message,
+                    "❌ <b>Xabar yuborish bekor qilindi.</b>",
+                    parse_mode="HTML",
+                    reply_markup=None,
+                )
                 return True
 
             return False
@@ -2197,6 +2455,10 @@ class AdminBotService:
             if await _handle_natural_digest_action(message):
                 return
 
+            # -0.5. Check if this is a contact inquiry or outreach request (e.g. @gulzodaxursandovadan habar olib quychi nima gaplar ekan hozir)
+            if await _handle_contact_inquiry_or_outreach(message):
+                return
+
             # 0. Check if this is a natural mode change request (e.g. @username ni auto qil)
             mode_intent_match = re.search(
                 r"(?i)(?:^|.*?)(@?[a-zA-Z0-9_]{3,32})\s+(?:ni\s+)?(auto|avto|avtomatik|draft|qoralama|tasdiq|mute|ovozsiz|ochir)\s*(?:rejimiga\s+o'tkaz|rejimiga\s+quyil|rejimiga\s+quy|rejimiga\s+o't|rejimiga|rejimida|qil|qoy|qo'y)?",
@@ -2792,12 +3054,20 @@ class AdminBotService:
                             card_msg_id=card_msg_id,
                         )
 
+            # 0. Check if this is a confirmation for pending outreach (e.g. 'yubor', 'ha', 'jo'nat')
+            if await _handle_pending_outreach_confirmation(message):
+                return
+
             handled = await _schedule_and_respond(message, message.text)
             if handled:
                 return
 
             handled_digest = await _handle_natural_digest_action(message)
             if handled_digest:
+                return
+
+            handled_inquiry = await _handle_contact_inquiry_or_outreach(message)
+            if handled_inquiry:
                 return
 
             handled_contact = await _handle_natural_contact_action(message)
