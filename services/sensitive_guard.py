@@ -265,10 +265,10 @@ async def check_sensitive(
                 return SensitiveCheckResult(is_sensitive=True, reasons=reasons)
         except Exception as e:
             # FAIL-CLOSED: Any failure, timeout, or invalid output forces sensitive draft
-            logger.warning(f"Sensitive guard AI classifier failed ({e}). Enforcing fail-closed sensitive flag.")
+            logger.warning(f"Sensitive guard AI classifier failed ({type(e).__name__}). Enforcing fail-closed sensitive flag.")
             return SensitiveCheckResult(
                 is_sensitive=True,
-                reasons=[f"AI xavfsizlik tekshiruvi xatosi (fail-closed): {str(e)[:50]}"],
+                reasons=[f"AI xavfsizlik tekshiruvi xatosi (fail-closed): {type(e).__name__}"],
             )
 
     return SensitiveCheckResult(is_sensitive=bool(reasons), reasons=reasons)

@@ -160,7 +160,7 @@ class DigestSummarizer:
             data = json.loads(clean_text)
             return AISummaryResponse.model_validate(data)
         except Exception as e:
-            logger.warning(f"Error parsing AISummaryResponse: {e}")
+            logger.warning(f"Error parsing AISummaryResponse: {type(e).__name__}")
             return None
 
     def build_section_d_items(self, posts: List[DigestPost]) -> List[DigestItem]:
@@ -377,7 +377,7 @@ class DigestSummarizer:
                 all_discarded_posts.extend(discarded)
                 total_skipped += skipped
             except Exception as e:
-                logger.error(f"Error processing topic {topic}: {e}", exc_info=True)
+                logger.error(f"Error processing topic {topic}: {type(e).__name__}")
                 failed_topics.append(topic)
                 sections[topic] = []
 

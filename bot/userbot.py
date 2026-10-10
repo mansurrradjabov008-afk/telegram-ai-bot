@@ -96,28 +96,28 @@ class UserbotService:
             try:
                 await self._handle_private_message(event)
             except Exception as e:
-                logger.error(f"Error handling private message: {e}", exc_info=True)
+                logger.error(f"Error handling private message: {type(e).__name__}")
 
         @client.on(events.NewMessage(outgoing=True, func=lambda e: e.is_private))
         async def on_outgoing_private_message(event):
             try:
                 await self._handle_outgoing_message(event)
             except Exception as e:
-                logger.error(f"Error handling outgoing message: {e}", exc_info=True)
+                logger.error(f"Error handling outgoing message: {type(e).__name__}")
 
         @client.on(events.MessageEdited(func=lambda e: e.is_private))
         async def on_message_edited(event):
             try:
                 await self._handle_edited_message(event)
             except Exception as e:
-                logger.error(f"Error handling edited message: {e}", exc_info=True)
+                logger.error(f"Error handling edited message: {type(e).__name__}")
 
         @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_channel or e.is_group))
         async def on_feed_message(event):
             try:
                 await self._handle_feed_message(event)
             except Exception as e:
-                logger.error(f"Error handling feed message: {e}")
+                logger.error(f"Error handling feed message: {type(e).__name__}")
 
 
     async def check_owner_manually_replied(self, peer: Any, after_message_id: int) -> bool:
@@ -138,7 +138,7 @@ class UserbotService:
                     )
                     return True
         except Exception as e:
-            logger.warning(f"Could not check manual reply history for {peer}: {e}")
+            logger.warning(f"Could not check manual reply history for {peer}: {type(e).__name__}")
         return False
 
     async def _handle_outgoing_message(self, event):
@@ -239,7 +239,7 @@ class UserbotService:
                 )
                 await asyncio.sleep(wait_time + 1)
             except Exception as e:
-                logger.error(f"Error sending message to {peer}: {e}", exc_info=True)
+                logger.error(f"Error sending message to {peer}: {type(e).__name__}")
                 return None
         return None
 
@@ -422,13 +422,13 @@ class UserbotService:
         except asyncio.CancelledError:
             return
         except Exception as e:
-            logger.error(f"Error in debounce timer for sender {sender_id}: {e}")
+            logger.error(f"Error in debounce timer for sender {sender_id}: {type(e).__name__}")
             return
 
         try:
             await self._process_debounced_batch(sender_id)
         except Exception as e:
-            logger.error(f"Error processing debounced batch for sender {sender_id}: {e}", exc_info=True)
+            logger.error(f"Error processing debounced batch for sender {sender_id}: {type(e).__name__}")
         finally:
             self._debounce_tasks.pop(sender_id, None)
 
@@ -458,7 +458,7 @@ class UserbotService:
         mode = getattr(contact, "mode", "draft") or "draft"
 
         logger.info(
-            f"Processing debounced batch ({len(batch)} messages) for {peer_repr}: '{combined_text[:100]}...'"
+            f"Processing debounced batch ({len(batch)} messages) for {peer_repr} (chars={len(combined_text)})"
         )
 
         # Step 5: Generate reply with existing AI logic and Contact Memory (Integration Point 2)
@@ -471,7 +471,7 @@ class UserbotService:
                     incoming_text=combined_text,
                 )
             except Exception as e:
-                logger.warning(f"Failed to fetch memory context for {peer_repr}: {e}")
+                logger.warning(f"Failed to fetch memory context for {peer_repr}: {type(e).__name__}")
                 memory_context = ""
 
         reply_text = await self.ai_engine.generate_reply(
@@ -522,7 +522,7 @@ class UserbotService:
                     else:
                         await asyncio.sleep(delay)
                 except Exception as e:
-                    logger.warning(f"Typing simulation failed for {chat_id}: {e}")
+                    logger.warning(f"Typing simulation failed for {chat_id}: {type(e).__name__}")
                     await asyncio.sleep(delay)
 
                 # Send message safely with FloodWait handling
@@ -547,7 +547,7 @@ class UserbotService:
                         username=username,
                     )
 
-                logger.info(f"Auto-replied to {peer_repr}: '{reply_text}'")
+                logger.info(f"Auto-replied to {peer_repr} (chars={len(reply_text)})")
                 return
 
         # Step 8: Draft mode OR Sensitive topic
@@ -595,7 +595,7 @@ class UserbotService:
         if not self.client:
             raise RuntimeError("Userbot client is not initialized.")
 
-        logger.info(f"Userbot sending direct message to {target_peer}: '{message_text}'")
+        logger.info(f"Userbot sending direct message to {target_peer} (chars={len(message_text)})")
         peer_target = int(target_peer) if (isinstance(target_peer, str) and target_peer.lstrip("-").isdigit()) else target_peer
         try:
             entity = await self.client.get_entity(peer_target)
@@ -608,7 +608,7 @@ class UserbotService:
             async with self.client.action(entity, "typing"):
                 await asyncio.sleep(typing_duration)
         except Exception as e:
-            logger.warning(f"Typing simulation failed for {target_peer}: {e}")
+            logger.warning(f"Typing simulation failed for {target_peer}: {type(e).__name__}")
             await asyncio.sleep(typing_duration)
 
         sent_msg = await self._send_with_floodwait(entity, message_text)

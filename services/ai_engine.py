@@ -68,7 +68,7 @@ class AIEngine:
                 genai.configure(api_key=self.api_key)
                 self._client = genai.GenerativeModel(self.model_name)
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client: {e}")
+            logger.error(f"Failed to initialize Gemini client: {type(e).__name__}")
 
     def _get_candidate_models(self) -> List[str]:
         models = [self.model_name]
@@ -179,7 +179,7 @@ Return JSON strictly matching this schema:
                 data = json.loads(raw_text)
                 return ClassificationResult(**data)
             except Exception as e:
-                logger.warning(f"Classification failed on model {candidate_model}: {e}")
+                logger.warning(f"Classification failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
         return self._heuristic_fallback_classify(incoming_text)
@@ -301,7 +301,7 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
                 if reply:
                     return reply
             except Exception as e:
-                logger.warning(f"Reply generation failed on model {candidate_model}: {e}")
+                logger.warning(f"Reply generation failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
         fallback = self._dynamic_smart_fallback(incoming_text)
@@ -354,7 +354,7 @@ Respond with STRICT JSON ONLY in this exact format:
                         "reasons": list(parsed.get("reasons", [])),
                     }
             except Exception as e:
-                logger.warning(f"Sensitive classifier failed on {candidate_model}: {e}")
+                logger.warning(f"Sensitive classifier failed on {candidate_model}: {type(e).__name__}")
                 raise e
 
         return {"sensitive": False, "reasons": []}
@@ -402,7 +402,7 @@ Postlar ro'yxati:
                 if raw_text:
                     return raw_text.strip()
             except Exception as e:
-                logger.warning(f"Digest generation failed on model {candidate_model}: {e}")
+                logger.warning(f"Digest generation failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
         return "Digest tayyorlashda vaqtinchalik xatolik yuz berdi."
@@ -471,7 +471,7 @@ Agar matn xabar rejalashtirish haqida bo'lmasa yoki qabul qiluvchi umuman ko'rsa
                     return data
                 return None
             except Exception as e:
-                logger.warning(f"Schedule intent parse failed on model {candidate_model}: {e}")
+                logger.warning(f"Schedule intent parse failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
         return None
@@ -539,7 +539,7 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
                     return data
                 return None
             except Exception as e:
-                logger.warning(f"CRM intent parse failed on model {candidate_model}: {e}")
+                logger.warning(f"CRM intent parse failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
         return None
@@ -568,7 +568,7 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
                 if raw_text:
                     return raw_text.strip()
             except Exception as e:
-                logger.warning(f"generate_json_response failed on model {candidate_model}: {e}")
+                logger.warning(f"generate_json_response failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
         return None

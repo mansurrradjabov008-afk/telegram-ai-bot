@@ -32,8 +32,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True)],
+    handlers=[RichHandler(rich_tracebacks=True, tracebacks_show_locals=False)],
 )
+# Constrain third-party loggers (Rule H3)
+for _lib in ["telethon", "httpx", "google", "google.auth", "urllib3", "aiogram"]:
+    logging.getLogger(_lib).setLevel(logging.WARNING)
+
 logger = logging.getLogger("AntigravityButler")
 
 
@@ -107,7 +111,7 @@ async def main():
         try:
             await userbot_service.start()
         except Exception as e:
-            logger.error(f"Userbot login failed or pending interactive login: {e}")
+            logger.error(f"Userbot login failed or pending interactive login: {type(e).__name__}")
     else:
         logger.warning("⚠️ Userbot credentials not configured in .env. Running in dry/standby mode.")
 

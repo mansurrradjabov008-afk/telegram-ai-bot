@@ -54,7 +54,7 @@ def contains_injection_patterns(text: str) -> Tuple[bool, Optional[str]]:
         match = re.search(pattern, normalized, re.IGNORECASE)
         if match:
             matched_str = match.group(0)
-            logger.warning(f"🚨 [U2 INJECTION DETECTED] Matched regex '{pattern}' -> '{matched_str}'.")
+            logger.warning(f"🚨 [U2 INJECTION DETECTED] Matched regex pattern '{pattern}' (chars={len(matched_str)}).")
             return True, matched_str
 
     return False, None

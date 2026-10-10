@@ -143,7 +143,7 @@ async def safe_reply(
             try:
                 first_msg = await message.reply(chunk, reply_markup=markup, parse_mode=parse_mode)
             except TelegramBadRequest as e:
-                logger.warning(f"Telegram parse error on reply ({e}), sending plain text...")
+                logger.warning(f"Telegram parse error on reply ({type(e).__name__}), sending plain text...")
                 clean_chunk = (
                     chunk.replace("<b>", "")
                     .replace("</b>", "")
@@ -155,9 +155,9 @@ async def safe_reply(
                 try:
                     first_msg = await message.reply(clean_chunk, reply_markup=markup, parse_mode=None)
                 except Exception as e2:
-                    logger.error(f"Fallback reply also failed: {e2}")
+                    logger.error(f"Fallback reply also failed: {type(e2).__name__}")
             except Exception as e:
-                logger.error(f"Unexpected error in safe_reply: {e}")
+                logger.error(f"Unexpected error in safe_reply: {type(e).__name__}")
         else:
             bot = message.bot
             if bot:
@@ -182,7 +182,7 @@ async def safe_send(
         try:
             last_msg = await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=markup, parse_mode=parse_mode)
         except TelegramBadRequest as e:
-            logger.warning(f"Telegram parse error on send ({e}), sending plain text...")
+            logger.warning(f"Telegram parse error on send ({type(e).__name__}), sending plain text...")
             clean_chunk = (
                 chunk.replace("<b>", "")
                 .replace("</b>", "")
@@ -194,9 +194,9 @@ async def safe_send(
             try:
                 last_msg = await bot.send_message(chat_id=chat_id, text=clean_chunk, reply_markup=markup, parse_mode=None)
             except Exception as e2:
-                logger.error(f"Fallback send also failed: {e2}")
+                logger.error(f"Fallback send also failed: {type(e2).__name__}")
         except Exception as e:
-            logger.error(f"Unexpected error in safe_send: {e}")
+            logger.error(f"Unexpected error in safe_send: {type(e).__name__}")
     return last_msg
 
 
@@ -224,7 +224,7 @@ async def safe_edit(
         err_msg = str(e).lower()
         if "message is not modified" in err_msg:
             return message
-        logger.warning(f"Telegram parse/edit error ({e}), falling back to plain text...")
+        logger.warning(f"Telegram parse/edit error ({type(e).__name__}), falling back to plain text...")
         clean_text = (
             text.replace("<b>", "")
             .replace("</b>", "")
@@ -238,7 +238,7 @@ async def safe_edit(
         except Exception:
             return None
     except Exception as e:
-        logger.error(f"Unexpected error in safe_edit: {e}")
+        logger.error(f"Unexpected error in safe_edit: {type(e).__name__}")
         return None
 
 
@@ -359,7 +359,7 @@ class AdminBotService:
             await self.bot.set_my_commands(commands)
             logger.info("✅ Telegram bot commands menu registered successfully.")
         except Exception as e:
-            logger.warning(f"Could not register Telegram bot commands: {e}")
+            logger.warning(f"Could not register Telegram bot commands: {type(e).__name__}")
 
     def _is_admin(self, user_id: int) -> bool:
         """Owner-only check comparing numeric Telegram ID with owner ID. Returns False if unconfigured or mismatched."""
@@ -447,7 +447,7 @@ class AdminBotService:
                         send_error = None
                         break
                 except Exception as e:
-                    logger.warning(f"Userbot send failed for peer {peer} on draft #{draft_id}: {e}")
+                    logger.warning(f"Userbot send failed for peer {peer} on draft #{draft_id}: {type(e).__name__}")
                     send_error = e
 
             if sent_msg and self.memory_service:
@@ -465,7 +465,7 @@ class AdminBotService:
                             username=draft.contact_username,
                         )
                     except Exception as e:
-                        logger.error(f"Failed to log message in memory_service: {e}")
+                        logger.error(f"Failed to log message in memory_service: {type(e).__name__}")
 
         # Update original approval card if identifiers are provided
         if card_chat_id and card_msg_id and self.bot:
@@ -570,7 +570,7 @@ class AdminBotService:
                     parse_mode="HTML",
                 )
             except Exception as e:
-                logger.warning(f"Restart acknowledgement failed: {e}")
+                logger.warning(f"Restart acknowledgement failed: {type(e).__name__}")
             finally:
                 import os
                 os._exit(0)
@@ -700,8 +700,8 @@ class AdminBotService:
                     await safe_reply_or_send_long(active_msg, full_report, reply_markup=builder.as_markup())
 
                 except Exception as e:
-                    logger.error(f"Digest generation failed: {e}", exc_info=True)
-                    err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+                    logger.error(f"Digest generation failed: {type(e).__name__}")
+                    err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
                     if is_callback:
                         await active_msg.edit_text(err_text, parse_mode="HTML")
                     else:
@@ -788,8 +788,8 @@ class AdminBotService:
                             await safe_reply(active_msg, m, reply_markup=markup, parse_mode="HTML")
 
             except Exception as e:
-                logger.error(f"Smart Digest V2 execution failed: {e}", exc_info=True)
-                err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+                logger.error(f"Smart Digest V2 execution failed: {type(e).__name__}")
+                err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
                 if is_callback:
                     await active_msg.edit_text(err_text, parse_mode="HTML")
                 else:
@@ -923,8 +923,8 @@ class AdminBotService:
                     client = self.digest_service.get_client() if self.digest_service else None
                     success, resp_text, source = await self.digest_service.resolve_and_add_source(client, target)
                 except Exception as e:
-                    logger.error(f"Error in /digest add for target '{target}': {e}", exc_info=True)
-                    resp_text = f"❌ <b>Manbani qo'shishda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+                    logger.error(f"Error in /digest add for target '{target}': {type(e).__name__}")
+                    resp_text = f"❌ <b>Manbani qo'shishda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
 
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
@@ -936,7 +936,7 @@ class AdminBotService:
                         await loading_msg.edit_text(resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                         return
                     except Exception as e:
-                        logger.warning(f"Failed to edit loading_msg ({e}), sending new reply...")
+                        logger.warning(f"Failed to edit loading_msg ({type(e).__name__}), sending new reply...")
                 await safe_reply(message, resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 return
             elif subcmd == "remove":
@@ -951,8 +951,8 @@ class AdminBotService:
                 try:
                     success, resp_text = await self.digest_service.remove_source(target)
                 except Exception as e:
-                    logger.error(f"Error in /digest remove for target '{target}': {e}", exc_info=True)
-                    resp_text = f"❌ <b>Manbani o'chirishda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"
+                    logger.error(f"Error in /digest remove for target '{target}': {type(e).__name__}")
+                    resp_text = f"❌ <b>Manbani o'chirishda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
 
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
@@ -1479,8 +1479,8 @@ class AdminBotService:
                 )
                 return True
             except Exception as e:
-                logger.error(f"Error creating scheduled task: {e}", exc_info=True)
-                await safe_reply(msg_obj, f"❌ Rejalashtirishda xatolik: {html.escape(str(e))}", parse_mode="HTML")
+                logger.error(f"Error creating scheduled task: {type(e).__name__}")
+                await safe_reply(msg_obj, f"❌ Rejalashtirishda xatolik: {html.escape(type(e).__name__)}", parse_mode="HTML")
                 return True
 
         @dp.message(Command("cancel"))
@@ -1702,8 +1702,8 @@ class AdminBotService:
                         parse_mode="HTML",
                     )
                 except Exception as e:
-                    logger.error(f"Error creating wizard scheduled task: {e}", exc_info=True)
-                    return await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(str(e))}", parse_mode="HTML")
+                    logger.error(f"Error creating wizard scheduled task: {type(e).__name__}")
+                    return await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(type(e).__name__)}", parse_mode="HTML")
 
             await state.update_data(run_at_iso=parsed.run_at.isoformat(), human_time=formatted_human)
             await state.set_state(ScheduleWizardState.waiting_for_text)
@@ -1766,8 +1766,8 @@ class AdminBotService:
                     parse_mode="HTML",
                 )
             except Exception as e:
-                logger.error(f"Error creating wizard scheduled task: {e}", exc_info=True)
-                await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(str(e))}", parse_mode="HTML")
+                logger.error(f"Error creating wizard scheduled task: {type(e).__name__}")
+                await safe_reply(message, f"❌ Rejalashtirishda xatolik: {html.escape(type(e).__name__)}", parse_mode="HTML")
 
         async def _render_contacts_list(target_msg: types.Message, is_callback: bool = False):
             """Renders rich contacts list with addressing style badges, autonomy mode badges and instant toggle buttons."""
@@ -3065,7 +3065,7 @@ class AdminBotService:
     async def send_draft_for_approval(self, draft: Draft):
         """Sends interactive draft approval request to Boss with inline action buttons."""
         if not self.bot or not self.admin_id:
-            logger.info(f"Draft #{draft.id} approval notification: {draft.proposed_reply}")
+            logger.info(f"Draft #{draft.id} approval notification (chars={len(draft.proposed_reply)})")
             return
 
         contact_str = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "Noma'lum")
@@ -3118,7 +3118,7 @@ class AdminBotService:
     ):
         """Sends rich interactive escalation alert to Boss with inline buttons."""
         if not self.bot or not self.admin_id:
-            logger.info(f"Escalation notification for {sender_name}: {incoming_message}")
+            logger.info(f"Escalation notification for peer {peer} (chars={len(incoming_message)})")
             return
 
         esc_id = f"esc_{int(datetime.now().timestamp() * 1000)}"
@@ -3180,6 +3180,6 @@ class AdminBotService:
     async def send_notification(self, text: str):
         """Sends notification to Boss safely."""
         if not self.bot or not self.admin_id:
-            logger.info(f"Notification to Boss: {text}")
+            logger.info(f"Notification to Boss (chars={len(text)})")
             return
         await safe_send(bot=self.bot, chat_id=self.admin_id, text=text, parse_mode="HTML")

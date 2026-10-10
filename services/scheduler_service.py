@@ -82,7 +82,7 @@ class SchedulerService:
             try:
                 self.scheduler.remove_job(job_id)
             except Exception as e:
-                logger.warning(f"Could not remove job {job_id}: {e}")
+                logger.warning(f"Could not remove job {job_id}: {type(e).__name__}")
 
         await self.db_manager.update_task_status(task_id, "cancelled")
         logger.info(f"Task #{task_id} cancelled.")
@@ -99,7 +99,7 @@ class SchedulerService:
             try:
                 self.scheduler.remove_job(job_id)
             except Exception as e:
-                logger.warning(f"Could not remove job {job_id}: {e}")
+                logger.warning(f"Could not remove job {job_id}: {type(e).__name__}")
 
         await self._execute_task(task.id, task.target_peer, task.message_text)
         return True
@@ -141,7 +141,7 @@ class SchedulerService:
                     await res
 
         except Exception as e:
-            logger.error(f"Failed to execute scheduled task #{task_id}: {e}")
+            logger.error(f"Failed to execute scheduled task #{task_id}: {type(e).__name__}")
             await self.db_manager.update_task_status(task_id, "failed", str(e))
             if self._notify_boss_callback:
                 import inspect
@@ -181,7 +181,7 @@ class SchedulerService:
                         replace_existing=True,
                     )
             except Exception as e:
-                logger.error(f"Error restoring pending task #{task.id}: {e}")
+                logger.error(f"Error restoring pending task #{task.id}: {type(e).__name__}")
 
     def register_smart_digest_job(
         self,

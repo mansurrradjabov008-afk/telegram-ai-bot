@@ -4,6 +4,13 @@ __pycache__/
 .pytest_cache/
 *.zip
 .env
-data/*.session*
-data/*.db.backup*
+*.db
+*.db-wal
+*.db-shm
+data/*.db
+data/*.db-*
 data/*backup*
+data/*.session*
+scratch/
+temp_isolated.db
+docs/log_scan_report.txt

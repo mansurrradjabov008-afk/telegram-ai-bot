@@ -65,7 +65,7 @@ class MemorySummarizer:
                 genai.configure(api_key=self.api_key)
                 self._client = genai
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client for summarizer: {e}")
+            logger.error(f"Failed to initialize Gemini client for summarizer: {type(e).__name__}")
             self._client = None
 
     async def generate_or_update_summary(
@@ -235,5 +235,5 @@ class MemorySummarizer:
             logger.warning(f"Summary AI call timed out after {timeout_sec}s.")
             return None
         except Exception as e:
-            logger.warning(f"Summary AI call error: {e}")
+            logger.warning(f"Summary AI call error: {type(e).__name__}")
             return None

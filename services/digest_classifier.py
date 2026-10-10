@@ -188,13 +188,13 @@ class DigestClassifier:
         try:
             data = json.loads(clean_text)
         except Exception as e:
-            logger.warning(f"Classification JSON parse error: {e}")
+            logger.warning(f"Classification JSON parse error: {type(e).__name__}")
             return None
 
         try:
             batch_resp = BatchClassificationResponse.model_validate(data)
         except Exception as e:
-            logger.warning(f"Classification Pydantic validation error: {e}")
+            logger.warning(f"Classification Pydantic validation error: {type(e).__name__}")
             return None
 
         validated_items: List[ClassifiedPostItem] = []
@@ -378,7 +378,7 @@ class DigestClassifier:
                             else:
                                 bp.extracted_json = json.dumps(item.extracted, ensure_ascii=False)
                         except Exception as e:
-                            logger.warning(f"Error validating extracted fields for post {bp.id}: {e}")
+                            logger.warning(f"Error validating extracted fields for post {bp.id}: {type(e).__name__}")
                             bp.extracted_json = json.dumps(item.extracted, ensure_ascii=False)
                     else:
                         bp.extracted_json = None

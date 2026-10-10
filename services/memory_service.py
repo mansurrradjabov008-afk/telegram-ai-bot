@@ -124,7 +124,7 @@ class MemoryService:
             )
             return msg_id
         except Exception as e:
-            logger.warning(f"Failed to log message to mem_messages for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to log message to mem_messages for user {contact_user_id}: {type(e).__name__}")
             return None
 
     async def handle_message_edit(
@@ -146,7 +146,7 @@ class MemoryService:
                 new_text=new_text,
             )
         except Exception as e:
-            logger.warning(f"Failed to update edited message for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to update edited message for user {contact_user_id}: {type(e).__name__}")
             return False
 
     async def purge_retention(self) -> int:
@@ -160,7 +160,7 @@ class MemoryService:
                 logger.info(f"Purged {deleted_count} expired messages from mem_messages (older than {days} days).")
             return deleted_count
         except Exception as e:
-            logger.warning(f"Error during memory retention purge: {e}")
+            logger.warning(f"Error during memory retention purge: {type(e).__name__}")
             return 0
 
     async def retrieve_context(
@@ -180,7 +180,7 @@ class MemoryService:
                 k=k,
             )
         except Exception as e:
-            logger.warning(f"Failed to retrieve memory context for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to retrieve memory context for user {contact_user_id}: {type(e).__name__}")
             return [], "error"
 
     async def process_pending_embeddings(self, limit: int = 15) -> int:
@@ -222,7 +222,7 @@ class MemoryService:
                     if res is not None:
                         embedded_count += 1
         except Exception as e:
-            logger.warning(f"Error during pending embeddings background task: {e}")
+            logger.warning(f"Error during pending embeddings background task: {type(e).__name__}")
 
         return embedded_count
 
@@ -241,7 +241,7 @@ class MemoryService:
                 messages = await self.db_manager.get_mem_messages(contact_user_id, limit=batch_limit)
             return await self.extractor.extract_from_messages(contact_user_id, messages)
         except Exception as e:
-            logger.warning(f"Failed to extract facts for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to extract facts for user {contact_user_id}: {type(e).__name__}")
             return {"facts_stored": [], "open_items_stored": [], "status": "error"}
 
     async def update_contact_summary(
@@ -256,7 +256,7 @@ class MemoryService:
         try:
             return await self.summarizer.generate_or_update_summary(contact_user_id, force=force)
         except Exception as e:
-            logger.warning(f"Failed to update rolling summary for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to update rolling summary for user {contact_user_id}: {type(e).__name__}")
             latest = await self.db_manager.get_latest_mem_summary(contact_user_id)
             return latest, "error"
 
@@ -268,7 +268,7 @@ class MemoryService:
         try:
             return await self.db_manager.get_latest_mem_summary(contact_user_id)
         except Exception as e:
-            logger.warning(f"Failed to fetch summary for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to fetch summary for user {contact_user_id}: {type(e).__name__}")
             return None
 
     async def get_reply_context(
@@ -286,6 +286,6 @@ class MemoryService:
                 incoming_text=incoming_text,
             )
         except Exception as e:
-            logger.warning(f"Failed to get reply memory context for user {contact_user_id}: {e}")
+            logger.warning(f"Failed to get reply memory context for user {contact_user_id}: {type(e).__name__}")
             return ""
 

@@ -63,7 +63,7 @@ class MemoryRetriever:
             try:
                 query_vector = await self.embedding_service.embed_text(query_text)
             except Exception as e:
-                logger.warning(f"Failed to generate query embedding: {e}")
+                logger.warning(f"Failed to generate query embedding: {type(e).__name__}")
                 query_vector = None
 
         if query_vector is not None:
@@ -121,7 +121,7 @@ class MemoryRetriever:
                 if results:
                     path_used = "vector"
             except Exception as e:
-                logger.warning(f"Vector retrieval failed for user {contact_user_id}: {e}")
+                logger.warning(f"Vector retrieval failed for user {contact_user_id}: {type(e).__name__}")
                 results = []
 
         # ----------------------------------------------------
@@ -170,7 +170,7 @@ class MemoryRetriever:
                     results = results[:limit_k]
                     path_used = "fts5_recency_fallback"
             except Exception as e:
-                logger.warning(f"FTS5 retrieval failed for user {contact_user_id}: {e}")
+                logger.warning(f"FTS5 retrieval failed for user {contact_user_id}: {type(e).__name__}")
                 results = []
 
         # ----------------------------------------------------

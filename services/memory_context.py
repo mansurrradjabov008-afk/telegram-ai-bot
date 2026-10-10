@@ -64,7 +64,7 @@ class MemoryContextAssembler:
             )
             return ""
         except Exception as e:
-            logger.warning(f"Error assembling memory context for user {contact_user_id}: {e}. Failing open.")
+            logger.warning(f"Error assembling memory context for user {contact_user_id}: {type(e).__name__}. Failing open.")
             return ""
 
     async def _assemble_context_internal(
@@ -161,7 +161,7 @@ class MemoryContextAssembler:
                     moments_block = "\n".join(relevant_moments)
                     sections.append(f"MAVZUGA ALOQADOR OLDINGI SUHBAT PARCHALARI:\n{moments_block}")
             except Exception as e:
-                logger.warning(f"Failed to retrieve relevant moments for user {contact_user_id}: {e}")
+                logger.warning(f"Failed to retrieve relevant moments for user {contact_user_id}: {type(e).__name__}")
 
         # If nothing to inject, return empty
         if not sections:

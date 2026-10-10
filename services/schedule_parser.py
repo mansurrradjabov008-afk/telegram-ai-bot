@@ -330,6 +330,6 @@ async def parse_schedule_intent_hybrid(
                     human_time=ai_data.get("human_time", run_at.strftime("%Y-%m-%d %H:%M")),
                 )
         except Exception as e:
-            logger.warning(f"AI schedule parsing fallback failed: {e}")
+            logger.warning(f"AI schedule parsing fallback failed: {type(e).__name__}")
 
     return None

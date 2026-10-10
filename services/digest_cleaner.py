@@ -179,7 +179,7 @@ class DigestCleaner:
                     logger.info(f"Loaded spam filter rules from {self.rules_path}")
                     return data
             except Exception as e:
-                logger.error(f"Failed to read spam rules file {self.rules_path}: {e}")
+                logger.error(f"Failed to read spam rules file {self.rules_path}: {type(e).__name__}")
 
         logger.warning("Using built-in fallback spam filter rules.")
         return {

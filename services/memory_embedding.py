@@ -82,7 +82,7 @@ class MemoryEmbeddingService:
                 genai.configure(api_key=self.api_key)
                 self._client = genai
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client for embeddings: {e}")
+            logger.error(f"Failed to initialize Gemini client for embeddings: {type(e).__name__}")
             self._client = None
 
     async def embed_text(self, text: str) -> Optional[List[float]]:
@@ -145,7 +145,7 @@ class MemoryEmbeddingService:
             logger.warning(f"Embedding API call timed out after {timeout_sec}s.")
             return None
         except Exception as e:
-            logger.warning(f"Embedding generation error: {e}")
+            logger.warning(f"Embedding generation error: {type(e).__name__}")
             return None
 
     async def embed_and_save(

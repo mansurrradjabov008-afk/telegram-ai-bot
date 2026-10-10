@@ -204,8 +204,8 @@ class DigestService:
             logger.warning(f"Timeout resolving entity {target}")
             return (False, "⏱ <b>Manbani tekshirish vaqti tugadi (15 soniya).</b>\nIltimos, internet aloqasini yoki havola to'g'riligini tekshiring.", None)
         except Exception as e:
-            logger.warning(f"Failed to resolve entity {target}: {e}")
-            return (False, f"❌ <b>Manba topilmadi yoki unga kirish huquqi yo'q:</b>\n<code>{html.escape(str(e))}</code>", None)
+            logger.warning(f"Failed to resolve entity {target}: {type(e).__name__}")
+            return (False, f"❌ <b>Manba topilmadi yoki unga kirish huquqi yo'q:</b>\n<code>{html.escape(type(e).__name__)}</code>", None)
 
         # Strict privacy check: NEVER allow User or private chats
         from telethon.tl.types import User, Channel, Chat
@@ -414,8 +414,8 @@ class DigestService:
                     "error": f"FloodWait: {wait_sec}s",
                 })
             except Exception as e:
-                logger.error(f"Error collecting posts from source {source.title} (ID {source.peer_id}): {e}", exc_info=True)
-                source_status = f"error: {str(e)}"
+                logger.error(f"Error collecting posts from source {source.title} (ID {source.peer_id}): {type(e).__name__}")
+                source_status = f"error: {type(e).__name__}"
                 stats["errors"].append({
                     "peer_id": source.peer_id,
                     "title": source.title,
@@ -686,11 +686,11 @@ class DigestService:
                 "run_id": run_id,
             }
         except Exception as e:
-            logger.error(f"Error in run_smart_digest: {e}", exc_info=True)
+            logger.error(f"Error in run_smart_digest: {type(e).__name__}")
             return {
                 "status": "error",
-                "error": str(e),
-                "messages": [f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(str(e))}</code>"],
+                "error": type(e).__name__,
+                "messages": [f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"],
             }
         finally:
             self._is_run_in_progress = False

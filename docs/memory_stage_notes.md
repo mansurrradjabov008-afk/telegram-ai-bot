@@ -347,3 +347,12 @@ Current Branch: `stage-memory-hardening`
 ### Phase 7: Final Report & Shadow Verification
 - End-to-end proof on temp DB, step-by-step manual test script for owner, and DoD verification.
 
+---
+
+## 7. Strict Rollback Protocol (Rule P13 / Condition 1 / Step 0e)
+- **Zero Branch Switching / Zero Deletions**: Do NOT switch branches (`git checkout`, `git switch`), delete branches (`git branch -D`), or delete backups under any circumstance. Because `data/butler.db` is tracked (and even after G1), checking out other branches risks overwriting or corrupting the live database files on disk.
+- **Rollback Mechanism for Code / Commit A**: Rollbacks for code commits use `git revert <commit>` only.
+- **Rollback Mechanism for Commit B (Gate G1 Untrack)**: Rollback for Commit B (`git rm --cached data/butler.db data/sim_test.db`) is strictly `git add -f data/butler.db data/sim_test.db` after a `Connection.backup()` copy, NOT `git revert` (to prevent git index checkout clobbering the live DB).
+- **Backup Invariance**: Backups in `data/` created via `Connection.backup()` are permanent read-only snapshots and must never be deleted during rollback.
+
+

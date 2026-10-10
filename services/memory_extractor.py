@@ -66,7 +66,7 @@ class MemoryExtractor:
                 genai.configure(api_key=self.api_key)
                 self._client = genai
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client for extraction: {e}")
+            logger.error(f"Failed to initialize Gemini client for extraction: {type(e).__name__}")
             self._client = None
 
     async def verify_source_messages(
@@ -99,9 +99,10 @@ class MemoryExtractor:
                 return False, "contact_claim", f"cross_contact_source_id:{msg_id}"
 
             if msg.sender not in ALLOWED_FACT_SENDERS:
+                sender_role = getattr(msg, "sender", "unknown")
                 logger.warning(
                     f"🚨 [H9 VIOLATION BLOCKED] Rejected fact citing unauthorized sender "
-                    f"'{msg.sender}' (msg_id={msg_id}). bot_auto/bot_approved cannot be a source!"
+                    f"role='{sender_role}' (msg_id={msg_id}). bot_auto/bot_approved cannot be a source!"
                 )
                 return False, "contact_claim", f"unauthorized_sender:{msg.sender}"
 
@@ -242,7 +243,7 @@ class MemoryExtractor:
                 category = str(raw_fact.get("category", "general")).strip().lower()
                 is_forb, forb_reason = is_forbidden_topic(fact_text, category)
                 if is_forb:
-                    logger.info(f"Filtered forbidden topic fact ({forb_reason}): '{fact_text}'")
+                    logger.info(f"Filtered forbidden topic fact (category={category}, reason={forb_reason}, chars={len(fact_text)})")
                     continue
 
                 # U2: Prompt injection detector check
@@ -259,7 +260,7 @@ class MemoryExtractor:
                     source_message_ids=source_ids,
                 )
                 if not is_valid_src:
-                    logger.warning(f"Fact dropped due to invalid source IDs ({src_reason}): '{fact_text}'")
+                    logger.warning(f"Fact dropped due to invalid source IDs (reason={src_reason}, chars={len(fact_text)})")
                     continue
 
                 confidence = float(raw_fact.get("confidence", 1.0))
@@ -297,11 +298,11 @@ class MemoryExtractor:
                 if fact_id:
                     facts_stored.append(fact_id)
             except Exception as e:
-                logger.warning(f"Error storing verified fact: {e}")
+                logger.warning(f"Error storing verified fact: {type(e).__name__}")
 
-        # -----------------------------------------------------------------
+        # ----------------------------------------------------
         # Verify and store extracted open items (U4)
-        # -----------------------------------------------------------------
+        # ----------------------------------------------------
         for raw_item in parsed_data.get("open_items", []):
             try:
                 item_text = str(raw_item.get("text", "")).strip()
@@ -321,7 +322,7 @@ class MemoryExtractor:
                     source_message_ids=source_ids,
                 )
                 if not is_valid_src:
-                    logger.warning(f"Open item dropped due to invalid sources ({src_reason}): '{item_text}'")
+                    logger.warning(f"Open item dropped due to invalid sources (reason={src_reason}, chars={len(item_text)})")
                     continue
 
                 item_id = await self.db_manager.create_mem_open_item(
@@ -332,7 +333,7 @@ class MemoryExtractor:
                 if item_id:
                     open_items_stored.append(item_id)
             except Exception as e:
-                logger.warning(f"Error storing open item: {e}")
+                logger.warning(f"Error storing open item: {type(e).__name__}")
 
         return {
             "facts_stored": facts_stored,
@@ -378,7 +379,7 @@ class MemoryExtractor:
             logger.warning(f"Extraction AI call timed out after {timeout_sec}s.")
             return None
         except Exception as e:
-            logger.warning(f"Extraction AI call error: {e}")
+            logger.warning(f"Extraction AI call error: {type(e).__name__}")
             return None
 
     def _parse_json(self, raw_text: str) -> Optional[Dict[str, Any]]:
@@ -394,5 +395,5 @@ class MemoryExtractor:
             text = text.strip()
             return json.loads(text)
         except Exception as e:
-            logger.warning(f"Failed to parse JSON extraction response: {e}")
+            logger.warning(f"Failed to parse JSON extraction response: {type(e).__name__}")
             return None
