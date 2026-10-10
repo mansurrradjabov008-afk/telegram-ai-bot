@@ -164,6 +164,13 @@ async def test_memory_service_fail_open_behavior(tmp_path):
     assert healthy is True
     assert mem_service.is_healthy is True
 
+    # Startup self-check with default db_mgr (db_path=None) also passes
+    db_mgr_default = DatabaseManager()
+    mem_service_default = MemoryService(db_mgr_default)
+    healthy_default = await mem_service_default.startup_self_check()
+    assert healthy_default is True
+    assert mem_service_default.is_healthy is True
+
     # Simulate unhealthy state
     mem_service.is_healthy = False
 

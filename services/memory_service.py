@@ -68,7 +68,8 @@ class MemoryService:
                 return False
 
             # Check DB quick_check
-            async with get_db(self.db_manager.db_path) as db:
+            target_path = Path(self.db_manager.db_path) if self.db_manager.db_path else settings.db_file_path
+            async with get_db(target_path) as db:
                 cur = await db.execute("PRAGMA quick_check;")
                 row = await cur.fetchone()
                 if not row or row[0] != "ok":
@@ -77,7 +78,7 @@ class MemoryService:
                     return False
 
             # Check writeability of DB directory
-            db_dir = Path(self.db_manager.db_path).resolve().parent
+            db_dir = target_path.resolve().parent
             if not db_dir.exists() or not os.access(str(db_dir), os.W_OK):
                 logger.error("Memory self-check failed: Database directory is not writable.")
                 self.is_healthy = False
