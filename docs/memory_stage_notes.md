@@ -470,6 +470,26 @@ Current Branch: `stage-memory-hardening`
   - GREEN: Both passed after implementation in 4.70s.
   - Regression Suite: 24/24 tests passed in 12.08s.
 
+---
+
+## 12. Smart Bulk Actions & Comprehensive Natural Language Controls
+- **Frictionless Bulk Drafts & Tasks Controls**:
+  - `_render_drafts_list`: Added 1-tap `[🚀 Barchasini tasdiqlash (N)]` (`draft_bulk:send_all`) and `[❌ Barchasini rad etish]` (`draft_bulk:reject_all`), reducing N clicks to 1 tap.
+  - `_render_tasks_list`: Added 1-tap `[🛑 Barchasini bekor qilish]` (`task_bulk:cancel_all`) when multiple tasks are queued.
+  - Extracted atomic `_execute_single_draft_send` and `_execute_single_draft_reject` helpers, ensuring 100% DRY and secure state transitions.
+- **Natural Language Smart Dispatcher Enhancements**:
+  - **Memory Facts**: `"Sherzod haqida fakt: Ertalab qahva ichmaydi"` -> Extracts fact, runs sensitive & forbidden topic guard, saves to `mem_facts` (confidence 1.0, owner_confirmed), and displays updated VIP Contact Card.
+  - **Bulk Drafts via Chat**: `"Hammasini tasdiqla"`, `"Barcha qoralamalarni yubor"` -> Approves and delivers all pending drafts. `"Hammasini rad et"` -> Rejects all.
+  - **Single Drafts via Chat**: `"#12 ni yubor"`, `"#12 ni tasdiqla"` -> Sends specific draft. `"#12 ni bekor qil"` -> Rejects specific draft.
+  - **Tasks via Chat**: `"Vazifa #5 ni bekor qil"` -> Cancels task. `"Vazifa #5 ni hozir yubor"` -> Sends immediately. `"Barcha vazifalarni bekor qil"` -> Cancels all.
+  - **Instant System Shortcuts**: `"Dayjest"` / `"Bugungi dayjest"` -> Triggers digest. `"Status"` / `"Tizim holati"` -> Triggers system cockpit.
+- **Verification (P7 Red-Green Protocol)**:
+  - Tests added: `test_drafts_bulk_actions_and_smart_buttons`, `test_tasks_bulk_actions_and_smart_buttons`, `test_natural_language_smart_commands`.
+  - RED: All 3 failed before fix (missing buttons, missing handlers, loose draft regex collision).
+  - GREEN: All 3 passed in 4.18s after implementation and regex precedence fix.
+  - Regression Suite: 27/27 tests passed in 10.68s. Full suite: 288/288 passed.
+
+
 
 
 

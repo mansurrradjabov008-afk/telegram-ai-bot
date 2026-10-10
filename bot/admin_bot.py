@@ -2162,12 +2162,18 @@ class AdminBotService:
                 builder.button(text=f"🚀 Yuborish #{t.id}", callback_data=f"task_send:{t.id}")
                 builder.button(text=f"❌ Bekor #{t.id}", callback_data=f"task_cancel:{t.id}")
 
+            if len(tasks) >= 2:
+                builder.button(text="🛑 Barchasini bekor qilish", callback_data="task_bulk:cancel_all")
+
             builder.button(text="✍️ Yangi vazifa qo'shish", callback_data="schedule:wizard")
             builder.button(text="📜 Tarix", callback_data="task_hist:open")
             builder.button(text="🔄 Yangilash", callback_data="tasks:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
-            adjust_pattern = [2] * len(tasks) + [1, 1, 2]
+            adjust_pattern = [2] * len(tasks)
+            if len(tasks) >= 2:
+                adjust_pattern.append(1)
+            adjust_pattern.extend([1, 1, 2])
             builder.adjust(*adjust_pattern)
 
             content = "\n".join(lines)
@@ -2586,7 +2592,46 @@ class AdminBotService:
                 await _render_unified_contact_card(message, updated_c, is_callback=False)
                 return True
 
-            # Check 3: Card / Memory query intent
+            # Check 3: Fact intent (haqida fakt / yoqtiradi / qiziqadi / eslab qol)
+            fact_match = re.search(
+                r"(?:haqida\s+fakt|haqida\s+ma'lumot|haqida\s+eslab\s+qol|fakt|yoqtiradi|qiziqadi):?\s*(.+)",
+                raw_text,
+                re.IGNORECASE,
+            )
+            if fact_match:
+                fact_text = fact_match.group(1).strip()
+                if fact_text:
+                    category = "interest" if any(w in lower_text for w in ["yoqtiradi", "qiziqadi"]) else "preference"
+                    is_forb, reason = is_forbidden_topic(fact_text, category)
+                    if is_forb:
+                        await safe_reply(
+                            message,
+                            f"⚠️ <b>Taqiqlangan mavzu:</b> Fakt saqlanmadi ({html.escape(reason or 'maxfiy')}).",
+                            parse_mode="HTML",
+                        )
+                        return True
+
+                    fact_id = await self.db_manager.create_mem_fact(
+                        contact_user_id=matched_contact.user_id,
+                        category=category,
+                        text=fact_text,
+                        source_type="owner_confirmed",
+                        source_message_ids=[-1],
+                        confidence=1.0,
+                    )
+                    display_name = matched_contact.full_name or matched_contact.username or str(matched_contact.user_id)
+                    await safe_reply(
+                        message,
+                        f"💡 <b>Yangi fakt muhrlandi! (#{fact_id})</b>\n\n"
+                        f"👤 <b>Kontakt:</b> {html.escape(display_name)}\n"
+                        f"📝 <b>Fakt:</b> <i>\"{html.escape(fact_text)}\"</i>",
+                        parse_mode="HTML",
+                    )
+                    updated_c = await self.db_manager.get_contact_by_id(matched_contact.user_id)
+                    await _render_unified_contact_card(message, updated_c, is_callback=False)
+                    return True
+
+            # Check 4: Card / Memory query intent
             is_card_query = any(w in lower_text for w in ["kartasi", "karta", "xotirasi", "xotira", "haqida", "profil", "kim bu"])
             if is_card_query:
                 await _render_unified_contact_card(message, matched_contact, is_callback=False)
@@ -2627,6 +2672,88 @@ class AdminBotService:
 
             handled_contact = await _handle_natural_contact_action(message)
             if handled_contact:
+                return
+
+            lower_msg = (message.text or "").strip().lower()
+
+            # 1. Bulk Drafts Actions
+            if any(p in lower_msg for p in ["hammasini tasdiqla", "barchasini tasdiqla", "barcha qoralamalarni yubor", "hammasini yubor", "qoralamalarni tasdiqla"]):
+                drafts = await self.db_manager.list_pending_drafts()
+                if not drafts:
+                    await safe_reply(message, "📝 <b>Kutilayotgan qoralamalar mavjud emas.</b>", parse_mode="HTML")
+                    return
+                sent_count = 0
+                for d in drafts:
+                    ok, _ = await _execute_single_draft_send(d.id)
+                    if ok:
+                        sent_count += 1
+                await safe_reply(message, f"🚀 <b>Barcha {sent_count} ta qoralama muvaffaqiyatli yuborildi!</b>", parse_mode="HTML")
+                return
+
+            if any(p in lower_msg for p in ["hammasini rad et", "barchasini rad et", "qoralamalarni rad et", "hammasini bekor qil"]):
+                drafts = await self.db_manager.list_pending_drafts()
+                if not drafts:
+                    await safe_reply(message, "📝 <b>Kutilayotgan qoralamalar mavjud emas.</b>", parse_mode="HTML")
+                    return
+                rej_count = 0
+                for d in drafts:
+                    ok = await self.db_manager.resolve_draft_atomic(d.id, "rejected")
+                    if ok:
+                        rej_count += 1
+                await safe_reply(message, f"❌ <b>Barcha {rej_count} ta qoralama rad etildi.</b>", parse_mode="HTML")
+                return
+
+            # 2. Tasks Actions: Vazifa #ID ni bekor qil / yubor, yoki barcha vazifalarni bekor qil
+            if any(p in lower_msg for p in ["barcha vazifalarni bekor qil", "hamma rejalarni bekor qil"]):
+                tasks = await self.db_manager.get_pending_tasks()
+                for t in tasks:
+                    await self.scheduler_service.cancel_task(t.id)
+                await safe_reply(message, f"🛑 <b>Barcha {len(tasks)} ta rejalashtirilgan vazifa bekor qilindi.</b>", parse_mode="HTML")
+                return
+
+            task_cmd_match = re.search(r"(?:vazifa\s*#?|vazifani\s*#?)(\d+)\s*(?:ni\s*)?(bekor\s*qil|hozir\s*yubor|yubor)", lower_msg)
+            if task_cmd_match:
+                t_id = int(task_cmd_match.group(1))
+                action = task_cmd_match.group(2)
+                if "bekor" in action:
+                    await self.scheduler_service.cancel_task(t_id)
+                    await safe_reply(message, f"🛑 <b>#{t_id} vazifa bekor qilindi.</b>", parse_mode="HTML")
+                    return
+                else:
+                    success = await self.scheduler_service.execute_now(t_id)
+                    if success:
+                        await safe_reply(message, f"🚀 <b>#{t_id} vazifa darhol yuborildi!</b>", parse_mode="HTML")
+                    else:
+                        await safe_reply(message, f"❌ <b>#{t_id} vazifa topilmadi yoki allaqachon bajarilgan.</b>", parse_mode="HTML")
+                    return
+
+            # 3. Single Draft Action: #ID ni yubor / bekor qil (e.g. qoralama #1 ni yubor or #1 ni yubor)
+            draft_single_match = re.search(r"(?:qoralama\s*#?|#)(\d+)\s*(?:ni\s*)?(yubor|tasdiqla|bekor\s*qil|rad\s*et)", lower_msg)
+            if draft_single_match:
+                d_id = int(draft_single_match.group(1))
+                act = draft_single_match.group(2)
+                if any(w in act for w in ["yubor", "tasdiqla"]):
+                    ok, res_msg = await _execute_single_draft_send(d_id)
+                    if ok:
+                        await safe_reply(message, f"✅ <b>Qoralama #{d_id} muvaffaqiyatli yuborildi!</b>", parse_mode="HTML")
+                    else:
+                        await safe_reply(message, f"⚠️ <b>#{d_id}:</b> {res_msg}", parse_mode="HTML")
+                    return
+                else:
+                    ok = await self.db_manager.resolve_draft_atomic(d_id, "rejected")
+                    if ok:
+                        await safe_reply(message, f"❌ <b>Qoralama #{d_id} rad etildi.</b>", parse_mode="HTML")
+                    else:
+                        await safe_reply(message, f"⚠️ <b>#{d_id}</b> topilmadi yoki allaqachon bajarilgan.", parse_mode="HTML")
+                    return
+
+            # 4. Digest and Status Quick Triggers
+            if lower_msg in ["dayjest", "dayjestni ko'rsat", "dayjestni korsat", "bugungi dayjest"]:
+                await _execute_digest(message, is_callback=False)
+                return
+
+            if lower_msg in ["status", "tizim holati", "bot holati", "tizim"]:
+                await cmd_status(message)
                 return
 
             text = (
@@ -3325,6 +3452,18 @@ class AdminBotService:
             await callback.answer(f"🛑 #{task_id} vazifa bekor qilindi!", show_alert=True)
             await _render_tasks_list(callback.message, is_callback=True)
 
+        @dp.callback_query(F.data == "task_bulk:cancel_all")
+        async def handle_task_bulk_cancel_all(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            tasks = await self.db_manager.get_pending_tasks()
+            cancel_count = 0
+            for t in tasks:
+                await self.scheduler_service.cancel_task(t.id)
+                cancel_count += 1
+            await callback.answer(f"🛑 Barcha {cancel_count} ta vazifa bekor qilindi!", show_alert=True)
+            await _render_tasks_list(callback.message, is_callback=True)
+
         @dp.callback_query(F.data == "task_hist:open")
         async def handle_task_history_open(callback: types.CallbackQuery):
             if not self._is_admin(callback.from_user.id):
@@ -3394,10 +3533,17 @@ class AdminBotService:
                 builder.button(text=f"✍️ Tahrirlash #{d.id}", callback_data=f"draft_edit:{d.id}")
                 builder.button(text=f"❌ Rad #{d.id}", callback_data=f"draft_reject:{d.id}")
 
+            if len(drafts) >= 1:
+                builder.button(text=f"🚀 Barchasini tasdiqlash ({len(drafts)})", callback_data="draft_bulk:send_all")
+                builder.button(text="❌ Barchasini rad etish", callback_data="draft_bulk:reject_all")
+
             builder.button(text="🔄 Yangilash", callback_data="drafts:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
-            adjust_layout = [3] * len(drafts) + [2]
+            adjust_layout = [3] * len(drafts)
+            if len(drafts) >= 1:
+                adjust_layout.append(2)
+            adjust_layout.append(2)
             builder.adjust(*adjust_layout)
 
             content = "\n".join(lines)
@@ -3430,40 +3576,27 @@ class AdminBotService:
             await callback.answer(f"❌ #{draft_id} qoralama rad etildi!", show_alert=True)
             await _render_drafts_list(callback.message, is_callback=True)
 
-        @dp.callback_query(F.data.startswith("draft_send:"))
-        async def handle_draft_send(callback: types.CallbackQuery):
-            if not self._is_admin(callback.from_user.id):
-                return
-            draft_id = int(callback.data.split(":")[1])
+        async def _execute_single_draft_send(draft_id: int) -> tuple[bool, str]:
+            """Executes atomic resolution and sending of a single draft."""
             draft = await self.db_manager.get_draft_by_id(draft_id)
             if not draft or not draft.is_pending:
-                return await callback.answer("Allaqachon bajarilgan.", show_alert=True)
+                return False, "Allaqachon bajarilgan"
 
-            # Expiration check (24 hours)
             now_iso = datetime.now().isoformat()
             if draft.expires_at <= now_iso:
                 await self.db_manager.resolve_draft_atomic(draft.id, "expired")
-                return await callback.answer("⚠️ Qoralama muddati tugagan (24 soat). Yuborib bo'lmaydi.", show_alert=True)
+                return False, "Qoralama muddati tugagan (24 soat)"
 
-            # Check if owner already replied manually
             if self._manual_reply_check_fn and (draft.contact_user_id or draft.contact_username):
                 target_peer = draft.contact_user_id or f"@{draft.contact_username}"
                 replied_manually = await self._manual_reply_check_fn(target_peer, draft.source_message_id)
                 if replied_manually:
                     await self.db_manager.resolve_draft_atomic(draft.id, "superseded")
-                    try:
-                        await callback.message.edit_text(
-                            f"ℹ️ <b>Siz allaqachon bu kontaktga o'zingiz qo'lda yozgansiz!</b>\n"
-                            f"Qoralama #{draft.id} avtomatik bekor qilindi (status: superseded).",
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        pass
-                    return await callback.answer("Siz allaqachon javob bergansiz (superseded).", show_alert=True)
+                    return False, "Siz allaqachon qo'lda javob bergansiz (superseded)"
 
             success = await self.db_manager.resolve_draft_atomic(draft_id, "sent")
             if not success:
-                return await callback.answer("Allaqachon bajarilgan.", show_alert=True)
+                return False, "Bajarilmadi"
 
             if self._userbot_send_fn:
                 peer = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "")
@@ -3482,17 +3615,45 @@ class AdminBotService:
                                 text=draft.proposed_reply,
                                 username=draft.contact_username,
                             )
+            return True, "Yuborildi"
+
+        @dp.callback_query(F.data == "draft_bulk:send_all")
+        async def handle_draft_bulk_send_all(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            drafts = await self.db_manager.list_pending_drafts()
+            sent_count = 0
+            for d in drafts:
+                ok, _ = await _execute_single_draft_send(d.id)
+                if ok:
+                    sent_count += 1
+            await callback.answer(f"🚀 Barcha {sent_count} ta qoralama yuborildi!", show_alert=True)
+            await _render_drafts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data == "draft_bulk:reject_all")
+        async def handle_draft_bulk_reject_all(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            drafts = await self.db_manager.list_pending_drafts()
+            reject_count = 0
+            for d in drafts:
+                ok = await self.db_manager.resolve_draft_atomic(d.id, "rejected")
+                if ok:
+                    reject_count += 1
+            await callback.answer(f"❌ Barcha {reject_count} ta qoralama rad etildi!", show_alert=True)
+            await _render_drafts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("draft_send:"))
+        async def handle_draft_send(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            draft_id = int(callback.data.split(":")[1])
+            success, msg = await _execute_single_draft_send(draft_id)
+            if not success:
+                return await callback.answer(f"⚠️ {msg}", show_alert=True)
 
             await callback.answer(f"✅ #{draft_id} qoralama yuborildi!", show_alert=True)
-            try:
-                safe_reply_prev = html.escape(draft.proposed_reply)
-                await callback.message.edit_text(
-                    f"✅ <b>Qoralama #{draft_id} profilingiz nomidan yuborildi!</b>\n\n"
-                    f"💬 <b>Matn:</b> <i>\"{safe_reply_prev}\"</i>",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                await _render_drafts_list(callback.message, is_callback=True)
+            await _render_drafts_list(callback.message, is_callback=True)
 
         @dp.callback_query(F.data.startswith("draft_edit:"))
         async def handle_draft_edit(callback: types.CallbackQuery, state: FSMContext):
