@@ -114,6 +114,19 @@ def _parse_time_token(token: str) -> Optional[Tuple[int, int]]:
     return None
 
 
+DELEGATION_SIGNALS = [
+    r"\bmenga\s+(?:yetkaz|ayt|xabar\s+ber|bildir|ma['`’‘]?lum\s+qil|top|jo['`’‘]nat)\b",
+    r"\b(?:bilib|aniqlab|ko['`’‘]rib|so['`’‘]rab|surishtir(?:ib)?)\s+ber\b",
+    r"\b(?:shug['`’‘]?ullan|band)\w*\b",
+    r"\bvaqti\s+bor\w*\b",
+    r"\brej[ae]lari\b",
+    r"\bnima(?:lar)?\s+qilyapti\b",
+    r"\bhol-?ahvol\b",
+    r"\bxabar\s+ol\w*\b",
+    r"\b\d{1,2}:\d{2}\s*(?:gacha|до|until)\b",
+]
+
+
 def parse_deterministic_schedule(text: str, tz_name: str = "Asia/Tashkent") -> Optional[ScheduleParseResult]:
     """
     High-speed deterministic parser covering:
@@ -128,9 +141,15 @@ def parse_deterministic_schedule(text: str, tz_name: str = "Asia/Tashkent") -> O
     if not text:
         return None
 
+    # Guard: never misinterpret delegation, investigation, or assistant status inquiries as peer schedules
+    trimmed = text.strip()
+    if not trimmed.lower().startswith("/schedule"):
+        if any(re.search(pat, trimmed, re.IGNORECASE) for pat in DELEGATION_SIGNALS):
+            return None
+
     tz = pytz.timezone(tz_name)
     now = datetime.now(tz)
-    s = text.strip()
+    s = trimmed
 
     # Remove optional leading /schedule or /schedule@botname
     s = re.sub(r"^/schedule(?:@[a-zA-Z0-9_]+)?\s+", "", s, flags=re.IGNORECASE).strip()
@@ -313,6 +332,11 @@ async def parse_schedule_intent_hybrid(
         return deterministic_result
 
     # 2. AI semantic fallback pass
+    trimmed = (raw_text or "").strip()
+    if not trimmed.lower().startswith("/schedule"):
+        if any(re.search(pat, trimmed, re.IGNORECASE) for pat in DELEGATION_SIGNALS):
+            return None
+
     if ai_engine and hasattr(ai_engine, "parse_schedule_intent"):
         try:
             tz = pytz.timezone(tz_name)

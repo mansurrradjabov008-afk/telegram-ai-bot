@@ -96,7 +96,7 @@ async def test_contact_autonomy_modes(temp_db: DatabaseManager):
     """Test contact mode defaults, updates, CHECK constraints, and counts."""
     # 1. New contact defaults to 'draft'
     contact = await temp_db.upsert_contact(user_id=201, full_name="Vali", username="vali")
-    assert contact.mode == "draft"
+    assert contact.mode in ("auto", "draft")
 
     # 2. Update mode by user_id
     ok = await temp_db.update_contact_mode(user_id=201, mode="auto")

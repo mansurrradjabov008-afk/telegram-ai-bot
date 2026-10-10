@@ -751,4 +751,136 @@ async def test_natural_language_contact_inquiry_and_outreach(temp_db):
     assert "Xabar muvaffaqiyatli yuborildi" in confirm_text
 
 
+@pytest.mark.asyncio
+async def test_jarvis_delegation_mission_and_schedule_guard(temp_db):
+    """
+    Critical Red-Green Test:
+    User command from screenshot:
+    '@umid_namozov nimalar bilan shugullanyapti ekan bugun kurishishga vaqti bormikin bugungi rejelari qanaqa ekan shu malumotlarni menga yetkaz bugun 20:00gacha'
+    1. Must NOT be scheduled as an outgoing peer message (schedule_parser must return None).
+    2. Must be intercepted by JARVIS Executive Delegation Engine.
+    3. Must render buttonless executive briefing with deadline '20:00 gacha'.
+    4. Must confirm and send via userbot when owner types 'yubor'.
+    5. Must support text-based task cancellation without buttons ('bekor #99').
+    """
+    from services.schedule_parser import parse_deterministic_schedule, parse_schedule_intent_hybrid
+
+    prompt = "@umid_namozov nimalar bilan shugullanyapti ekan bugun kurishishga vaqti bormikin bugungi rejelari qanaqa ekan shu malumotlarni menga yetkaz bugun 20:00gacha"
+
+    # Step 1: Schedule Parser Guard
+    det_res = parse_deterministic_schedule(prompt)
+    assert det_res is None, "Delegation prompt must NEVER be parsed as a deterministic schedule!"
+
+    mock_ai = MagicMock()
+    mock_ai.parse_schedule_intent = AsyncMock(return_value={"is_schedule": True, "target_peer": "@umid_namozov", "scheduled_iso": "2026-10-10T20:00:00"})
+    hybrid_res = await parse_schedule_intent_hybrid(prompt, mock_ai)
+    assert hybrid_res is None, "Hybrid parser must reject delegation prompt even if AI hallucinates is_schedule!"
+
+    # Step 2: Setup Admin Bot Service
+    db_mgr = temp_db
+    owner_id = 999111
+    userbot_sender = AsyncMock()
+    scheduler_mock = MagicMock()
+    scheduler_mock.cancel_task = AsyncMock(return_value=True)
+
+    await db_mgr.upsert_contact(
+        user_id=888999,
+        username="umid_namozov",
+        full_name="Umid Namozov",
+        mode="auto",
+        addressing_style="siz",
+    )
+
+    ai_engine = MagicMock()
+    ai_engine.analyze_contact_inquiry = AsyncMock(return_value={
+        "summary": "Oxirgi yozishmalarda bugungi rejalar haqida ma'lumot yo'q.",
+        "suggested_outreach": "Assalomu alaykum Umid aka, bugun rejalaringiz qanaqa? Ko'rishishga vaqtingiz bo'ladimi bugun?",
+        "is_direct_send": False,
+        "direct_message": None,
+        "is_delegation_mission": True,
+        "mission_goal": "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash",
+    })
+
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=ai_engine,
+        scheduler_service=scheduler_mock,
+        digest_service=MagicMock(),
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+    service.set_userbot_sender(userbot_sender)
+
+    crm_or_sched_fn = None
+    fallback_fn = None
+    for h in service.dp.message.handlers:
+        name = getattr(h.callback, "__name__", "")
+        if name == "handle_natural_crm_or_schedule":
+            crm_or_sched_fn = h.callback
+        elif name == "handle_fallback_natural_text":
+            fallback_fn = h.callback
+
+    # Step 3: Trigger Delegation Command
+    msg = MagicMock()
+    msg.from_user.id = owner_id
+    msg.text = prompt
+    msg.reply = AsyncMock()
+
+    await crm_or_sched_fn(msg)
+
+    # Verify response
+    assert msg.reply.called
+    reply_text = msg.reply.call_args[0][0]
+    reply_kwargs = msg.reply.call_args[1]
+    assert "JARVIS Protocol" in reply_text
+    assert "20:00 gacha" in reply_text
+    assert "@umid_namozov" in reply_text
+    assert "Tayyorlangan diplomatiya xabari" in reply_text
+    assert reply_kwargs.get("reply_markup") is None, "Executive JARVIS briefing must have ZERO buttons (reply_markup=None)!"
+
+    # Verify pending outreach is armed
+    assert service._pending_outreach is not None
+    assert service._pending_outreach["peer"] == "@umid_namozov"
+    assert service._pending_outreach["is_mission"] is True
+
+    # Step 4: Confirm with 'ha'
+    state_mock = MagicMock()
+    state_mock.get_state = AsyncMock(return_value=None)
+
+    msg_confirm = MagicMock()
+    msg_confirm.from_user.id = owner_id
+    msg_confirm.text = "ha"
+    msg_confirm.reply_to_message = None
+    msg_confirm.reply = AsyncMock()
+
+    await fallback_fn(msg_confirm, state=state_mock)
+
+    userbot_sender.assert_called_once_with(
+        "@umid_namozov",
+        "Assalomu alaykum Umid aka, bugun rejalaringiz qanaqa? Ko'rishishga vaqtingiz bo'ladimi bugun?",
+    )
+    assert service._pending_outreach is None
+    confirm_text = msg_confirm.reply.call_args[0][0]
+    assert "Xabar muvaffaqiyatli yuborildi" in confirm_text
+    assert msg_confirm.reply.call_args[1].get("reply_markup") is None
+
+    # Step 5: Text-based task cancellation without buttons
+    task_mock = MagicMock()
+    task_mock.id = 99
+    db_mgr.get_task_by_id = AsyncMock(return_value=task_mock)
+
+    msg_cancel = MagicMock()
+    msg_cancel.from_user.id = owner_id
+    msg_cancel.text = "bekor #99"
+    msg_cancel.reply_to_message = None
+    msg_cancel.reply = AsyncMock()
+
+    await fallback_fn(msg_cancel, state=state_mock)
+    scheduler_mock.cancel_task.assert_called_once_with(99)
+    cancel_reply = msg_cancel.reply.call_args[0][0]
+    assert "Vazifa #99 bekor qilindi" in cancel_reply
+    assert msg_cancel.reply.call_args[1].get("reply_markup") is None
+
+
+
 

@@ -1243,7 +1243,12 @@ class AdminBotService:
                 "nima yangilik", "hol-ahvol", "bilib ber", "ko'rib ber", "gaplashgan",
                 "nima dedi", "nima yozgan", "salom deb", "deb yoz", "deb jo'nat",
                 "deb yubor", "xabar yoz", "habar yoz", "xabar jo'nat", "habar jo'nat",
-                "yozib qo'y", "yozvor", "yozib yubor", "xabar yubor", "habar yubor"
+                "yozib qo'y", "yozvor", "yozib yubor", "xabar yubor", "habar yubor",
+                "menga yetkaz", "menga ayt", "menga xabar", "menga bildir", "menga top",
+                "shugullanyapti", "shug'ullanyapti", "nima qilyapti", "nimalar bilan",
+                "vaqti bormikin", "vaqti bormi", "kurishishga vaqti", "ko'rishishga vaqti",
+                "rejelari qanaqa", "rejalari qanaqa", "rejalari nima", "rejelari nima",
+                "surishtir", "so'rab ber", "sorab ber", "aniqlab ber", "gacha"
             ]
             if not any(k in lower_text for k in inquiry_keywords):
                 return False
@@ -1376,24 +1381,59 @@ class AdminBotService:
             summary = ai_res.get("summary", "Yozishmalar mavjud emas.")
             suggested = ai_res.get("suggested_outreach", f"Salom {resolved_title}, yaxshimisiz?")
 
+            # Check if this is a JARVIS delegation mission or inquiry
+            is_delegation = ai_res.get("is_delegation_mission") or any(k in lower_text for k in [
+                "shugullanyapti", "shug'ullanyapti", "vaqti bormikin", "vaqti bormi",
+                "rejalari", "rejelari", "menga yetkaz", "menga ayt", "menga xabar",
+                "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti"
+            ])
+
+            # Extract optional deadline (e.g. '20:00gacha', 'bugun 20:00 gacha')
+            deadline_str = None
+            dl_match = re.search(r"(\b(?:bugun|ertaga)\s+)?(\d{1,2}:\d{2})\s*gacha", raw_text, re.IGNORECASE)
+            if dl_match:
+                prefix = dl_match.group(1) or "Bugun "
+                t_val = dl_match.group(2)
+                deadline_str = f"{prefix.strip()} soat {t_val} gacha"
+
             # Save pending outreach for 1-word confirmation ('yubor', 'ha')
             self._pending_outreach = {
                 "peer": f"@{clean_username}",
                 "display_name": resolved_title,
                 "text": suggested,
                 "time": time.time(),
+                "is_mission": is_delegation,
+                "deadline": deadline_str,
             }
 
-            resp = (
-                f"📋 <b>@{html.escape(clean_username)} ({html.escape(resolved_title)}) bilan muloqot tahlili:</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"ℹ️ <b>Holat:</b> {html.escape(summary)}\n\n"
-                f"✍️ <b>Tavsiya etilgan xabar (Hol-ahvol so'rash):</b>\n"
-                f"<i>\"{html.escape(suggested)}\"</i>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"🚀 <b>Xabarni yuborish uchun:</b> Chatga <b>\"yubor\"</b> yoki <b>\"ha\"</b> deb yozing.\n"
-                f"✏️ <i>Yoki o'zingiz xohlagan matnni yozishingiz mumkin.</i>"
-            )
+            if is_delegation:
+                mission_goal = ai_res.get("mission_goal") or "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash."
+                deadline_line = f"⏰ <b>Muddat (Deadline):</b> <code>{html.escape(deadline_str)}</code>\n" if deadline_str else ""
+                resp = (
+                    f"🎯 <b>TOPSHIRIQ QABUL QILINDI, JANOB! (JARVIS Protocol)</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 <b>Aloqa:</b> <code>@{html.escape(clean_username)}</code> ({html.escape(resolved_title)})\n"
+                    f"{deadline_line}"
+                    f"🎯 <b>Vazifa:</b> {html.escape(mission_goal)}\n\n"
+                    f"📊 <b>Oxirgi yozishmalar tahlili:</b>\n"
+                    f"ℹ️ {html.escape(summary)}\n\n"
+                    f"✍️ <b>Tayyorlangan diplomatiya xabari:</b>\n"
+                    f"<i>\"{html.escape(suggested)}\"</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🚀 <b>Xabarni darhol yuborish uchun:</b> Chatga <b>\"yubor\"</b> yoki <b>\"ha\"</b> deb yozing.\n"
+                    f"⚡️ <i>Javob kelishi bilanoq ma'lumotlarni tahlil qilib sizga hisobot beraman!</i>"
+                )
+            else:
+                resp = (
+                    f"📋 <b>@{html.escape(clean_username)} ({html.escape(resolved_title)}) bilan muloqot tahlili:</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"ℹ️ <b>Holat:</b> {html.escape(summary)}\n\n"
+                    f"✍️ <b>Tavsiya etilgan xabar (Hol-ahvol so'rash):</b>\n"
+                    f"<i>\"{html.escape(suggested)}\"</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🚀 <b>Xabarni yuborish uchun:</b> Chatga <b>\"yubor\"</b> yoki <b>\"ha\"</b> deb yozing.\n"
+                    f"✏️ <i>Yoki o'zingiz xohlagan matnni yozishingiz mumkin.</i>"
+                )
 
             await safe_reply(message, resp, parse_mode="HTML", reply_markup=None)
             return True
@@ -1419,11 +1459,16 @@ class AdminBotService:
                     try:
                         await self._userbot_send_fn(peer, text_to_send)
                         self._pending_outreach = None
+                        mission_note = (
+                            f"\n\n📡 <i>JARVIS topshiriq faollashtirildi: {html.escape(peer)} dan javob kelishi bilan "
+                            f"tahlil qilinadi va sizga darhol hisobot taqdim etiladi.</i>"
+                        ) if pending.get("is_mission") else ""
                         await safe_reply(
                             message,
                             f"🚀 <b>Xabar muvaffaqiyatli yuborildi!</b>\n\n"
                             f"👤 <b>Qabul qiluvchi:</b> <code>{html.escape(peer)}</code> ({html.escape(dname)})\n"
-                            f"📝 <b>Yuborilgan matn:</b> <i>\"{html.escape(text_to_send)}\"</i>",
+                            f"📝 <b>Yuborilgan matn:</b> <i>\"{html.escape(text_to_send)}\"</i>"
+                            f"{mission_note}",
                             parse_mode="HTML",
                             reply_markup=None,
                         )
@@ -1680,7 +1725,7 @@ class AdminBotService:
             embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
 
             text = (
-                f"🧠 <b>KONTAKT XOTIRASI VA BOSHQARUV KARTASI:</b>\n"
+                f"🧠 <b>KONTAKT XOTIRASI VA BOSHQARUV KARTASI (KONTAKT AVTONOMIYA REJIMI):</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 <b>Kontakt:</b> <b>{safe_name}</b> (<code>{safe_uname}</code>)\n"
                 f"🆔 <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
@@ -1988,20 +2033,16 @@ class AdminBotService:
                 safe_msg = html.escape(msg_text)
                 formatted_time = format_task_time_human(run_at.isoformat(), tz)
 
-                builder = InlineKeyboardBuilder()
-                builder.button(text=f"🚀 Hozir yuborish #{task.id}", callback_data=f"task_send:{task.id}")
-                builder.button(text=f"❌ Bekor qilish #{task.id}", callback_data=f"task_cancel:{task.id}")
-                builder.button(text="⏳ Barcha vazifalar", callback_data="tasks:refresh")
-                builder.adjust(2, 1)
-
                 await safe_reply(
                     msg_obj,
                     f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
                     f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
                     f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
                     f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
-                    f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>",
-                    reply_markup=builder.as_markup(),
+                    f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🗑 <i>Bekor qilish uchun:</i> <code>bekor #{task.id}</code> deb yozing.",
+                    reply_markup=None,
                     parse_mode="HTML",
                 )
                 return True
@@ -3058,16 +3099,38 @@ class AdminBotService:
             if await _handle_pending_outreach_confirmation(message):
                 return
 
+            # 0.1 Check for natural text task cancellation or execution (e.g. 'bekor #17', 'bekor 17', 'yubor #17')
+            raw_t = (message.text or "").strip()
+            m_cancel = re.match(r"(?i)^(?:bekor\s+(?:qil\s+)?|cancel\s+)#?(\d+)$", raw_t)
+            if m_cancel:
+                tid = int(m_cancel.group(1))
+                task = await self.db_manager.get_task_by_id(tid)
+                if task:
+                    await self.scheduler_service.cancel_task(tid)
+                    return await safe_reply(message, f"🗑 <b>Vazifa #{tid} bekor qilindi.</b>", parse_mode="HTML", reply_markup=None)
+                else:
+                    return await safe_reply(message, f"ℹ️ <b>Vazifa #{tid} topilmadi yoki allaqachon bekor qilingan.</b>", parse_mode="HTML", reply_markup=None)
+
+            m_send_now = re.match(r"(?i)^(?:yubor\s+|send\s+)#?(\d+)$", raw_t)
+            if m_send_now:
+                tid = int(m_send_now.group(1))
+                success = await self.scheduler_service.execute_now(tid)
+                if success:
+                    return await safe_reply(message, f"🚀 <b>Vazifa #{tid} darhol yuborildi!</b>", parse_mode="HTML", reply_markup=None)
+                else:
+                    return await safe_reply(message, f"❌ <b>Vazifa #{tid} topilmadi yoki allaqachon yuborilgan.</b>", parse_mode="HTML", reply_markup=None)
+
+            # 0.2 Check if this is a contact inquiry or outreach request BEFORE scheduling
+            handled_inquiry = await _handle_contact_inquiry_or_outreach(message)
+            if handled_inquiry:
+                return
+
             handled = await _schedule_and_respond(message, message.text)
             if handled:
                 return
 
             handled_digest = await _handle_natural_digest_action(message)
             if handled_digest:
-                return
-
-            handled_inquiry = await _handle_contact_inquiry_or_outreach(message)
-            if handled_inquiry:
                 return
 
             handled_contact = await _handle_natural_contact_action(message)

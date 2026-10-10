@@ -592,7 +592,7 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
             "direct_message": Optional[str],
         }
         """
-        prompt = f"""You are Antigravity, an elite executive AI butler for Radjabov Mansur.
+        prompt = f"""You are Antigravity (JARVIS), an elite executive AI butler for Radjabov Mansur.
 The boss gave this command: "{user_query}"
 Target contact: {contact_name} (@{username})
 Addressing style: '{addressing_style}' (use {'"siz/sizlar"' if addressing_style == 'siz' else '"sen/sensirash"'})
@@ -606,14 +606,21 @@ Known background facts:
 Analyze the situation and return a strict JSON object:
 {{
   "summary": "Short 1-2 sentence executive briefing in natural Uzbek explaining what they last discussed, when, and current state.",
-  "suggested_outreach": "A warm, natural, context-aware check-in or follow-up message to send them in Uzbek.",
+  "suggested_outreach": "A warm, natural, diplomatic check-in or inquiry message to send them in Uzbek.",
   "is_direct_send": false,
-  "direct_message": null
+  "direct_message": null,
+  "is_delegation_mission": false,
+  "mission_goal": null
 }}
 
 Guidelines:
-- If the boss explicitly specified what message to send (e.g. 'salom deb yoz', 'kechki 8 da uchrashamiz deb jo'nat'), set is_direct_send to true and direct_message to that text.
-- If the boss asked to check in or inquire ('xabar ol', 'nima gaplar ekan hozir', 'hol-ahvol so'ra'), set is_direct_send to false and provide a high-touch suggested_outreach.
+- If the boss is delegating an investigation, inquiry, or reconnaissance mission (e.g. asking what the contact is doing today, whether they have time to meet, what their plans are, or 'menga yetkaz', 'bilib ber', 'aniqlab ber'):
+  * set "is_delegation_mission" to true
+  * set "mission_goal" to a concise Uzbek description of what needs to be determined (e.g., "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash")
+  * set "suggested_outreach" to a polite, natural, high-touch message from the boss to the contact inquiring about those exact things (e.g., "Assalomu alaykum ..., yaxshimisiz? Bugungi rejalaringiz qanaqa, nimalar bilan bandsiz? Bugun ko'rishishga vaqtingiz bo'ladimi?")
+  * set "is_direct_send" to false, and "direct_message" to null.
+- CRITICAL RULE: NEVER set "is_direct_send" to true when the boss is giving instructions to YOU (the butler) to report back ("menga yetkaz", "bilib ber", "vaqti bormikin").
+- Only set "is_direct_send" to true if the boss explicitly dictated a message for the contact (e.g. '@ali ga salom deb yoz').
 - Never output markdown fences in your response, just valid JSON.
 """
         for candidate_model in self._get_candidate_models():
@@ -638,8 +645,30 @@ Guidelines:
         last_sender = messages[-1].get("sender", "Noma'lum") if messages else ""
         last_time = messages[-1].get("time", "") if messages else ""
 
-        fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:100]}\"." if messages else f"@{username} bilan hozircha xabarlar tarixi mavjud emas."
+        lower_query = user_query.lower()
+        is_delegation = any(k in lower_query for k in [
+            "shugullanyapti", "shug'ullanyapti", "vaqti bormikin", "vaqti bormi",
+            "rejalari", "rejelari", "menga yetkaz", "menga ayt", "menga xabar",
+            "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti"
+        ])
+
         greeting = "Assalomu alaykum" if addressing_style == "siz" else "Salom"
+        if is_delegation and any(w in lower_query for w in ["kurish", "ko'rish", "uchrash", "reja", "reje", "shug'ullan", "shugullan", "band"]):
+            if addressing_style == "siz":
+                fallback_outreach = f"{greeting} {contact_name}! Bugun rejalaringiz qanaqa, nimalar bilan bandsiz? Bugun ko'rishishga vaqtingiz bo'ladimi?"
+            else:
+                fallback_outreach = f"{greeting} {contact_name}! Bugun rejalaring qanaqa, nimalar bilan bandsan? Bugun ko'rishishga vaqting bormi?"
+            fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:100]}\"." if messages else "Oxirgi yozishmalarda bugungi rejalar va ko'rishish bo'yicha ma'lumot yo'q."
+            return {
+                "summary": fallback_summary,
+                "suggested_outreach": fallback_outreach,
+                "is_direct_send": False,
+                "direct_message": None,
+                "is_delegation_mission": True,
+                "mission_goal": "Bugungi rejalari, bandligi va ko'rishish imkoniyatini aniqlash",
+            }
+
+        fallback_summary = f"Oxirgi xabar {last_time} da ({last_sender}): \"{last_msg[:100]}\"." if messages else f"@{username} bilan hozircha xabarlar tarixi mavjud emas."
         fallback_outreach = f"{greeting} {contact_name}, yaxshimisiz? Ishlar qalay, nima yangiliklar bo'lyapti?" if addressing_style == "siz" else f"{greeting} {contact_name}, qandaysan? Ishlar qalay, nima gaplar?"
 
         return {
@@ -647,6 +676,8 @@ Guidelines:
             "suggested_outreach": fallback_outreach,
             "is_direct_send": False,
             "direct_message": None,
+            "is_delegation_mission": is_delegation,
+            "mission_goal": "Kontakt bilan bog'lanish va holatni aniqlash" if is_delegation else None,
         }
 
     def _dynamic_smart_fallback(self, text: str, addressing: str = "siz") -> str:
