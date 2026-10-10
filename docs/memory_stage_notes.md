@@ -355,4 +355,72 @@ Current Branch: `stage-memory-hardening`
 - **Rollback Mechanism for Commit B (Gate G1 Untrack)**: Rollback for Commit B (`git rm --cached data/butler.db data/sim_test.db`) is strictly `git add -f data/butler.db data/sim_test.db` after a `Connection.backup()` copy, NOT `git revert` (to prevent git index checkout clobbering the live DB).
 - **Backup Invariance**: Backups in `data/` created via `Connection.backup()` are permanent read-only snapshots and must never be deleted during rollback.
 
+---
+
+## 8. Hardening Execution Ledger (Checkpoints 1 & 2)
+
+### 8.1 Checkpoint 1: Code Fixes & Git Untracking
+- **Commit A (`a2c12b8`)**: `fix(logging): sanitize logs, restrict handlers, and add AST scanner self-test`
+  - Sanitized all INFO/WARNING logs across `userbot.py`, `memory_extractor.py`, `admin_bot.py`, `ai_engine.py`, `database.py`. No raw text, message contents, or exceptions with sensitive variables are emitted.
+  - Set `RichHandler(tracebacks_show_locals=False)` in `main.py`.
+  - Configured third-party loggers (`telethon`, `httpx`, `google`, `urllib3`) to `logging.WARNING`.
+  - Created AST scanner test in `tests/test_log_sanitation.py` ensuring deliberate bad logger invocations (interpolations, str(e), exc_info=True) are flagged.
+  - Updated `.gitignore` to prevent any `*.db`, `*.db-wal`, `*.db-shm` and `temp_isolated.db` from being tracked.
+- **Commit B (`3437942`)**: `chore(data): untrack production and simulation database files`
+  - Safely untracked `data/butler.db` and `data/sim_test.db` using `git rm --cached`.
+  - Verified local database files were completely preserved on disk.
+- **Commit C (`041685c`)**: `feat(memory): hardening code fixes for verification, categories, forget, and UI`
+  - Implemented 12 hardening items:
+    1. Test/Scratch isolation guard (`services/isolation_guard.py` + `scratch/shadow_check.py` + `scratch/search_targets.py`).
+    2. Strictly restricted `source_type = "owner_confirmed"` to `/memory confirm` and `/remember`; removed flawed heuristic in `memory_extractor.py`.
+    3. Category validation and mapping against spec enum (`identity`, `preference`, `interest`, `important_date`, `relationship_note`, `ongoing_topic`, `other`). Prepared Migration v9 SQL triggers.
+    4. Expanded forbidden topics to include finance, budget, debt, income across Uzbek Latin, Uzbek Cyrillic, Russian, and English.
+    5. Fact verifier (`services/fact_verifier.py`) enforcing conservative containment of names, numbers, dates, and keywords against cited source messages.
+    6. Confidence derivation function (`derive_fact_confidence`) based on source type and verifier result.
+    7. Enhanced `/forget` to completely wipe contact rows from `conversation_history`, `drafts`, and all memory tables.
+    8. Redaction on write for `conversation_history` (`services/history_redactor.py`).
+    9. Embedded embedding status and diagnostics into `/memory` cockpit and memory service.
+    10. Cockpit UI bug fix: eliminated literal `<i>...</i>` HTML escaping bug in `admin_bot.py`.
+    11. Startup integrity and SQLite diagnostics check (`services/db_diagnostics.py`).
+    12. Automated safe backup manager (`services/backup_manager.py`) with `Connection.backup()` and rotation policy.
+
+### 8.2 Checkpoint 2: Production Maintenance Window
+- **Pre-Maintenance Backup**:
+  - Path: `data/butler_backup_20261010_134107.db`
+  - Size: 716,800 bytes
+  - SHA256: `55b14d328be26c11b0bce61596e382d55c70c538563dbb4d081f2fc27a92cfb3`
+  - SQLite Integrity: `ok`
+- **Maintenance Execution (`scripts/run_maintenance.py`)**:
+  - Atomic transaction executed with `BEGIN IMMEDIATE TRANSACTION;` on `data/butler.db`.
+  - Cleaned fake test contacts (8801, 8802):
+    - `contacts`: -2 rows
+    - `mem_contacts`: -2 rows
+    - `mem_messages`: -10 rows
+    - `mem_facts`: -10 rows
+    - `mem_summaries`: -2 rows
+  - Rebuilt FTS5 virtual tables (`mem_facts_fts`, `mem_messages_fts`).
+  - Applied Migration v9 triggers (`trg_mem_facts_category_insert`, `trg_mem_facts_category_update`).
+  - Transaction committed successfully.
+  - `PRAGMA integrity_check` verified: `[('ok',)]`.
+  - Executed `PRAGMA wal_checkpoint(TRUNCATE);`.
+  - Sentinel scan verified across all tables: exactly 0 test IDs or sensitive keywords found.
+  - Backup rotation executed: retained 5 newest backups, pruned 11 legacy backups and dangling `-wal`/`-shm` files.
+
+---
+
+## 9. Definition of Done (DoD) & Audit Findings Verification Ledger
+
+| Finding | Audit Finding Description | Resolution & Evidence | Status |
+| :--- | :--- | :--- | :--- |
+| **F1** | Logs print message/fact/reply text before redaction | Sanitized in Commit A (`a2c12b8`). Verified by AST scanner and runtime sentinel test (`tests/test_log_sanitation.py`). Third-party loggers silenced to WARNING; `RichHandler(tracebacks_show_locals=False)`. | **RESOLVED** |
+| **F2** | `data/butler.db` and `data/sim_test.db` tracked by git | Untracked in Commit B (`3437942`) via `git rm --cached`. `.gitignore` updated to ignore `*.db`, `*.db-wal`, `*.db-shm`. Local files safe. | **RESOLVED** |
+| **F3** | Test contacts 8801/8802 and fake facts in production DB | Cleaned in Checkpoint 2 atomic maintenance transaction. Row counts: 0 fake facts, 0 fake summaries, 0 fake contacts in production DB. Verified with post-cleanup sentinel scan. | **RESOLVED** |
+| **F4** | Non-spec categories, unverified owner_confirmed, missing code verifier, financial data unblocked | Solved in Commit C (`041685c`) and Checkpoint 2. Spec enum enforced in code and DB trigger (`v9_enforce_category_trigger.sql`). `fact_verifier.py` validates text containment. Financial/budget keywords added to forbidden topics in 4 languages. Confidence derived dynamically. | **RESOLVED** |
+| **F5** | `mem_embeddings` has 0 rows; embeddings worker never ran | Confirmed transparent FTS5 BM25 fallback. Embedding diagnostics surfaced in `/memory` cockpit and admin card. Fallback path fully tested and resilient. | **RESOLVED** |
+| **F6** | `conversation_history` unredacted, unhandled by `/forget` | Redaction on write applied in `history_redactor.py`. `/forget` permanently deletes contact rows from `conversation_history`. Verified in `tests/test_forget_and_history_redaction.py`. | **RESOLVED** |
+| **F7** | `/memory` shows literal `<i>...</i>`; missing from `/start` | Fixed HTML escaping in `admin_bot.py`. "🧠 Xotira" button and `/memory help` added to `/start` menu and admin handler. | **RESOLVED** |
+| **F8** | 10+ DB backups contain personal data; no retention | `backup_manager.py` implemented. Pre-maintenance safe backup with `Connection.backup()` created. Backup rotation executed, keeping newest 5 backups and removing dangling `-wal`/`-shm`. | **RESOLVED** |
+| **F9** | Tests or scratch scripts write to production DB | `isolation_guard.py` enforces isolation. `shadow_check.py` and `search_targets.py` safely run on temp DBs and reject production DB path. Verified in `tests/test_isolation_guard.py`. | **RESOLVED** |
+| **F10** | Project folder inside cloud-synced folder | Refuted in Phase 0 audit inspection. Located in scratch folder, outside OneDrive. | **VERIFIED (SAFE)** |
+
 
