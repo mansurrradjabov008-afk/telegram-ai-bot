@@ -290,3 +290,60 @@ Last Updated: 2026-10-09 (Phase 0 Complete)
 - **Assumption 1**: Existing `conversation_history` table will remain intact for backwards compatibility; new memory messages will be stored in `mem_messages` with strict redaction and sender labeling.
 - **Assumption 2**: Telegram message edits (`events.MessageEdited`) will only update `text_redacted` in `mem_messages` if the message was already captured, re-applying full redaction and setting `edited_at = CURRENT_TIMESTAMP`.
 - **Known Limitation (H13)**: Existing `drafts` table holds unredacted text from prior development phases. The Contact Memory system will never read from `drafts` for retrieval or extraction. On `/forget @user`, the contact's text in `drafts` will be blanked out.
+
+---
+
+# Hardening & Polish Stage: Audit Findings & Implementation Ledger
+
+Last Updated: 2026-10-10 (Phase 0 Inspection Complete)
+Current Branch: `stage-memory-hardening`
+
+## 5. Phase 0 Audit Verification (F1 - F10 Evidence Ledger)
+
+| Finding | Description | Evidence / Verification | Status |
+| :--- | :--- | :--- | :--- |
+| **F1** | INFO/WARNING logs print message/fact/reply text before redaction | `services/memory_extractor.py:245` (`logger.info(f"Filtered forbidden topic fact ({forb_reason}): '{fact_text}'")`), `services/memory_extractor.py:262` (`logger.warning(f"Fact dropped... '{fact_text}'")`), `services/memory_extractor.py:324` (`logger.warning(f"Open item dropped... '{item_text}'")`), `bot/userbot.py:460` (`combined_text[:100]`), `bot/userbot.py:550` (`reply_text`), `bot/userbot.py:598` (`message_text`), `bot/admin_bot.py:3068,3121,3183` (`proposed_reply`, `incoming_message`, `text`). `RichHandler` lacks `tracebacks_show_locals=False`. Third-party loggers (`telethon`, `httpx`, `google`) unconstrained. | **CONFIRMED** |
+| **F2** | `data/butler.db` and `data/sim_test.db` tracked by git | `git ls-files data/butler.db data/sim_test.db` returns both paths. `git log --all --oneline -- data/butler.db` shows 24 commits. `git remote -v` is empty (no remote configured, DB was NEVER pushed to any remote repository). `.git` size: 1,653,847 bytes (~1.65 MB). | **CONFIRMED** |
+| **F3** | Facts 17-26 and summaries 9-10 inserted by `scratch/shadow_check.py`; test contacts 8801/8802 in production DB | Read-only SQL inspection on temp DB: Facts 17-26 and summaries 9-10 have identical timestamp `2026-10-09 15:43:24`. `scratch/shadow_check.py:33` directly opens `DatabaseManager(settings.db_file_path)`. Reference scan for 8801/8802: `contacts`: 2 rows, `mem_contacts`: 2 rows, `mem_messages`: 10 rows, `mem_facts`: 10 rows, `mem_summaries`: 2 rows. Total: 26 rows across 5 tables in production DB. | **CONFIRMED** |
+| **F4** | Suspicious facts: categories mismatch spec enum, unauthorized `owner_confirmed`, missing code verifier, financial data unblocked | `category` in `mem_facts` is unconstrained `TEXT` (no CHECK constraint or enum validation). Facts 17-26 have categories `loyiha`, `kasb`, `manzil`, `ofis`, `soha`, `moliya`, `biznes`, `faoliyat`, `eksport`, `hamkorlik` (none match spec enum `identity`, `preference`, `interest`, `important_date`, `relationship_note`, `ongoing_topic`, `other`). `services/memory_extractor.py:114` auto-assigns `source_type = "owner_confirmed"` whenever batch has both contact and owner message (violating H6). Fact #18 ("Python dasturchi") and Fact #21 cite messages where text does not appear. Fact #22 ("Byudjet ...", category "moliya") was stored because `config.py` lacks "byudjet" and "moliya" in forbidden lists. All facts have `confidence = 1.0`. No text-level code verifier exists. | **CONFIRMED** |
+| **F5** | `mem_embeddings` has 0 rows; embeddings never ran; only FTS fallback works | `SELECT COUNT(*) FROM mem_embeddings` returns 0. `services/memory_service.py:186` defines `process_pending_embeddings`, but it is NEVER scheduled or called in `main.py` or `scheduler_service.py`. Primary retriever silently falls back to FTS5 BM25. Configured model: `gemini-embedding-001` (dim 3072). | **CONFIRMED** |
+| **F6** | `conversation_history` holds raw unredacted text; reply-context store; unhandled by `/forget` | `conversation_history` has columns `(id, chat_id, sender_name, role, content, timestamp)`. Written by `userbot.py:349,532,620` with raw unredacted text. Read by `userbot.py:465` (`get_recent_history(..., limit=6)`). `wipe_contact_memory` in `crud.py:1750` DOES NOT delete from `conversation_history`. No retention policy exists on it. | **CONFIRMED** |
+| **F7** | `/memory` output shows literal `<i>...</i>`; `/start` menu lacks memory commands | `admin_bot.py:2613` sets fallback `summary_text = "<i>(Hozircha xulosa mavjud emas)</i>"` and line 2630 calls `html.escape(summary_text)`, escaping tags to `&lt;i&gt;...&lt;/i&gt;` so Telegram renders literal `<i>...</i>`. `cmd_start` (lines 507-532) lacks memory commands or buttons. `cmd_memory` uses `safe_reply` instead of `safe_reply_or_send_long` (could exceed 4096 char limit if unconstrained). Callback data sizes are within 39 bytes (under 64 byte limit). | **CONFIRMED** |
+| **F8** | 10+ DB backups contain personal data; no retention policy | `data/` contains 12 `.db` backups (plus 18 `-wal`/`-shm` files), dating back to 2026-10-08. Total backup size: ~6.5 MB. Zero retention or rotation logic exists in `services/` or `database/`. `/forget` does not touch old backups. | **CONFIRMED** |
+| **F9** | Tests or scratch scripts write to production DB | `scratch/shadow_check.py` and `scratch/search_targets.py` use `settings.db_file_path` directly. `shadow_check.py` wrote test contacts 8801/8802 directly into `data/butler.db`. Tests in `tests/` all use pytest's `tmp_path` fixture and do not write to production DB. | **CONFIRMED** |
+| **F10** | Project folder inside cloud-synced folder (OneDrive/Dropbox/GDrive) | System has OneDrive at `C:\Users\BRand\OneDrive`. Project is located at `C:\Users\BRand\.gemini\antigravity\scratch\telegram_ai_butler`. It is NOT inside OneDrive or any cloud-synced folder. | **REFUTED** (Outside OneDrive) |
+
+---
+
+## 6. Hardening Stage Master Plan (Phases 1 - 7)
+
+### Phase 1: Safety Fixes (Logs, Git)
+- **Log Sanitation**: Remove all message/reply/fact/summary/exception text from INFO+ logs. Use IDs, counts, lengths, class names. Set third-party loggers (`telethon`, `httpx`, `google`) to WARNING. Set `tracebacks_show_locals=False` on `RichHandler`.
+- **Log Tests (Red-Green)**: Write AST scan test + Runtime sentinel test. Verify failure before fix; verify pass after fix.
+- **Git Hygiene (Gate G1)**: Ask approval for `git rm --cached data/butler.db data/sim_test.db` and update `.gitignore`.
+
+### Phase 2: Data Correctness
+- **Test DB Isolation Guard**: Implement `DB_PATH` env override and a guard refusing to run test/scratch code if resolved DB path equals production DB.
+- **Cleanup Test Contacts (Gate G2, G7)**: Request bot stop (G7) and approval (G2). Transactionally remove contacts 8801/8802 from all 5 tables (`contacts`, `mem_contacts`, `mem_messages`, `mem_facts`, `mem_summaries`).
+- **source_type & Category Enforcement (Gates G3, G4)**: Remove auto `owner_confirmed` assignment. Enforce category enum (`identity`, `preference`, `interest`, `important_date`, `relationship_note`, `ongoing_topic`, `other`) via trigger or table rebuild. Block finance/budget/debt/income keywords (uz-Lat, uz-Cyr, ru, en).
+- **Code Verifier**: Implement deterministic code verification matching names/numbers/dates in facts against source messages.
+- **conversation_history Resolution**: Bring under `/forget` and decide redaction/retention.
+
+### Phase 3: Retrieval Quality
+- **Embeddings Verification (Gate G5)**: Probe embedding API with dummy string after approval. If available, wire worker with rate limiting; if offline, honestly report FTS mode.
+- **Deterministic Ranking**: Combine FTS5 BM25, recency, and vector similarity. Unit test on temp DB with 20 query pairs across uz-Lat, uz-Cyr, ru.
+
+### Phase 4: Owner Experience
+- **Fix `<i>...</i>` Bug**: Fix HTML escaping for fallback texts.
+- **Update `/start` & `/memory` Cockpit**: Add "Xotira" button, `/memory help`, paginated facts with friendly labels, 4096-char auto-splitting.
+
+### Phase 5: Reliability & Backups
+- **Startup Self-Check**: Quick check on DB integrity, WAL mode, busy timeout.
+- **Backup Rotation (Gate G6)**: Implement `BACKUP_KEEP` retention policy safely.
+
+### Phase 6: Automated Guard Test Suite
+- Comprehensive automated test suite on temporary DB covering logging, redaction, isolation across 20 contacts, injection, fail-open, and `/forget`.
+
+### Phase 7: Final Report & Shadow Verification
+- End-to-end proof on temp DB, step-by-step manual test script for owner, and DoD verification.
+
