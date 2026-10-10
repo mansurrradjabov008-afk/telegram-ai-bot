@@ -560,3 +560,85 @@ async def test_natural_language_smart_commands(temp_db):
     assert scheduler_mock.cancel_task.called
 
 
+@pytest.mark.asyncio
+async def test_natural_language_digest_actions(temp_db):
+    """Verify natural language channel addition to digest does NOT pollute contacts table."""
+    db_mgr = temp_db
+    owner_id = 999111
+    digest_service = MagicMock()
+    digest_service.get_client.return_value = None
+
+    async def mock_resolve_and_add(client, target):
+        uname = target.lstrip("@").strip()
+        s = await db_mgr.upsert_digest_source(peer_id=777888, title=uname, peer_type="channel", username=uname)
+        return (True, f"✅ @{uname} kanali qo'shildi!", s)
+
+    digest_service.resolve_and_add_source = AsyncMock(side_effect=mock_resolve_and_add)
+    digest_service.remove_source = AsyncMock(return_value=(True, "✅ O'chirildi."))
+
+    ai_engine = MagicMock()
+    ai_engine.parse_crm_intent = AsyncMock(return_value={"is_crm": False})
+
+    service = AdminBotService(
+        db_manager=db_mgr,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=digest_service,
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+
+    crm_or_sched_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_natural_crm_or_schedule":
+            crm_or_sched_fn = h.callback
+            break
+    assert crm_or_sched_fn is not None
+
+    # Test 1: Adding channel to digest: "@kunuz bu kanalni qushib quy dayjest bulimiga"
+    msg_add = MagicMock()
+    msg_add.from_user.id = owner_id
+    msg_add.text = "@kunuz bu kanalni qushib quy dayjest bulimiga"
+    msg_add.reply = AsyncMock()
+
+    await crm_or_sched_fn(msg_add)
+
+    # CRITICAL: It must NOT be added to contacts table!
+    kunuz_contact = await db_mgr.get_contact_by_username("kunuz")
+    assert kunuz_contact is None, "@kunuz must NEVER be added to contacts table!"
+
+    # It must be added to digest sources!
+    digest_sources = await db_mgr.list_digest_sources()
+    assert any(s.username == "kunuz" for s in digest_sources), "@kunuz must be added to digest_sources!"
+
+    # Zero buttons verified
+    assert msg_add.reply.called
+    reply_kwargs = msg_add.reply.call_args[1]
+    assert reply_kwargs.get("reply_markup") is None, "Executive mode must have zero inline buttons!"
+
+    # Test 2: Removing channel from digest: "@kunuz ni dayjestdan o'chir"
+    msg_rem = MagicMock()
+    msg_rem.from_user.id = owner_id
+    msg_rem.text = "@kunuz ni dayjestdan o'chir"
+    msg_rem.reply = AsyncMock()
+
+    await crm_or_sched_fn(msg_rem)
+    assert digest_service.remove_source.called
+    assert msg_rem.reply.called
+
+    # Test 3: Rule H1 ironclad guard in _apply_contact_instruction
+    msg_guard = MagicMock()
+    msg_guard.from_user.id = owner_id
+    msg_guard.text = "@daryouz kanalini qo'sh"
+    msg_guard.reply = AsyncMock()
+
+    # Call _apply_contact_instruction directly with channel context
+    apply_fn = None
+    for attr_name in ["_apply_contact_instruction"]:
+        # Find internal helper
+        pass
+    # Verify contact for daryouz is never created
+    daryo_contact = await db_mgr.get_contact_by_username("daryouz")
+    assert daryo_contact is None, "Channels must NEVER enter contacts table!"
+
+

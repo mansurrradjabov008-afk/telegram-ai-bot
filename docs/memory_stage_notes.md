@@ -521,3 +521,22 @@ Current Branch: `stage-memory-hardening`
   - Tests updated: `test_main_reply_keyboard_structure`, `test_cmd_start_sends_keyboards`, `test_dashboard_renders_live_metrics_and_hubs` in `tests/test_ui_interactive_hubs.py`.
   - RED: All 3 failed before fix (asserting keyboard remove and zero inline buttons).
   - GREEN: All 3 passed in 5.60s. Full suite: 43/43 passed in 17.11s. Zero regressions.
+
+---
+
+## 15. Channel/Digest Natural Language Routing & Strict CRM Isolation (Rule H1)
+- **Root Cause & Vulnerability Addressed**:
+  - Unconditional fallback regex in `handle_natural_crm_or_schedule` (`r"(?i)@([a-zA-Z0-9_]{3,32})\s+(.+)"`) erroneously caught any mention of `@username`, routing channel additions like `"@kunuz bu kanalni qushib quy dayjest bulimiga"` into `_apply_contact_instruction`.
+  - This resulted in non-human channels polluting the `contacts` CRM table with `SEN` ("jigar") style and displaying legacy inline buttons, violating Rule H1 and executive buttonless design.
+- **Architectural & Security Improvements**:
+  - `_handle_natural_digest_action`: Added dedicated natural language dispatcher for digest actions (`add`, `remove`, `list`, `run`) with automatic resolution via `DigestService.resolve_and_add_source`, graceful DB fallback if userbot client is offline, and pure text responses (`reply_markup=None`).
+  - `handle_natural_crm_or_schedule`: Intercepts natural digest commands before scheduling and CRM parsing. Replaced loose regex fallback with strict CRM indicator keyword matching (`siz`, `sen`, `ko'rsatma`, `uslub`, `muloqot`, `gaplash`, etc.).
+  - `_apply_contact_instruction`: Enforced strict Rule H1 guardrail preventing any channel/group/digest instruction from entering `contacts` table, automatically forwarding to digest action or safely rejecting. Removed all inline buttons (`reply_markup=None`).
+  - `handle_fallback_natural_text`: Integrated `_handle_natural_digest_action` into conversational fallback pipeline.
+  - `database/crud.py`: Added `upsert_digest_source = add_digest_source` compatibility alias in `DatabaseManager`.
+  - `data/butler.db`: Purged bogus `kunuz` row from `contacts` table (leaving 8 legitimate contacts intact), backed up to `data/butler_backup_20261010_175819.db`.
+- **Verification (P7 Red-Green Protocol)**:
+  - Test added: `test_natural_language_digest_actions` in `tests/test_ui_interactive_hubs.py`.
+  - RED: Failed as expected (TypeError on unawaited mock and crm interception).
+  - GREEN: Passed in 5.83s.
+  - Regression Suite: 44/44 passed in 15.67s across `test_ui_interactive_hubs.py`, `test_modes_commands.py`, `test_memory_commands_phase6.py`, `test_memory_guards_hardening.py`. 0 regressions.

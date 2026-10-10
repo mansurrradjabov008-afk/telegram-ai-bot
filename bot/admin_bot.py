@@ -999,18 +999,13 @@ class AdminBotService:
                     logger.error(f"Error in /digest add for target '{target}': {type(e).__name__}")
                     resp_text = f"❌ <b>Manbani qo'shishda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
 
-                builder = InlineKeyboardBuilder()
-                builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
-                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1, 1)
-
                 if loading_msg:
                     try:
-                        await loading_msg.edit_text(resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        await loading_msg.edit_text(resp_text, reply_markup=None, parse_mode="HTML")
                         return
                     except Exception as e:
                         logger.warning(f"Failed to edit loading_msg ({type(e).__name__}), sending new reply...")
-                await safe_reply(message, resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                await safe_reply(message, resp_text, reply_markup=None, parse_mode="HTML")
                 return
             elif subcmd == "remove":
                 if len(parts) < 3:
@@ -1027,11 +1022,7 @@ class AdminBotService:
                     logger.error(f"Error in /digest remove for target '{target}': {type(e).__name__}")
                     resp_text = f"❌ <b>Manbani o'chirishda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
 
-                builder = InlineKeyboardBuilder()
-                builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
-                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1, 1)
-                return await safe_reply(message, resp_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                return await safe_reply(message, resp_text, reply_markup=None, parse_mode="HTML")
             elif subcmd == "topic":
                 if len(parts) < 3:
                     return await safe_reply(
@@ -1063,6 +1054,155 @@ class AdminBotService:
 
             await _execute_digest(message, is_callback=False)
 
+        async def _handle_natural_digest_action(message: types.Message) -> bool:
+            """
+            Detects natural language channel/digest management requests:
+            - Add channel to digest: '@kunuz bu kanalni qushib quy dayjest bulimiga', 'dayjestga @kunuz ni qo'sh'
+            - Remove channel from digest: '@kunuz ni dayjestdan o'chir', 'dayjestdan @kunuz ni olib tashla'
+            - List digest sources: 'dayjest manbalari', 'dayjest kanallari'
+            - Run/generate digest: 'dayjest tayyorla', 'bugungi dayjest'
+            Returns True if handled, False otherwise.
+            """
+            raw_text = (message.text or "").strip()
+            if not raw_text:
+                return False
+
+            lower_text = raw_text.lower()
+
+            # Target channel extraction
+            target = None
+            target_match = re.search(r"@([a-zA-Z0-9_]{3,32})", raw_text)
+            link_match = re.search(r"(?:https?://)?t\.me/([a-zA-Z0-9_+/]+)", raw_text)
+            if target_match:
+                target = f"@{target_match.group(1)}"
+            elif link_match:
+                target = link_match.group(0)
+            else:
+                stand_match = re.search(r"\b([a-zA-Z0-9_]{3,32})\s+kanali(?:ni|ga|da|dan)?\b", lower_text)
+                if stand_match:
+                    target = f"@{stand_match.group(1)}"
+
+            # Indicators
+            has_digest_kw = any(w in lower_text for w in [
+                "dayjest", "digest", "dayjestga", "digestga", "dayjestdan", "digestdan",
+                "dayjestdagi", "digestdagi", "dayjest bulimiga", "dayjest bo'limiga", "dayjest bulimi",
+                "dayjest bo'limi", "kuzatuv", "kuzatish"
+            ])
+            has_channel_kw = any(w in lower_text for w in ["kanal", "kanali", "kanalini", "manba", "manbasi", "manbani"])
+
+            has_add_kw = any(w in lower_text for w in [
+                "qo'sh", "qush", "qo'shib", "qushib", "qo'shish", "qushish", "ulan", "ulansin", "biriktir", "kirit", "add"
+            ])
+            has_remove_kw = any(w in lower_text for w in [
+                "o'chir", "ochir", "o'chirib", "ochirib", "olib tashla", "chiqar", "chiqarib", "remove", "delete", "del"
+            ])
+            has_list_kw = any(w in lower_text for w in [
+                "manbalari", "manbalar", "kanallari", "kanallar", "ro'yxat", "ro'yxati", "qaysi kanallar", "sources"
+            ])
+
+            # 1. Add source to digest
+            if target and has_add_kw and (has_digest_kw or has_channel_kw):
+                clean_target = target.lstrip("@").strip()
+                try:
+                    if self.digest_service:
+                        client = self.digest_service.get_client()
+                        success, resp_text, source = await self.digest_service.resolve_and_add_source(client, target)
+                        if not success and ("Userbot mijozi ulanmagan" in resp_text or "topilmadi" in resp_text):
+                            source = await self.db_manager.add_digest_source(
+                                peer_id=abs(hash(clean_target)) % 1000000000,
+                                title=clean_target,
+                                peer_type="channel",
+                                username=clean_target,
+                            )
+                            resp_text = (
+                                f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\n\n"
+                                f"📢 <b>Nomi:</b> {html.escape(clean_target)}\n"
+                                f"🔗 <b>Username:</b> <code>@{clean_target}</code>\n"
+                                f"🏷 <b>Turi:</b> Kanal (Kuzatuvga olindi)\n\n"
+                                f"<i>Executive Digest har kuni yangi postlarni tahlil qilib boradi.</i>"
+                            )
+                    else:
+                        source = await self.db_manager.add_digest_source(
+                            peer_id=abs(hash(clean_target)) % 1000000000,
+                            title=clean_target,
+                            peer_type="channel",
+                            username=clean_target,
+                        )
+                        resp_text = (
+                            f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\n\n"
+                            f"📢 <b>Nomi:</b> {html.escape(clean_target)}\n"
+                            f"🔗 <b>Username:</b> <code>@{clean_target}</code>\n"
+                            f"🏷 <b>Turi:</b> Kanal (Kuzatuvga olindi)\n\n"
+                            f"<i>Executive Digest har kuni yangi postlarni tahlil qilib boradi.</i>"
+                        )
+                except Exception as e:
+                    logger.error(f"Error handling natural digest add for '{target}': {type(e).__name__}")
+                    resp_text = f"❌ <b>Manbani qo'shishda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
+
+                await safe_reply(message, resp_text, reply_markup=None, parse_mode="HTML")
+                return True
+
+            # 2. Remove source from digest
+            if target and has_remove_kw and (has_digest_kw or has_channel_kw):
+                clean_target = target.lstrip("@").strip()
+                try:
+                    if self.digest_service:
+                        success, resp_text = await self.digest_service.remove_source(clean_target)
+                    else:
+                        success = await self.db_manager.remove_digest_source(clean_target)
+                        if success:
+                            resp_text = f"✅ <code>@{clean_target}</code> kuzatiladigan manbalar ro'yxatidan o'chirildi."
+                        else:
+                            resp_text = f"❌ <code>@{clean_target}</code> manbalar ro'yxatida topilmadi."
+                except Exception as e:
+                    logger.error(f"Error handling natural digest remove for '{target}': {type(e).__name__}")
+                    resp_text = f"❌ <b>Manbani o'chirishda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
+
+                await safe_reply(message, resp_text, reply_markup=None, parse_mode="HTML")
+                return True
+
+            # 3. List sources
+            if (has_digest_kw or "kuzatilayotgan" in lower_text) and has_list_kw:
+                sources = await self.db_manager.list_digest_sources(active_only=True)
+                if not sources:
+                    empty_text = (
+                        "📋 <b>KUZATILAYOTGAN MANBALAR RO'YXATI (DIGEST SOURCES):</b>\n\n"
+                        "<i>Hozircha hech qanday manba qo'shilmagan.</i>\n\n"
+                        "💡 <b>Manba qo'shish:</b>\n"
+                        "• Shunchaki yozing: <i>\"dayjestga @kanal nomini qo'sh\"</i>\n"
+                        "• Yoki buyruq: <code>/digest add @kanal</code>"
+                    )
+                    await safe_reply(message, empty_text, reply_markup=None, parse_mode="HTML")
+                    return True
+
+                counts = await self.db_manager.get_all_source_post_counts()
+                lines = [
+                    f"📋 <b>KUZATILAYOTGAN MANBALAR (Jami: {len(sources)} ta):</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                ]
+                for s in sources:
+                    type_badge = "📢 Kanal" if s.peer_type == "channel" else "👥 Guruh"
+                    uname = f"@{s.username}" if s.username else f"ID: {s.peer_id}"
+                    post_cnt = counts.get(s.peer_id, 0)
+                    lines.append(
+                        f"• <b>{html.escape(s.title)}</b> [{type_badge}]\n"
+                        f"  🔗 <code>{html.escape(uname)}</code> | 📝 Postlar: <b>{post_cnt}</b> ta\n"
+                    )
+                lines.append(
+                    "\n💡 <b>Boshqarish:</b>\n"
+                    "• <i>'dayjestga @kanal ni qo'sh'</i> — Yangi manba qo'shish\n"
+                    "• <i>'dayjestdan @kanal ni o'chir'</i> — Ro'yxatdan chiqarish"
+                )
+                await safe_reply(message, "\n".join(lines), reply_markup=None, parse_mode="HTML")
+                return True
+
+            # 4. Run/Generate digest
+            if has_digest_kw and any(w in lower_text for w in ["tayyorla", "chiqar", "ber", "tuz", "yarat", "bugungi", "ko'rsat", "korsat"]):
+                await _execute_digest(message, is_callback=False)
+                return True
+
+            return False
+
         async def _apply_contact_instruction(
             msg_obj: types.Message,
             target_user: str,
@@ -1071,6 +1211,22 @@ class AdminBotService:
         ):
             target = target_user.replace("@", "").strip()
             instruction = instruction_text.strip()
+
+            # Strict Rule H1 Guard: channels/groups/digest must NEVER enter contacts table!
+            lower_inst = instruction.lower()
+            if any(w in lower_inst for w in ["dayjest", "digest", "kanal", "channel", "guruh", "group", "manba"]):
+                handled = await _handle_natural_digest_action(msg_obj)
+                if handled:
+                    return
+                return await safe_reply(
+                    msg_obj,
+                    f"⚠️ <b>Kanallar yoki guruhlar shaxsiy CRM kontaktlariga qo'shilmaydi (Rule H1)!</b>\n\n"
+                    f"📢 <code>@{html.escape(target)}</code> manbasini Executive Digest bo'limiga qo'shish uchun:\n"
+                    f"• Chatga: <i>\"dayjestga @{html.escape(target)} kanalini qo'sh\"</i> deb yozing\n"
+                    f"• Yoki buyruq: <code>/digest add @{html.escape(target)}</code>",
+                    parse_mode="HTML",
+                    reply_markup=None,
+                )
 
             if not target.isdigit():
                 normalized = normalize_and_validate_username(target)
@@ -1084,7 +1240,6 @@ class AdminBotService:
                 target = normalized
 
             # 1. Determine addressing style ('siz' vs 'sen')
-            lower_inst = instruction.lower()
             if forced_style in ["siz", "sen"]:
                 addressing = forced_style
             elif any(w in lower_inst for w in ["senla", "sensira", "sensirab", "sen deb", "sen ", "do'st", "dost", "bro", "jigar", "tengdosh"]):
@@ -1136,19 +1291,9 @@ class AdminBotService:
             if addressing == "sen":
                 style_badge = "🟢 <b>SEN (Sensirash / Yaqin do'st)</b>"
                 style_exp = f"Bot <code>@{safe_target}</code> ga faqat <i>'sen', 'qilyapsan', 'jigar'</i> deb erkin va do'stona gaplashadi!"
-                switch_to = "siz"
-                switch_label = "🔄 'SIZ' ga o'zgartirish"
             else:
                 style_badge = "🔵 <b>SIZ (Sizlash / Hurmat bilan)</b>"
                 style_exp = f"Bot <code>@{safe_target}</code> ga faqat <i>'siz', 'qilyapsiz'</i> deb yuksak hurmat va odob bilan gaplashadi!"
-                switch_to = "sen"
-                switch_label = "🔄 'SEN' ga o'zgartirish"
-
-            builder = InlineKeyboardBuilder()
-            builder.button(text=switch_label, callback_data=f"crm_style:{target}:{switch_to}")
-            builder.button(text="📋 Barcha kontaktlar", callback_data="crm:refresh")
-            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(1, 2)
 
             await safe_reply(
                 msg_obj,
@@ -1159,8 +1304,9 @@ class AdminBotService:
                 f"🎭 <b>Munosabat:</b> <code>{safe_role_label}</code>\n"
                 f"📜 <b>Ko'rsatma:</b> <i>\"{safe_instruction}\"</i>\n\n"
                 f"🧠 <b>Butler xotirasiga muhrlandi!</b>\n"
-                f"{style_exp}",
-                reply_markup=builder.as_markup(),
+                f"{style_exp}\n\n"
+                f"💡 <i>Uslubni o'zgartirish: chatga 'sen' yoki 'siz' deb yozishingiz kifoya.</i>",
+                reply_markup=None,
                 parse_mode="HTML",
             )
 
@@ -2047,6 +2193,10 @@ class AdminBotService:
             if not self._is_admin(message.from_user.id):
                 return
 
+            # -1. Check if this is a natural digest action (e.g. @kunuz bu kanalni qushib quy dayjest bulimiga)
+            if await _handle_natural_digest_action(message):
+                return
+
             # 0. Check if this is a natural mode change request (e.g. @username ni auto qil)
             mode_intent_match = re.search(
                 r"(?i)(?:^|.*?)(@?[a-zA-Z0-9_]{3,32})\s+(?:ni\s+)?(auto|avto|avtomatik|draft|qoralama|tasdiq|mute|ovozsiz|ochir)\s*(?:rejimiga\s+o'tkaz|rejimiga\s+quyil|rejimiga\s+quy|rejimiga\s+o't|rejimiga|rejimida|qil|qoy|qo'y)?",
@@ -2084,12 +2234,18 @@ class AdminBotService:
                     forced_style=crm_parsed.get("addressing_style"),
                 )
 
-            # 3. Fallback regex match
+            # 3. Fallback regex match - require explicit CRM keywords to avoid false positives
             match = re.search(r"(?i)@([a-zA-Z0-9_]{3,32})\s+(.+)", message.text)
             if match:
                 target = match.group(1)
                 instruction = match.group(2)
-                await _apply_contact_instruction(message, target, instruction)
+                crm_indicators = [
+                    "siz", "sen", "sizla", "senla", "sensira", "sizlab", "uslub",
+                    "ko'rsatma", "korsatma", "muloqot", "gaplash", "muomala", "jigar",
+                    "hurmat", "aka", "opa", "do'st", "dost", "hazil", "rasmiy",
+                ]
+                if any(w in instruction.lower() for w in crm_indicators):
+                    return await _apply_contact_instruction(message, target, instruction)
 
         async def _render_tasks_list(target_msg: types.Message, is_callback: bool = False):
             """Renders pending tasks list with clean human-readable dates and action buttons."""
@@ -2638,6 +2794,10 @@ class AdminBotService:
 
             handled = await _schedule_and_respond(message, message.text)
             if handled:
+                return
+
+            handled_digest = await _handle_natural_digest_action(message)
+            if handled_digest:
                 return
 
             handled_contact = await _handle_natural_contact_action(message)

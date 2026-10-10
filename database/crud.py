@@ -586,6 +586,8 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to retrieve added digest source for peer_id {peer_id}")
         return source
 
+    upsert_digest_source = add_digest_source
+
     async def remove_digest_source(self, identifier: Any) -> bool:
         """Remove a source from Smart Digest V2 whitelist by peer_id or username."""
         async with get_db(self.db_path) as db:
