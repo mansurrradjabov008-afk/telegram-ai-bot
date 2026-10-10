@@ -889,18 +889,32 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
             f"Barcha tizimlar to'liq avtonom rejimda nazoratim ostida."
         )
 
-    async def generate_daily_news_briefing(self, focus_areas: Optional[str] = None) -> str:
+    async def generate_daily_news_briefing(
+        self,
+        focus_areas: Optional[str] = None,
+        channel_highlights: Optional[str] = None,
+    ) -> str:
         """
         Generates an Executive Daily Intelligence Briefing in Uzbek covering
-        AI & Tech, Business & Global trends, and Uzbekistan highlights.
+        AI & Tech, Business & Global trends, and Uzbekistan highlights,
+        optionally incorporating monitored Telegram channel posts.
         """
         now = datetime.now()
         date_str = f"{now.year}-yil {now.day}-sana"
+
+        channels_context = ""
+        if channel_highlights and channel_highlights.strip():
+            channels_context = (
+                f"\nKUZATUV OSTIDAGI TELEGRAM KANALLARDAN SARALANGAN XABARLAR:\n"
+                f"{channel_highlights.strip()}\n"
+                f"Ushbu xabarlarni '📡 Kuzatuvdagi Kanallar Sharhi' bo'limi ostida eng qiziq va muhim xabarlar sifatida taqdim et.\n\n"
+            )
 
         prompt = (
             f"Sen — JARVISsan. Foydalanuvchi — sening xo'jayining: Radjabov Mansur.\n"
             f"Bugungi sana: {date_str}.\n"
             f"Xo'jayin uchun kunlik yuqori darajadagi axborot tahlili (Executive Daily Briefing) tayyorla.\n\n"
+            f"{channels_context}"
             f"QOIDALAR:\n"
             f"1. Til: Toza, professional O'zbek tili.\n"
             f"2. Format: Telegram uchun chiroyli sarlavhalar, bulletlar (•) va emojilar.\n"
@@ -908,7 +922,8 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
             f"   - 🤖 Sun'iy Intellekt va Ilg'or Texnologiyalar\n"
             f"   - 🌐 Global Iqtisodiyot va Biznes Trendlari\n"
             f"   - 🇺🇿 O'zbekiston va Mintaqa Yangiliklari\n"
-            f"4. Xo'jayinga hurmat bilan 'Janob' deb murojaat qil.\n"
+            + ("   - 📡 Kuzatuvdagi Kanallar Sharhi\n" if channel_highlights else "")
+            + f"4. Xo'jayinga hurmat bilan 'Janob' deb murojaat qil.\n"
             f"5. Qisqa, aniq va eng muhim mazmunni qamrab olsin.\n\n"
             f"Executive Briefing:"
         )

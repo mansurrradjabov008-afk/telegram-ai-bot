@@ -1021,8 +1021,12 @@ async def test_jarvis_news_digest_natural_trigger(temp_db):
 
     await fallback_fn(msg, state)
 
-    # 1. run_smart_digest should be called
-    digest_service.run_smart_digest.assert_awaited_once_with(trigger="manual", topic_filter=None)
+    # 1. run_smart_digest should be called with manual trigger
+    assert digest_service.run_smart_digest.called
+    call_kwargs = digest_service.run_smart_digest.call_args[1]
+    assert call_kwargs.get("trigger") == "manual"
+    assert call_kwargs.get("topic_filter") is None
+    assert "progress_callback" in call_kwargs
 
     # 2. msg.reply should have been called (loading and/or result)
     assert msg.reply.called
@@ -1196,3 +1200,74 @@ async def test_jarvis_colloquial_surachi_and_username_cleaning(temp_db):
     assert "suratchi" not in reply_text.lower()
     assert "Axtam" in reply_text
     assert msg.reply.call_args[1].get("reply_markup") is None
+
+
+@pytest.mark.asyncio
+async def test_jarvis_news_natural_yetkaz_with_progress_and_self_healing(temp_db):
+    """
+    Verifies user prompt: 'bugungi yangiliklarni menga yetkaz'
+    1. Triggers news request via 'yetkaz' / 'yangiliklarni menga yetkaz'.
+    2. Runs _execute_digest with live progress callback.
+    3. Edits the loading message smoothly into the final briefing (NO stuck loading text).
+    4. Has self-healing fallback when channel scraper returns error or no messages.
+    5. Returns buttonless response (reply_markup=None).
+    """
+    owner_id = 999901
+    ai_engine = MagicMock()
+    ai_engine.generate_daily_news_briefing = AsyncMock(
+        return_value="🤖 **AI:** Yangi modellar.\n🌐 **Biznes:** Bozorlar barqaror.\n🇺🇿 **O'zbekiston:** Yangi texnoparklar."
+    )
+
+    digest_service = MagicMock()
+    # Simulate channel fetch error to test self-healing fallback
+    digest_service.run_smart_digest = AsyncMock(return_value={
+        "status": "error",
+        "messages": [],
+    })
+
+    service = AdminBotService(
+        db_manager=temp_db,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=digest_service,
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+
+    fallback_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_fallback_natural_text":
+            fallback_fn = h.callback
+            break
+    assert fallback_fn is not None
+
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value=None)
+
+    msg = MagicMock()
+    msg.from_user.id = owner_id
+    msg.text = "bugungi yangiliklarni menga yetkaz"
+    msg.reply_to_message = None
+
+    # Simulate sent loading message that can be edited
+    loading_sent = MagicMock()
+    loading_sent.edit_text = AsyncMock()
+    msg.reply = AsyncMock(return_value=loading_sent)
+
+    await fallback_fn(msg, state)
+
+    # 1. Digest service was called with progress callback
+    assert digest_service.run_smart_digest.called
+    kwargs = digest_service.run_smart_digest.call_args[1]
+    assert kwargs.get("trigger") == "manual"
+    assert "progress_callback" in kwargs
+
+    # 2. Self-healing fallback generated daily news briefing
+    assert ai_engine.generate_daily_news_briefing.called
+
+    # 3. Loading message was edited into final report (NO stuck loading indicator!)
+    assert loading_sent.edit_text.called
+    final_text = loading_sent.edit_text.call_args[0][0]
+    final_kwargs = loading_sent.edit_text.call_args[1]
+    assert "KUNLIK EXECUTIVE BRIEFING" in final_text
+    assert final_kwargs.get("reply_markup") is None

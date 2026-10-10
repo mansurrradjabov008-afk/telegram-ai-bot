@@ -285,7 +285,12 @@ class DigestService:
             })
         return result
 
-    async def collect_new_posts(self, client: Any = None, trigger: str = "manual") -> Dict[str, Any]:
+    async def collect_new_posts(
+        self,
+        client: Any = None,
+        trigger: str = "manual",
+        progress_cb: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """
         Collects new posts from whitelisted sources since last_message_id.
         - Error isolation per source (one failing source never stops others)
@@ -433,6 +438,8 @@ class DigestService:
         stats["purged_old_posts"] = purged
 
         # Phase 2: Execute cleaning, deduplication, and spam filtering
+        if progress_cb:
+            await progress_cb("Spam va takroriy xabarlar saralanmoqda...")
         filter_stats = await self.clean_and_filter_run_posts(run_id=run_id)
         stats["cleaning"] = filter_stats
         stats["duplicates_filtered"] = filter_stats["duplicates_count"]
@@ -441,6 +448,8 @@ class DigestService:
         stats["suspicious_jobs"] = filter_stats["suspicious_jobs_count"]
 
         # Phase 3: Execute classification on clean posts
+        if progress_cb:
+            await progress_cb("Sun'iy intellekt (Gemini) muhim mavzularni tahlil qilmoqda...")
         classification_stats = await self.classify_run_posts(run_id=run_id)
         stats["classification"] = {
             "topic_counts": classification_stats.get("topic_counts", {}),
@@ -457,6 +466,8 @@ class DigestService:
         stats["topic_counts"] = classification_stats.get("topic_counts", {})
 
         # Phase 4: Execute summarization and anti-hallucination verification
+        if progress_cb:
+            await progress_cb("Executive dayjest brifingi jamlanmoqda...")
         summary_stats = await self.summarize_run_posts(run_id=run_id)
         stats["summarization"] = {
             "topic_items_count": summary_stats.get("topic_items_count", {}),
@@ -609,6 +620,7 @@ class DigestService:
         self,
         trigger: str = "manual",
         topic_filter: Optional[str] = None,
+        progress_callback: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Executes full Smart Digest V2 pipeline with concurrency guard:
@@ -619,6 +631,25 @@ class DigestService:
         5. Groups events, creates summaries, and runs code verification
         6. Formats Telegram HTML messages under 4000 characters
         """
+        async def notify(msg: str):
+            if progress_callback:
+                try:
+                    import inspect
+                    if inspect.iscoroutinefunction(progress_callback):
+                        await progress_callback(msg)
+                    else:
+                        res = progress_callback(msg)
+                        if inspect.isawaitable(res):
+                            await res
+                except Exception:
+                    pass
+
+        # Cleanup any stuck stale runs from crashed processes
+        try:
+            await self.db_manager.cleanup_stale_digest_runs()
+        except Exception:
+            pass
+
         if self._is_run_in_progress:
             return {
                 "status": "in_progress",
@@ -628,8 +659,9 @@ class DigestService:
 
         self._is_run_in_progress = True
         try:
+            await notify("Kuzatuvdagi kanallardan so'nggi xabarlar tekshirilmoqda...")
             # 1. Run collection, cleaning, classification, and summarization
-            stats = await self.collect_new_posts(trigger=trigger)
+            stats = await self.collect_new_posts(trigger=trigger, progress_cb=notify)
 
             # Check if sources exist in DB
             sources_in_db = await self.db_manager.list_digest_sources(active_only=True)

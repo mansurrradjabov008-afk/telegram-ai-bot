@@ -808,7 +808,7 @@ class AdminBotService:
                 return
 
             # Smart Digest V2 execution
-            loading_text = "⏳ <i>Smart Digest V2 tayyorlanmoqda...</i>"
+            loading_text = "⏳ <b>JARVIS Tahlili:</b> <i>Kanallar va muhim manbalar tahlil qilinmoqda...</i>"
             if is_callback:
                 try:
                     await target_msg.edit_text(loading_text, parse_mode="HTML")
@@ -818,23 +818,38 @@ class AdminBotService:
             else:
                 active_msg = await safe_reply(target_msg, loading_text, parse_mode="HTML") or target_msg
 
+            async def on_progress(step_text: str):
+                try:
+                    await active_msg.edit_text(f"⏳ <b>JARVIS Tahlili:</b> <i>{html.escape(step_text)}</i>", parse_mode="HTML")
+                except Exception:
+                    pass
+
             try:
-                res = await self.digest_service.run_smart_digest(trigger="manual", topic_filter=topic_filter)
+                res = await self.digest_service.run_smart_digest(
+                    trigger="manual",
+                    topic_filter=topic_filter,
+                    progress_callback=on_progress,
+                )
                 status = res.get("status")
+                messages = res.get("messages", [])
 
                 if status == "in_progress":
-                    progress_text = "⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting."
-                    builder = InlineKeyboardBuilder()
-                    builder.button(text="🔄 Qayta tekshirish", callback_data="digest:open")
-                    builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                    builder.adjust(1, 1)
+                    progress_text = "⚠️ <b>Smart Digest hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting."
                     if is_callback:
+                        builder = InlineKeyboardBuilder()
+                        builder.button(text="🔄 Qayta tekshirish", callback_data="digest:open")
+                        builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                        builder.adjust(1, 1)
                         await active_msg.edit_text(progress_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                     else:
-                        await safe_reply(active_msg, progress_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        try:
+                            await active_msg.edit_text(progress_text, reply_markup=None, parse_mode="HTML")
+                        except Exception:
+                            await safe_reply(target_msg, progress_text, reply_markup=None, parse_mode="HTML")
                     return
 
                 if status in ["no_sources", "error"] or not messages or all("topilmadi" in m for m in messages):
+                    await on_progress("Executive kunlik axborot tahlili tayyorlanmoqda...")
                     sources = await self.db_manager.list_digest_sources(active_only=True)
                     briefing = await self.ai_engine.generate_daily_news_briefing()
                     formatted = markdown_to_telegram_html(briefing)
@@ -853,7 +868,10 @@ class AdminBotService:
                         markup = builder.as_markup()
                         await active_msg.edit_text(full_report, reply_markup=markup, parse_mode="HTML")
                     else:
-                        await safe_reply(active_msg, full_report, reply_markup=None, parse_mode="HTML")
+                        try:
+                            await active_msg.edit_text(full_report, reply_markup=None, parse_mode="HTML")
+                        except Exception:
+                            await safe_reply(target_msg, full_report, reply_markup=None, parse_mode="HTML")
                     return
 
                 # Completed: messages are pre-split under 4000 characters
@@ -866,14 +884,13 @@ class AdminBotService:
 
                 for idx, m in enumerate(messages):
                     markup = builder.as_markup() if (is_callback and idx == len(messages) - 1) else None
-                    if idx == 0 and is_callback:
+                    if idx == 0:
                         try:
                             await active_msg.edit_text(m, reply_markup=markup, parse_mode="HTML")
                             continue
                         except Exception:
                             pass
-                    if idx == 0 and not is_callback:
-                        await safe_reply(active_msg, m, reply_markup=markup, parse_mode="HTML")
+                        await safe_reply(target_msg, m, reply_markup=markup, parse_mode="HTML")
                     elif idx > 0:
                         if self.bot and getattr(active_msg, "chat", None):
                             await safe_send(self.bot, active_msg.chat.id, m, reply_markup=markup, parse_mode="HTML")
@@ -881,12 +898,26 @@ class AdminBotService:
                             await safe_reply(active_msg, m, reply_markup=markup, parse_mode="HTML")
 
             except Exception as e:
-                logger.error(f"Smart Digest V2 execution failed: {type(e).__name__}")
-                err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
-                if is_callback:
-                    await active_msg.edit_text(err_text, parse_mode="HTML")
-                else:
-                    await safe_reply(active_msg, err_text, parse_mode="HTML")
+                logger.error(f"Smart Digest V2 execution failed: {type(e).__name__} - {e}", exc_info=True)
+                # Self-healing fallback: Generate Executive Intelligence Briefing on the fly so boss always gets news!
+                try:
+                    fallback_briefing = await self.ai_engine.generate_daily_news_briefing()
+                    formatted = markdown_to_telegram_html(fallback_briefing)
+                    fallback_report = (
+                        "📰 <b>KUNLIK EXECUTIVE BRIEFING & YANGILIKLAR (JARVIS Protocol)</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        + formatted
+                    )
+                    try:
+                        await active_msg.edit_text(fallback_report, reply_markup=None, parse_mode="HTML")
+                    except Exception:
+                        await safe_reply(target_msg, fallback_report, reply_markup=None, parse_mode="HTML")
+                except Exception:
+                    err_text = f"❌ <b>Digest tayyorlashda xatolik yuz berdi:</b>\n<code>{html.escape(type(e).__name__)}</code>"
+                    try:
+                        await active_msg.edit_text(err_text, parse_mode="HTML")
+                    except Exception:
+                        await safe_reply(target_msg, err_text, parse_mode="HTML")
 
         async def _render_digest_debug(
             target_msg: types.Message,
@@ -1219,16 +1250,28 @@ class AdminBotService:
                 await safe_reply(message, "\n".join(lines), reply_markup=None, parse_mode="HTML")
                 return True
 
+            # If the command is addressed to a contact (contains @peer or contact verb like 'yozchi', 'surachi', 'so'rachi')
+            # and is NOT an explicit channel management command (e.g. 'dayjestga @kanal ni qo'sh'),
+            # DO NOT intercept it as a general news digest!
+            has_peer_mention = bool(re.search(r"@\w+", lower_text))
+            has_contact_verbs = bool(re.search(r"\b(?:yoz(?:chi|gin)?|surachi|so['`]?rachi|sorachi|surishtir|habar\s+ol|xabar\s+ol)\b", lower_text))
+            if has_peer_mention and not any(w in lower_text for w in ["kanal", "guruh", "dayjest"]):
+                return False
+            if has_contact_verbs:
+                return False
+
             # 4. Run/Generate digest or news briefing
             is_news_request = (
                 (has_digest_kw or has_news_kw) and any(w in lower_text for w in [
                     "tayyorla", "chiqar", "ber", "tuz", "yarat", "bugungi", "bugun", "ko'rsat", "korsat",
-                    "nima gap", "haqida", "malumot", "ma'lumot", "ayt", "so'nggi", "oxirgi", "bormi", "qanaqa"
+                    "nima gap", "haqida", "malumot", "ma'lumot", "ayt", "so'nggi", "oxirgi", "bormi", "qanaqa",
+                    "yetkaz", "yubor", "jo'nat", "jonat", "tashla"
                 ])
             ) or any(phrase in lower_text for phrase in [
                 "bugungi yangliklar", "bugungi yangiliklar", "yangliklar haqida", "yangiliklar haqida",
                 "bugun nima yangilik", "kunlik yangilik", "kanallarda nima gap", "yangiliklarni ayt",
-                "yangiliklar bormi", "so'nggi yangilik", "kunlik dayjest", "yangliklar nima", "yangiliklar nima"
+                "yangiliklar bormi", "so'nggi yangilik", "kunlik dayjest", "yangliklar nima", "yangiliklar nima",
+                "yangiliklarni menga yetkaz", "yangiliklarni yetkaz", "yangilik yetkaz"
             ]) or lower_text in [
                 "yangiliklar", "yangliklar", "dayjest", "digest", "bugungi dayjest"
             ]

@@ -867,6 +867,18 @@ class DatabaseManager:
                 row = await cursor.fetchone()
                 return DigestRun(**dict(row)) if row else None
 
+    async def cleanup_stale_digest_runs(self) -> int:
+        """Marks any digest runs older than 10 minutes that are stuck in 'in_progress' as 'failed'."""
+        query = """
+        UPDATE digest_runs 
+        SET status = 'failed', finished_at = CURRENT_TIMESTAMP 
+        WHERE status = 'in_progress' AND datetime(started_at) < datetime('now', '-10 minutes')
+        """
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(query)
+            await db.commit()
+            return cursor.rowcount
+
     async def purge_old_digest_posts(self, retention_days: int = 14) -> int:
         """Deletes posts older than retention_days."""
         cutoff = (datetime.utcnow() - timedelta(days=retention_days)).isoformat()
