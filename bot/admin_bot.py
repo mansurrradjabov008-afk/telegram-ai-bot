@@ -898,7 +898,7 @@ class AdminBotService:
                             await safe_reply(active_msg, m, reply_markup=markup, parse_mode="HTML")
 
             except Exception as e:
-                logger.error(f"Smart Digest V2 execution failed: {type(e).__name__} - {e}", exc_info=True)
+                logger.error(f"Smart Digest V2 execution failed: {type(e).__name__}")
                 # Self-healing fallback: Generate Executive Intelligence Briefing on the fly so boss always gets news!
                 try:
                     fallback_briefing = await self.ai_engine.generate_daily_news_briefing()
