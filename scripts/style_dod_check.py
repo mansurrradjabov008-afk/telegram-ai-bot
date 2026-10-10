@@ -347,6 +347,83 @@ def check_scope_allowlist():
     return True
 
 
+def run_dryrun_migration_and_rollback(backup_path: Path) -> dict:
+    """
+    Executes dry-run migration and rollback on a copy of the backup database (Checkpoint 2).
+    """
+    import shutil
+    import sqlite3
+    import tempfile
+
+    print("\nRunning Migration & Rollback Dry-Run on backup copy...")
+    assert backup_path.exists(), f"Backup file not found at: {backup_path}"
+
+    temp_dir = Path(tempfile.gettempdir())
+    dryrun_db = temp_dir / f"butler_dryrun_{backup_path.stem}.db"
+    shutil.copy2(backup_path, dryrun_db)
+    print(f"  1. Cloned backup to isolated dry-run file: {dryrun_db.name}")
+
+    conn = sqlite3.connect(dryrun_db)
+    cur = conn.cursor()
+
+    # Pre-migration tables
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    pre_tables = [r[0] for r in cur.fetchall()]
+    print(f"  2. Pre-migration tables ({len(pre_tables)}): {', '.join(pre_tables[:8])}...")
+
+    # Execute migration
+    migration_file = PROJECT_ROOT / "database" / "migrations" / "v10_style_schema.sql"
+    migration_sql = migration_file.read_text(encoding="utf-8")
+    cur.executescript(migration_sql)
+    conn.commit()
+
+    # Post-migration tables
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    post_tables = [r[0] for r in cur.fetchall()]
+    new_tables = sorted(list(set(post_tables) - set(pre_tables)))
+    print(f"  3. Migration executed. New tables ({len(new_tables)}): {new_tables}")
+    assert set(new_tables) == {"style_notes", "style_profiles", "style_samples"}
+
+    cur.execute("PRAGMA integrity_check")
+    migration_integrity = cur.fetchall()
+    assert migration_integrity == [("ok",)], f"Integrity check failed: {migration_integrity}"
+    print("  4. Migration PRAGMA integrity_check: ok")
+
+    # Execute rollback
+    rollback_sql = """
+    DROP TABLE IF EXISTS style_samples;
+    DROP TABLE IF EXISTS style_notes;
+    DROP TABLE IF EXISTS style_profiles;
+    DELETE FROM schema_versions WHERE version = 10;
+    """
+    cur.executescript(rollback_sql)
+    conn.commit()
+
+    # Verify rollback schema
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    rollback_tables = [r[0] for r in cur.fetchall()]
+    assert rollback_tables == pre_tables, "Rollback tables do not match pre-migration tables!"
+    print("  5. Rollback executed successfully. Schema matches pre-migration state exactly.")
+
+    cur.execute("PRAGMA integrity_check")
+    rollback_integrity = cur.fetchall()
+    assert rollback_integrity == [("ok",)], f"Rollback integrity check failed: {rollback_integrity}"
+    print("  6. Rollback PRAGMA integrity_check: ok")
+
+    conn.close()
+    dryrun_db.unlink(missing_ok=True)
+    print("  [PASS] Dry-run migration and rollback completed with zero errors.")
+
+    return {
+        "pre_tables_count": len(pre_tables),
+        "post_tables_count": len(post_tables),
+        "new_tables": new_tables,
+        "migration_integrity": "ok",
+        "rollback_integrity": "ok",
+        "rollback_match": True,
+    }
+
+
 def main():
     print("=" * 60)
     print("ANTIGRAVITY BUTLER — WRITING STYLE DoD & DESIGN VERIFICATION")
@@ -365,8 +442,14 @@ def main():
     run_synthetic_ab_evaluation()
     check_scope_allowlist()
 
+    # Checkpoint 2 dry-run verification if backup exists
+    backups = sorted(list((PROJECT_ROOT / "data").glob("butler_backup_*.db")), key=lambda p: p.stat().st_mtime)
+    if backups:
+        latest_backup = backups[-1]
+        run_dryrun_migration_and_rollback(latest_backup)
+
     print("\n" + "=" * 60)
-    print("ALL DoD & D1-D11 CHECKS PASSED SUCCESSFULLY (READY FOR CHECKPOINT 1)")
+    print("ALL DoD & D1-D11 CHECKS PASSED SUCCESSFULLY (READY FOR CHECKPOINT 2)")
     print("=" * 60)
 
 
