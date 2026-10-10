@@ -450,3 +450,275 @@ async def test_draft_superseded_if_owner_replied_manually(admin_service: AdminBo
     d_after = await test_db.get_draft_by_id(draft.id)
     assert d_after.status == "superseded"
 
+
+# ============================================================================
+# 8. DRAFT EDITING TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_draft_edit_full_flow(admin_service: AdminBotService, test_db: DatabaseManager):
+    """Verifies that clicking edit sets FSM state, and user reply sends edited message via userbot."""
+    from bot.admin_bot import ReplyState
+    
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock(return_value=MagicMock(id=999))
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="mansurjon_07",
+        contact_user_id=8036556250,
+        source_message_id=705,
+        incoming_text="Ertaga chiqamiz bulmasa uka,ertaga aniq vaqting bormi",
+        proposed_reply="Albatta, akajon, ertaga xudo xohlasa vaqtimni topaman.",
+    )
+
+    # 1. Click edit callback
+    edit_cb_handler = None
+    for h in admin_service.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_draft_edit":
+            edit_cb_handler = h.callback
+            break
+    assert edit_cb_handler is not None
+
+    fsm_context = admin_service.dp.fsm.get_context(bot=admin_service.bot or MagicMock(), chat_id=owner_id, user_id=owner_id)
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = owner_id
+    fake_cb.data = f"draft_edit:{draft.id}"
+    fake_cb.answer = AsyncMock()
+    fake_cb.message = MagicMock()
+    fake_cb.message.chat.id = owner_id
+    fake_cb.message.message_id = 555
+    fake_cb.message.reply = AsyncMock(return_value=MagicMock(message_id=556))
+
+    await edit_cb_handler(fake_cb, state=fsm_context)
+
+    # FSM state must be waiting_for_draft_edit
+    current_state = await fsm_context.get_state()
+    assert current_state == ReplyState.waiting_for_draft_edit.state
+    state_data = await fsm_context.get_data()
+    assert state_data.get("draft_id") == draft.id
+
+    # 2. User sends edited reply message
+    edit_msg_handler = None
+    for h in admin_service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "process_draft_edit_message":
+            edit_msg_handler = h.callback
+            break
+    assert edit_msg_handler is not None
+
+    fake_msg = MagicMock()
+    fake_msg.from_user.id = owner_id
+    fake_msg.text = "ertaga abetdan keyin go"
+    fake_msg.reply = AsyncMock()
+    fake_msg.answer = AsyncMock()
+
+    await edit_msg_handler(fake_msg, state=fsm_context)
+
+    # Draft status must be edited_sent
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "edited_sent"
+    assert d_after.proposed_reply == "ertaga abetdan keyin go"
+    assert d_after.resolved_at is not None
+
+    # Userbot must have sent the message
+    assert userbot_send_mock.await_count == 1
+    userbot_send_mock.assert_awaited_with("@mansurjon_07", "ertaga abetdan keyin go")
+
+    # State must be cleared
+    cleared_state = await fsm_context.get_state()
+    assert cleared_state is None
+
+
+@pytest.mark.asyncio
+async def test_draft_edit_cancel(admin_service: AdminBotService, test_db: DatabaseManager):
+    """Verifies that /cancel clears the edit state and leaves draft pending."""
+    from bot.admin_bot import ReplyState
+
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock()
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="mansurjon_07",
+        contact_user_id=8036556250,
+        source_message_id=706,
+        incoming_text="Salom",
+        proposed_reply="Salom javob",
+    )
+
+    fsm_context = admin_service.dp.fsm.get_context(bot=admin_service.bot or MagicMock(), chat_id=owner_id, user_id=owner_id)
+    await fsm_context.set_state(ReplyState.waiting_for_draft_edit)
+    await fsm_context.update_data(draft_id=draft.id, created_ts=__import__("datetime").datetime.now().timestamp())
+
+    edit_msg_handler = None
+    for h in admin_service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "process_draft_edit_message":
+            edit_msg_handler = h.callback
+            break
+
+    fake_msg = MagicMock()
+    fake_msg.from_user.id = owner_id
+    fake_msg.text = "/cancel"
+    fake_msg.reply = AsyncMock()
+
+    await edit_msg_handler(fake_msg, state=fsm_context)
+
+    # State cleared
+    assert await fsm_context.get_state() is None
+    # Nothing sent
+    assert userbot_send_mock.await_count == 0
+    # Draft is still pending
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_draft_edit_direct_reply_fallback(admin_service: AdminBotService, test_db: DatabaseManager):
+    """Verifies that replying to a draft prompt without active FSM state still sends the edited draft."""
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock(return_value=MagicMock(id=1000))
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="mansurjon_07",
+        contact_user_id=8036556250,
+        source_message_id=707,
+        incoming_text="Qayerdasan?",
+        proposed_reply="Hozir boraman",
+    )
+
+    fsm_context = admin_service.dp.fsm.get_context(bot=admin_service.bot or MagicMock(), chat_id=owner_id, user_id=owner_id)
+    await fsm_context.clear()  # No state!
+
+    fallback_handler = None
+    for h in admin_service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_fallback_natural_text":
+            fallback_handler = h.callback
+            break
+    assert fallback_handler is not None
+
+    fake_msg = MagicMock()
+    fake_msg.from_user.id = owner_id
+    fake_msg.text = "ertaga abetdan keyin go"
+    fake_msg.reply = AsyncMock()
+    fake_msg.reply_to_message = MagicMock()
+    fake_msg.reply_to_message.text = f"✍️ Qoralama #{draft.id} uchun yangi javob matnini yozing:"
+    fake_msg.reply_to_message.caption = None
+    fake_msg.reply_to_message.chat.id = owner_id
+    fake_msg.reply_to_message.message_id = 777
+
+    await fallback_handler(fake_msg, state=fsm_context)
+
+    # Draft status must be edited_sent
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "edited_sent"
+    assert d_after.proposed_reply == "ertaga abetdan keyin go"
+
+    # Userbot must have sent the message
+    assert userbot_send_mock.await_count == 1
+    userbot_send_mock.assert_awaited_with("@mansurjon_07", "ertaga abetdan keyin go")
+
+
+@pytest.mark.asyncio
+async def test_draft_edit_user_id_fallback_on_network_error(admin_service: AdminBotService, test_db: DatabaseManager):
+    """Verifies that if sending by @username raises an exception, it falls back to user_id."""
+    from bot.admin_bot import ReplyState
+    owner_id = 7992504344
+
+    async def side_effect_send(peer, text):
+        if str(peer).startswith("@"):
+            raise RuntimeError("Cannot resolve peer by username")
+        return MagicMock(id=1001)
+
+    userbot_send_mock = AsyncMock(side_effect=side_effect_send)
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="mansurjon_07",
+        contact_user_id=8036556250,
+        source_message_id=708,
+        incoming_text="Salom",
+        proposed_reply="Salom javob",
+    )
+
+    fsm_context = admin_service.dp.fsm.get_context(bot=admin_service.bot or MagicMock(), chat_id=owner_id, user_id=owner_id)
+
+    edit_msg_handler = None
+    for h in admin_service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "process_draft_edit_message":
+            edit_msg_handler = h.callback
+            break
+
+    await fsm_context.set_state(ReplyState.waiting_for_draft_edit)
+    await fsm_context.update_data(draft_id=draft.id, created_ts=__import__("datetime").datetime.now().timestamp())
+
+    fake_msg = MagicMock()
+    fake_msg.from_user.id = owner_id
+    fake_msg.text = "Yangi tahrirlangan matn"
+    fake_msg.reply = AsyncMock()
+
+    await edit_msg_handler(fake_msg, state=fsm_context)
+
+    # First attempt was @mansurjon_07 (failed), second was 8036556250 (succeeded)
+    assert userbot_send_mock.await_count == 2
+    userbot_send_mock.assert_any_await("@mansurjon_07", "Yangi tahrirlangan matn")
+    userbot_send_mock.assert_any_await("8036556250", "Yangi tahrirlangan matn")
+
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "edited_sent"
+
+
+@pytest.mark.asyncio
+async def test_draft_edit_routing_not_intercepted_by_fallback(admin_service: AdminBotService, test_db: DatabaseManager):
+    """
+    Verifies that when user is in ReplyState.waiting_for_draft_edit,
+    an update fed through the dispatcher is routed to process_draft_edit_message
+    and NOT swallowed by fallback text handlers.
+    """
+    from aiogram.types import Update, Message, Chat, User
+    from bot.admin_bot import ReplyState
+
+    owner_id = 7992504344
+    userbot_send_mock = AsyncMock(return_value=MagicMock(id=888))
+    admin_service.set_userbot_sender(userbot_send_mock)
+
+    draft = await test_db.create_draft(
+        contact_username="mansurjon_07",
+        contact_user_id=8036556250,
+        source_message_id=709,
+        incoming_text="Ertaga chiqamiz bulmasa",
+        proposed_reply="Ertaga chiqamiz",
+    )
+
+    mock_bot = MagicMock()
+    mock_bot.send_message = AsyncMock()
+
+    # Set user state in dispatcher
+    fsm_context = admin_service.dp.fsm.get_context(bot=mock_bot, chat_id=owner_id, user_id=owner_id)
+    await fsm_context.set_state(ReplyState.waiting_for_draft_edit)
+    await fsm_context.update_data(draft_id=draft.id, created_ts=__import__("datetime").datetime.now().timestamp())
+
+    # Create mock message update
+    fake_user = User(id=owner_id, is_bot=False, first_name="Boss")
+    fake_chat = Chat(id=owner_id, type="private")
+    fake_msg = Message(
+        message_id=991,
+        date=__import__("datetime").datetime.now(),
+        chat=fake_chat,
+        from_user=fake_user,
+        text="ertaga abetdan keyin go",
+    )
+    fake_update = Update(update_id=1, message=fake_msg)
+
+    await admin_service.dp.feed_update(mock_bot, fake_update)
+
+    # Userbot must have been called with edited text!
+    assert userbot_send_mock.await_count == 1
+    userbot_send_mock.assert_awaited_with("@mansurjon_07", "ertaga abetdan keyin go")
+
+    d_after = await test_db.get_draft_by_id(draft.id)
+    assert d_after.status == "edited_sent"
+    assert d_after.proposed_reply == "ertaga abetdan keyin go"
+
+

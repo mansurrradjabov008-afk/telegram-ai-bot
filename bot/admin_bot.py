@@ -12,7 +12,7 @@ from typing import Optional, Callable, Dict, Any, List
 import pytz
 
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -367,6 +367,138 @@ class AdminBotService:
         if not effective_id:
             return False
         return user_id == effective_id
+
+    async def _execute_draft_edit_and_send(
+        self,
+        message: types.Message,
+        draft_id: int,
+        new_text: str,
+        state: Optional[FSMContext] = None,
+        card_chat_id: Optional[int] = None,
+        card_msg_id: Optional[int] = None,
+    ) -> bool:
+        clean_text = new_text.strip() if new_text else ""
+        if not clean_text:
+            await safe_reply(message, "⚠️ Xabar matni bo'sh bo'lishi mumkin emas.")
+            return False
+
+        draft = await self.db_manager.get_draft_by_id(draft_id)
+        if not draft:
+            if state:
+                await state.clear()
+            await safe_reply(message, f"⚠️ Qoralama #{draft_id} topilmadi.")
+            return False
+
+        if not draft.is_pending:
+            if state:
+                await state.clear()
+            status_lbl = getattr(draft, "status", "noma'lum")
+            await safe_reply(
+                message,
+                f"ℹ️ <b>Qoralama #{draft_id} allaqachon ko'rib chiqilgan!</b>\nHolat: <code>{html.escape(str(status_lbl))}</code>",
+                parse_mode="HTML",
+            )
+            return False
+
+        now_iso = datetime.now().isoformat()
+        if draft.expires_at <= now_iso:
+            await self.db_manager.resolve_draft_atomic(draft.id, "expired")
+            if state:
+                await state.clear()
+            await safe_reply(message, f"⚠️ Qoralama #{draft_id} muddati tugagan (24 soat).")
+            return False
+
+        # Check if owner already replied manually before sending edited reply
+        if self._manual_reply_check_fn and (draft.contact_user_id or draft.contact_username):
+            target_peer = draft.contact_user_id or f"@{draft.contact_username}"
+            replied_manually = await self._manual_reply_check_fn(target_peer, draft.source_message_id)
+            if replied_manually:
+                await self.db_manager.resolve_draft_atomic(draft.id, "superseded")
+                if state:
+                    await state.clear()
+                await safe_reply(
+                    message,
+                    f"ℹ️ <b>Siz allaqachon bu kontaktga o'zingiz qo'lda yozgansiz!</b>\n"
+                    f"Qoralama #{draft.id} bekor qilindi (status: superseded).",
+                    parse_mode="HTML",
+                )
+                return False
+
+        success = await self.db_manager.resolve_draft_atomic(draft_id, "edited_sent", edited_reply=clean_text)
+        if state:
+            await state.clear()
+        if not success:
+            await safe_reply(message, f"⚠️ Qoralama #{draft_id} allaqachon ko'rib chiqilgan.")
+            return False
+
+        sent_msg = None
+        send_error = None
+        if self._userbot_send_fn:
+            peers_to_try = []
+            if draft.contact_username:
+                peers_to_try.append(f"@{draft.contact_username}")
+            if draft.contact_user_id:
+                peers_to_try.append(str(draft.contact_user_id))
+
+            for peer in peers_to_try:
+                try:
+                    sent_msg = await self._userbot_send_fn(peer, clean_text)
+                    if sent_msg:
+                        send_error = None
+                        break
+                except Exception as e:
+                    logger.warning(f"Userbot send failed for peer {peer} on draft #{draft_id}: {e}")
+                    send_error = e
+
+            if sent_msg and self.memory_service:
+                target_user_id = draft.contact_user_id
+                if not target_user_id and draft.contact_username:
+                    c = await self.db_manager.get_contact_by_username(draft.contact_username)
+                    target_user_id = c.user_id if c else None
+                if target_user_id:
+                    try:
+                        await self.memory_service.log_message(
+                            contact_user_id=target_user_id,
+                            tg_message_id=getattr(sent_msg, "id", 0),
+                            sender="owner_edited",
+                            text=clean_text,
+                            username=draft.contact_username,
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to log message in memory_service: {e}")
+
+        # Update original approval card if identifiers are provided
+        if card_chat_id and card_msg_id and self.bot:
+            try:
+                safe_reply_prev = html.escape(clean_text)
+                await self.bot.edit_message_text(
+                    f"✅ <b>Qoralama #{draft_id} tahrirlanib profilingiz nomidan yuborildi!</b>\n\n"
+                    f"💬 <b>Yuborilgan javob:</b> <i>\"{safe_reply_prev}\"</i>",
+                    chat_id=card_chat_id,
+                    message_id=card_msg_id,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        safe_text = html.escape(clean_text)
+        target_info = f"@{draft.contact_username}" if draft.contact_username else f"ID: {draft.contact_user_id}"
+        if send_error and not sent_msg:
+            await safe_reply(
+                message,
+                f"⚠️ <b>Qoralama saqlandi, ammo Telegram orqali yuborishda xatolik yuz berdi:</b>\n"
+                f"<code>{html.escape(str(send_error))}</code>",
+                parse_mode="HTML",
+            )
+        else:
+            await safe_reply(
+                message,
+                f"✅ <b>Tahrirlangan javob muvaffaqiyatli yuborildi! (Qoralama #{draft_id})</b>\n\n"
+                f"👤 <b>Kimga:</b> <code>{html.escape(target_info)}</code>\n"
+                f"💬 <b>Matn:</b> <i>\"{safe_text}\"</i>",
+                parse_mode="HTML",
+            )
+        return True
 
     def _setup_handlers(self):
         dp = self.dp
@@ -1739,7 +1871,7 @@ class AdminBotService:
                 return
             await _render_contacts_list(message, is_callback=False)
 
-        @dp.message(F.text & ~F.text.startswith("/") & F.text.regexp(r"(?i)(?:^|.*?)@([a-zA-Z0-9_]{3,32})\s+(.+)"))
+        @dp.message(StateFilter(None), F.text & ~F.text.startswith("/") & F.text.regexp(r"(?i)(?:^|.*?)@([a-zA-Z0-9_]{3,32})\s+(.+)"))
         async def handle_natural_crm_or_schedule(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
@@ -2078,13 +2210,64 @@ class AdminBotService:
             await callback.answer()
 
 
-        @dp.message(F.text & ~F.text.startswith("/"))
+        @dp.message(ReplyState.waiting_for_draft_edit)
+        async def process_draft_edit_message(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+
+            if message.text and message.text.strip().lower() == "/cancel":
+                await state.clear()
+                return await safe_reply(message, "🛑 Qoralamani tahrirlash bekor qilindi.")
+
+            data = await state.get_data()
+            created_ts = data.get("created_ts", 0)
+            if datetime.now().timestamp() - created_ts > 1800:
+                await state.clear()
+                return await safe_reply(message, "⚠️ Tahrirlash vaqti tugadi (30 daqiqa). Qaytadan urinib ko'ring.")
+
+            draft_id = data.get("draft_id")
+            if not draft_id:
+                await state.clear()
+                return await safe_reply(message, "⚠️ Qoralama ID topilmadi. Qaytadan urinib ko'ring.")
+
+            card_chat_id = data.get("card_chat_id")
+            card_msg_id = data.get("card_msg_id")
+
+            await self._execute_draft_edit_and_send(
+                message=message,
+                draft_id=draft_id,
+                new_text=message.text or "",
+                state=state,
+                card_chat_id=card_chat_id,
+                card_msg_id=card_msg_id,
+            )
+
+        @dp.message(StateFilter(None), F.text & ~F.text.startswith("/"))
         async def handle_fallback_natural_text(message: types.Message, state: FSMContext):
             if not self._is_admin(message.from_user.id):
                 return
             current_state = await state.get_state()
             if current_state:
                 return
+
+            # BULLETPROOF FALLBACK: Check if this message is a direct reply to a draft prompt or draft card
+            if message.reply_to_message:
+                reply_txt = message.reply_to_message.text or message.reply_to_message.caption or ""
+                m = re.search(r"(?:qoralama\s*(?:javob\s*)?\(?#|#)(\d+)", reply_txt, re.IGNORECASE)
+                if m:
+                    extracted_draft_id = int(m.group(1))
+                    d = await self.db_manager.get_draft_by_id(extracted_draft_id)
+                    if d and d.is_pending:
+                        card_chat_id = message.reply_to_message.chat.id
+                        card_msg_id = message.reply_to_message.message_id
+                        return await self._execute_draft_edit_and_send(
+                            message=message,
+                            draft_id=extracted_draft_id,
+                            new_text=message.text or "",
+                            state=state,
+                            card_chat_id=card_chat_id,
+                            card_msg_id=card_msg_id,
+                        )
 
             handled = await _schedule_and_respond(message, message.text)
             if handled:
@@ -2863,89 +3046,21 @@ class AdminBotService:
                 return await callback.answer("⚠️ Qoralama muddati tugagan (24 soat).", show_alert=True)
 
             await state.set_state(ReplyState.waiting_for_draft_edit)
-            await state.update_data(draft_id=draft_id, created_ts=datetime.now().timestamp())
-            await callback.message.reply(
+            card_chat_id = callback.message.chat.id if callback.message else None
+            card_msg_id = callback.message.message_id if callback.message else None
+            await state.update_data(
+                draft_id=draft_id,
+                created_ts=datetime.now().timestamp(),
+                card_chat_id=card_chat_id,
+                card_msg_id=card_msg_id,
+            )
+            prompt_msg = await callback.message.reply(
                 f"✍️ <b>Qoralama #{draft_id} uchun yangi javob matnini yozing:</b>\n\n"
-                f"<i>(Bekor qilish uchun <code>/cancel</code> deb yozing; vaqt limiti 5 daqiqa)</i>",
+                f"<i>(Bekor qilish uchun <code>/cancel</code> deb yozing; vaqt limiti 30 daqiqa)</i>",
                 parse_mode="HTML",
             )
+            await state.update_data(prompt_msg_id=prompt_msg.message_id)
             await callback.answer()
-
-        @dp.message(ReplyState.waiting_for_draft_edit)
-        async def process_draft_edit_message(message: types.Message, state: FSMContext):
-            if not self._is_admin(message.from_user.id):
-                return
-
-            if message.text and message.text.strip().lower() == "/cancel":
-                await state.clear()
-                return await safe_reply(message, "🛑 Qoralamani tahrirlash bekor qilindi.")
-
-            data = await state.get_data()
-            created_ts = data.get("created_ts", 0)
-            if datetime.now().timestamp() - created_ts > 300:
-                await state.clear()
-                return await safe_reply(message, "⚠️ Tahrirlash vaqti tugadi (5 daqiqa). Qaytadan urinib ko'ring.")
-
-            draft_id = data.get("draft_id")
-            new_text = message.text.strip() if message.text else ""
-            if not new_text:
-                return await safe_reply(message, "⚠️ Xabar matni bo'sh bo'lishi mumkin emas.")
-
-            draft = await self.db_manager.get_draft_by_id(draft_id)
-            if not draft or not draft.is_pending:
-                await state.clear()
-                return await safe_reply(message, "⚠️ Qoralama allaqachon ko'rib chiqilgan yoki eskirgan.")
-
-            now_iso = datetime.now().isoformat()
-            if draft.expires_at <= now_iso:
-                await self.db_manager.resolve_draft_atomic(draft.id, "expired")
-                await state.clear()
-                return await safe_reply(message, "⚠️ Qoralama muddati tugagan (24 soat).")
-
-            # Check if owner already replied manually before sending edited reply
-            if self._manual_reply_check_fn and (draft.contact_user_id or draft.contact_username):
-                target_peer = draft.contact_user_id or f"@{draft.contact_username}"
-                replied_manually = await self._manual_reply_check_fn(target_peer, draft.source_message_id)
-                if replied_manually:
-                    await self.db_manager.resolve_draft_atomic(draft.id, "superseded")
-                    await state.clear()
-                    return await safe_reply(
-                        message,
-                        f"ℹ️ <b>Siz allaqachon bu kontaktga o'zingiz qo'lda yozgansiz!</b>\n"
-                        f"Qoralama #{draft.id} bekor qilindi (status: superseded).",
-                        parse_mode="HTML",
-                    )
-
-            success = await self.db_manager.resolve_draft_atomic(draft_id, "edited_sent", edited_reply=new_text)
-            await state.clear()
-            if not success:
-                return await safe_reply(message, "⚠️ Qoralama allaqachon ko'rib chiqilgan yoki eskirgan.")
-
-            if self._userbot_send_fn:
-                peer = f"@{draft.contact_username}" if draft.contact_username else str(draft.contact_user_id or "")
-                if peer:
-                    sent_msg = await self._userbot_send_fn(peer, new_text)
-                    if self.memory_service and sent_msg:
-                        target_user_id = draft.contact_user_id
-                        if not target_user_id and draft.contact_username:
-                            c = await self.db_manager.get_contact_by_username(draft.contact_username)
-                            target_user_id = c.user_id if c else None
-                        if target_user_id:
-                            await self.memory_service.log_message(
-                                contact_user_id=target_user_id,
-                                tg_message_id=getattr(sent_msg, "id", 0),
-                                sender="owner_edited",
-                                text=new_text,
-                                username=draft.contact_username,
-                            )
-
-            safe_text = html.escape(new_text)
-            await safe_reply(
-                message,
-                f"✅ <b>Tahrirlangan javob muvaffaqiyatli yuborildi! (Qoralama #{draft_id})</b>\n\n"
-                f"💬 <b>Matn:</b> <i>\"{safe_text}\"</i>",
-                parse_mode="HTML",
-            )
 
     async def send_draft_for_approval(self, draft: Draft):
         """Sends interactive draft approval request to Boss with inline action buttons."""
