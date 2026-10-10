@@ -62,8 +62,7 @@ def get_main_reply_keyboard() -> types.ReplyKeyboardMarkup:
         keyboard=[
             [types.KeyboardButton(text="🧠 Xotira"), types.KeyboardButton(text="👥 Kontaktlar")],
             [types.KeyboardButton(text="📝 Qoralamalar"), types.KeyboardButton(text="⏰ Vazifalar")],
-            [types.KeyboardButton(text="📰 Executive Digest"), types.KeyboardButton(text="⚙️ Avtonomiya (Mode)")],
-            [types.KeyboardButton(text="⚡ Tizim holati"), types.KeyboardButton(text="❓ Yordam")],
+            [types.KeyboardButton(text="📰 Executive Digest"), types.KeyboardButton(text="⚡ Tizim holati")],
         ],
         resize_keyboard=True,
         persistent=True,
@@ -1134,7 +1133,7 @@ class AdminBotService:
 
             existing = await self.db_manager.get_contact_by_username(target)
             user_id = existing.user_id if existing else abs(hash(target)) % 1000000000
-            mode = existing.mode if existing else "draft"
+            mode = existing.mode if existing else "auto"
 
             await self.db_manager.upsert_contact(
                 user_id=user_id,
@@ -2045,14 +2044,12 @@ class AdminBotService:
                 )
 
             builder.button(text="➕ Yangi kontakt", callback_data="crm:add_prompt")
-            builder.button(text="🔄 Yangilash", callback_data="crm:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
             adjust_layout = []
             for _ in contacts:
                 adjust_layout.extend([2, 3, 1])
             adjust_layout.append(2)
-            adjust_layout.append(1)
             builder.adjust(*adjust_layout)
 
             content = "\n".join(lines)
@@ -2135,10 +2132,8 @@ class AdminBotService:
                 )
                 builder = InlineKeyboardBuilder()
                 builder.button(text="✍️ Yangi vazifa rejalashtirish", callback_data="schedule:wizard")
-                builder.button(text="📜 Bajarilganlar tarixi", callback_data="task_hist:open")
-                builder.button(text="🔄 Yangilash", callback_data="tasks:refresh")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1, 1, 2)
+                builder.adjust(1, 1)
                 if is_callback:
                     await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 else:
@@ -2166,14 +2161,12 @@ class AdminBotService:
                 builder.button(text="🛑 Barchasini bekor qilish", callback_data="task_bulk:cancel_all")
 
             builder.button(text="✍️ Yangi vazifa qo'shish", callback_data="schedule:wizard")
-            builder.button(text="📜 Tarix", callback_data="task_hist:open")
-            builder.button(text="🔄 Yangilash", callback_data="tasks:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
             adjust_pattern = [2] * len(tasks)
             if len(tasks) >= 2:
                 adjust_pattern.append(1)
-            adjust_pattern.extend([1, 1, 2])
+            adjust_pattern.extend([1, 1])
             builder.adjust(*adjust_pattern)
 
             content = "\n".join(lines)
@@ -2358,7 +2351,7 @@ class AdminBotService:
                 username=username,
                 relationship_type=role,
                 addressing_style=style,
-                mode="draft",
+                mode="auto",
                 custom_instructions=instruction,
             )
 
@@ -2372,7 +2365,7 @@ class AdminBotService:
             safe_peer = html.escape(peer)
             await callback.message.edit_text(
                 f"✨ <b>{safe_name} ({safe_peer}) muvaffaqiyatli /contacts ro'yxatiga qo'shildi!</b>\n\n"
-                f"⚙️ <b>Avtonomiya rejimi:</b> 📝 <b>draft (Qoralama / Tasdiq bilan)</b>\n"
+                f"⚙️ <b>Avtonomiya rejimi:</b> ⚡ <b>auto (To'liq avtomat / AI bevosita javob beradi)</b>\n"
                 f"🗣 <b>Murojaat uslubi:</b> <code>{style_name}</code>\n"
                 f"🛡 <b>Endi bot bu inson bilan keyingi safar avtomatik suhbatlasha oladi!</b>\n\n"
                 f"<i>Kelgan oxirgi xabarga javob yuborasizmi?</i>",
@@ -3494,9 +3487,8 @@ class AdminBotService:
                     "• <code>auto</code> rejimdagi kontakt xabarida nozik mavzu (to'lov, karta, uchrashuv) aniqlanganda"
                 )
                 builder = InlineKeyboardBuilder()
-                builder.button(text="🔄 Yangilash", callback_data="drafts:refresh")
                 builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(2)
+                builder.adjust(1)
                 if is_callback:
                     await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 else:
@@ -3537,13 +3529,12 @@ class AdminBotService:
                 builder.button(text=f"🚀 Barchasini tasdiqlash ({len(drafts)})", callback_data="draft_bulk:send_all")
                 builder.button(text="❌ Barchasini rad etish", callback_data="draft_bulk:reject_all")
 
-            builder.button(text="🔄 Yangilash", callback_data="drafts:refresh")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
             adjust_layout = [3] * len(drafts)
             if len(drafts) >= 1:
                 adjust_layout.append(2)
-            adjust_layout.append(2)
+            adjust_layout.append(1)
             builder.adjust(*adjust_layout)
 
             content = "\n".join(lines)

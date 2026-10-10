@@ -71,7 +71,7 @@ class DatabaseManager:
         username: Optional[str] = None,
         relationship_type: str = "general",
         addressing_style: str = "siz",
-        mode: str = "draft",
+        mode: str = "auto",
         custom_instructions: Optional[str] = None,
         language_code: str = "uz",
     ) -> Contact:
@@ -80,7 +80,7 @@ class DatabaseManager:
             username = username[1:]
 
         if mode not in ("auto", "draft", "mute"):
-            mode = "draft"
+            mode = "auto"
 
         query = """
         INSERT INTO contacts (user_id, username, full_name, relationship_type, addressing_style, mode, custom_instructions, language_code, updated_at)

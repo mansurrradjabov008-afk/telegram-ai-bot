@@ -14,7 +14,7 @@ class Contact:
     full_name: str
     relationship_type: str = "general"  # yaqin_dost, rasmiy, hamkor, ustoz, general
     addressing_style: str = "siz"  # "siz" (hurmat bilan) or "sen" (yaqin do'st / tengdosh)
-    mode: str = "draft"  # "auto", "draft", "mute"
+    mode: str = "auto"  # "auto", "draft", "mute"
     custom_instructions: Optional[str] = None
     language_code: str = "uz"
     created_at: Optional[str] = None

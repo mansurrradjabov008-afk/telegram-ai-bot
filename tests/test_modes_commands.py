@@ -180,12 +180,12 @@ async def test_mode_command_lifecycle(admin_service: AdminBotService, test_db: D
 
 
 # ============================================================================
-# 4. /crm DEFAULTS NEW CONTACTS TO 'draft' MODE
+# 4. /crm DEFAULTS NEW CONTACTS TO 'auto' MODE (Full Automation)
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_crm_creates_contact_in_draft_mode(test_db: DatabaseManager):
-    # Insert new contact without explicit mode
+async def test_crm_creates_contact_in_auto_mode(test_db: DatabaseManager):
+    # Insert new contact without explicit mode -> must default to 'auto'
     new_contact = await test_db.upsert_contact(
         user_id=222,
         username="sherzod_pro",
@@ -194,19 +194,19 @@ async def test_crm_creates_contact_in_draft_mode(test_db: DatabaseManager):
         addressing_style="siz",
         custom_instructions="Rasmiy muloqot",
     )
-    assert new_contact.mode == "draft"
+    assert new_contact.mode == "auto"
 
     # Updating contact retains their chosen mode
-    await test_db.update_contact_mode(222, "auto")
+    await test_db.update_contact_mode(222, "draft")
     updated_contact = await test_db.upsert_contact(
         user_id=222,
         username="sherzod_pro",
         full_name="Sherzod Yangi",
         relationship_type="yaqin_hamkor",
         addressing_style="siz",
-        mode="auto",
+        mode="draft",
     )
-    assert updated_contact.mode == "auto"
+    assert updated_contact.mode == "draft"
 
 
 # ============================================================================

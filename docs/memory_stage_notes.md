@@ -488,8 +488,23 @@ Current Branch: `stage-memory-hardening`
   - RED: All 3 failed before fix (missing buttons, missing handlers, loose draft regex collision).
   - GREEN: All 3 passed in 4.18s after implementation and regex precedence fix.
   - Regression Suite: 27/27 tests passed in 10.68s. Full suite: 288/288 passed.
+---
 
-
-
-
+## 13. Full Automation & UI Clutter Streamlining (Hands-Free Executive Mode)
+- **100% Hands-Free Default Autonomy (`⚡ auto`)**:
+  - `database/crud.py:74`: Updated `upsert_contact` default `mode` from `"draft"` to `"auto"`.
+  - `database/models.py:17`: Updated `Contact` dataclass default `mode` to `"auto"`.
+  - `database/connection.py:25`: Updated `DB_SCHEMA` definition to `mode TEXT DEFAULT 'auto'`.
+  - `bot/admin_bot.py`: Updated contact creation wizards (CRM add & escalate save) to default to `auto`.
+  - Production DB Migration: All existing contacts in `data/butler.db` safely updated to `auto` (8/8 contacts now `auto`).
+- **Elimination of Non-Essential Clutter Buttons**:
+  - `get_main_reply_keyboard`: Streamlined from 8 buttons down to 6 core executive buttons (`🧠 Xotira`, `👥 Kontaktlar`, `📝 Qoralamalar`, `⏰ Vazifalar`, `📰 Executive Digest`, `⚡ Tizim holati`). Redundant manual `⚙️ Avtonomiya (Mode)` (now automated) and `❓ Yordam` (handled transparently by natural language) removed from persistent keyboard.
+  - `_render_contacts_list`: Redundant `🔄 Yangilash` removed.
+  - `_render_drafts_list`: Redundant `🔄 Yangilash` removed.
+  - `_render_tasks_list`: Redundant `🔄 Yangilash` and `📜 Tarix` clutter buttons removed from active pending tasks view.
+- **Verification (P7 Red-Green Protocol)**:
+  - `test_crm_creates_contact_in_auto_mode` (in `tests/test_modes_commands.py`) and `test_main_reply_keyboard_structure` (in `tests/test_ui_interactive_hubs.py`).
+  - RED: Both failed before implementation (`AssertionError: assert 'draft' == 'auto'`, `AssertionError: Expected 6 buttons, got 8`).
+  - GREEN: Both passed cleanly after implementation.
+  - Regression Suite: 43/43 tests passed in 16.49s. Zero regressions across all test suites.
 

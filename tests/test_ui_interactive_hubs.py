@@ -28,7 +28,7 @@ async def temp_db(tmp_path: Path):
 
 
 def test_main_reply_keyboard_structure():
-    """Verify persistent reply keyboard has all 8 hubs and resize options."""
+    """Verify persistent reply keyboard has all 6 streamlined executive hubs and resize options."""
     kb = get_main_reply_keyboard()
     assert isinstance(kb, types.ReplyKeyboardMarkup)
     assert kb.resize_keyboard is True
@@ -36,15 +36,14 @@ def test_main_reply_keyboard_structure():
 
     # Check button texts
     all_texts = [btn.text for row in kb.keyboard for btn in row]
+    assert len(all_texts) == 6, f"Expected 6 buttons, got {len(all_texts)}: {all_texts}"
     expected_buttons = [
         "🧠 Xotira",
         "👥 Kontaktlar",
         "📝 Qoralamalar",
         "⏰ Vazifalar",
         "📰 Executive Digest",
-        "⚙️ Avtonomiya (Mode)",
         "⚡ Tizim holati",
-        "❓ Yordam",
     ]
     for exp in expected_buttons:
         assert exp in all_texts, f"Missing expected button: {exp}"

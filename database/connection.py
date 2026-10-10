@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     full_name TEXT NOT NULL,
     relationship_type TEXT DEFAULT 'general',
     addressing_style TEXT DEFAULT 'siz', -- 'siz' (hurmat) or 'sen' (dostona/yaqin)
-    mode TEXT DEFAULT 'draft' CHECK(mode IN ('auto', 'draft', 'mute')),
+    mode TEXT DEFAULT 'auto' CHECK(mode IN ('auto', 'draft', 'mute')),
     custom_instructions TEXT,
     language_code TEXT DEFAULT 'uz',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
