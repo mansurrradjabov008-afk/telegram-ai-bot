@@ -47,6 +47,7 @@ def contains_injection_patterns(text: str) -> Tuple[bool, Optional[str]]:
         r"\b(disregard\s+(all\s+)?rules)\b",
         r"\b(har\s+doim\s+shunday\s+javob\s+ber)\b",
         r"\b(barcha\s+qoidalarni\s+bekor\s+qil)\b",
+        r"\b(ko'rsatmalarni\s+bekor\s+qil|qoidalarni\s+bekor\s+qil)\b",
         r"\b(забудь\s+(все\s+)?инструкции)\b",
     ]
 
@@ -84,8 +85,11 @@ def is_forbidden_topic(text: str, category: Optional[str] = None) -> Tuple[bool,
         clean_kw = kw.lower().strip()
         if not clean_kw:
             continue
-        # Match as distinct word or token
-        pattern = r"\b" + re.escape(clean_kw) + r"\b"
+        if len(clean_kw) <= 3:
+            pattern = r"\b" + re.escape(clean_kw) + r"\b"
+        else:
+            # Word-start match to catch inflectional suffixes (e.g. byudjeti, maoshi, moliyaviy)
+            pattern = r"\b" + re.escape(clean_kw)
         if re.search(pattern, normalized):
             return True, f"forbidden_keyword:{clean_kw}"
 

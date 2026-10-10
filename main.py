@@ -55,6 +55,7 @@ async def main():
     digest_service = DigestService(db_manager, ai_engine)
     scheduler_service = SchedulerService(db_manager)
     memory_service = MemoryService(db_manager)
+    await memory_service.startup_self_check()
     await memory_service.purge_retention()
 
     # 3. Initialize Bot Services

@@ -5,8 +5,11 @@ sender labeling, media marker handling, and message edits.
 """
 
 import logging
+import os
+from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 from config import settings
+from database.connection import get_db
 from database.crud import DatabaseManager
 from database.models import MemContact, MemMessage, MemSummary
 from services.memory_embedding import MemoryEmbeddingService
@@ -40,6 +43,53 @@ class MemoryService:
             db_manager=db_manager,
             retriever=self.retriever,
         )
+        self.is_healthy: bool = True
+
+    async def startup_self_check(self) -> bool:
+        """
+        Fail-open startup self-check:
+        - Validates config (MEMORY_ENABLED, categories enum, etc.)
+        - Runs PRAGMA quick_check; on DB connection
+        - Checks writeability of DB directory
+        - Fail-open: if self-check fails, log error and set self.is_healthy = False,
+          NEVER crash the bot or block userbot startup.
+        """
+        try:
+            if not getattr(settings, "MEMORY_ENABLED", True):
+                logger.info("Memory is disabled via settings (MEMORY_ENABLED=False).")
+                self.is_healthy = False
+                return True
+
+            # Validate canonical categories
+            from services.memory_categories import CANONICAL_CATEGORIES
+            if not CANONICAL_CATEGORIES or "other" not in CANONICAL_CATEGORIES:
+                logger.error("Memory self-check failed: Canonical categories definition is invalid.")
+                self.is_healthy = False
+                return False
+
+            # Check DB quick_check
+            async with get_db(self.db_manager.db_path) as db:
+                cur = await db.execute("PRAGMA quick_check;")
+                row = await cur.fetchone()
+                if not row or row[0] != "ok":
+                    logger.error("Memory self-check failed: DB quick_check was not ok.")
+                    self.is_healthy = False
+                    return False
+
+            # Check writeability of DB directory
+            db_dir = Path(self.db_manager.db_path).resolve().parent
+            if not db_dir.exists() or not os.access(str(db_dir), os.W_OK):
+                logger.error("Memory self-check failed: Database directory is not writable.")
+                self.is_healthy = False
+                return False
+
+            self.is_healthy = True
+            logger.info("MemoryService startup self-check passed successfully.")
+            return True
+        except Exception as e:
+            logger.error(f"MemoryService startup self-check encountered error: {type(e).__name__}; failing open.")
+            self.is_healthy = False
+            return False
 
     async def verify_and_bind_identity(
         self,
@@ -53,7 +103,7 @@ class MemoryService:
         the one memory is bound to: PAUSE memory for that contact, store nothing new,
         and flag for owner notification.
         """
-        if not getattr(settings, "MEMORY_ENABLED", True):
+        if not getattr(settings, "MEMORY_ENABLED", True) or not getattr(self, "is_healthy", True):
             return False, "memory_disabled"
 
         if username:
@@ -151,13 +201,17 @@ class MemoryService:
 
     async def purge_retention(self) -> int:
         """
-        Purges messages older than MEM_MESSAGE_RETENTION_DAYS (default 180).
+        Purges messages older than MEM_MESSAGE_RETENTION_DAYS (default 180),
+        and cleans up conversation_history retention (H4).
         """
         try:
             days = getattr(settings, "MEM_MESSAGE_RETENTION_DAYS", 180)
             deleted_count = await self.db_manager.purge_old_mem_messages(days)
+            hist_deleted = await self.db_manager.cleanup_conversation_history(days)
             if deleted_count > 0:
                 logger.info(f"Purged {deleted_count} expired messages from mem_messages (older than {days} days).")
+            if hist_deleted > 0:
+                logger.info(f"Purged {hist_deleted} expired conversation_history entries (older than {days} days).")
             return deleted_count
         except Exception as e:
             logger.warning(f"Error during memory retention purge: {type(e).__name__}")

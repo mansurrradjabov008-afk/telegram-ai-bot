@@ -33,6 +33,8 @@ from services.schedule_parser import (
     clean_message_text,
     ScheduleParseResult,
 )
+from services.memory_categories import normalize_category, CANONICAL_CATEGORIES, CATEGORY_SYNONYMS
+from services.memory_injection import is_forbidden_topic
 
 logger = logging.getLogger(__name__)
 
@@ -200,13 +202,45 @@ async def safe_send(
     return last_msg
 
 
+def split_message_chunks(text: str, max_chars: int = 4000) -> List[str]:
+    """Splits long text across item/newline boundaries under max_chars."""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    lines = text.split("\n")
+    current_chunk = []
+    current_len = 0
+
+    for line in lines:
+        line_len = len(line) + 1
+        if current_len + line_len > max_chars and current_chunk:
+            chunks.append("\n".join(current_chunk))
+            current_chunk = [line]
+            current_len = line_len
+        else:
+            current_chunk.append(line)
+            current_len += line_len
+
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+
+    return chunks
+
+
 async def safe_reply_or_send_long(
     message: types.Message,
     text: str,
     reply_markup=None,
 ):
-    """Sends text splitting nicely across chunks if needed."""
-    return await safe_reply(message, text, reply_markup=reply_markup, parse_mode="HTML")
+    """Sends text splitting nicely across chunks if needed under 4096 chars."""
+    chunks = split_message_chunks(text, max_chars=4000)
+    last_msg = None
+    for idx, chunk in enumerate(chunks):
+        is_last = (idx == len(chunks) - 1)
+        markup = reply_markup if is_last else None
+        last_msg = await safe_reply(message, chunk, reply_markup=markup, parse_mode="HTML")
+    return last_msg
 
 
 async def safe_edit(
@@ -519,6 +553,7 @@ class AdminBotService:
                 "• <code>/schedule @username HH:MM Matn</code> — Belgilangan vaqtga xabar rejalashtirish\n"
                 "• <code>/tasks</code> — Kutilayotgan rejalashtirilgan xabarlar\n"
                 "• <code>/digest</code> — Kanallar va guruhlardan xulosalar\n"
+                "• <code>/memory @username</code> — Kontakt xotirasini boshqarish va ko'rish\n"
                 "• <code>/status</code> — Tizim holati va avtonomiya hisoboti"
             )
             builder = InlineKeyboardBuilder()
@@ -527,8 +562,9 @@ class AdminBotService:
             builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
             builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
             builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
+            builder.button(text="🧠 Xotira", callback_data="menu:memory")
             builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-            builder.adjust(2, 2, 2)
+            builder.adjust(2, 2, 2, 1)
             await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.message(Command("status"))
@@ -2361,6 +2397,7 @@ class AdminBotService:
                     "• <code>/schedule @username HH:MM Matn</code> — Xabar rejalashtirish\n"
                     "• <code>/tasks</code> — Kutilayotgan rejalashtirilgan xabarlar\n"
                     "• <code>/digest</code> — Kanallar va guruhlardan xulosalar\n"
+                    "• <code>/memory @username</code> — Kontakt xotirasini boshqarish va ko'rish\n"
                     "• <code>/status</code> — Tizim holati"
                 )
                 builder = InlineKeyboardBuilder()
@@ -2369,8 +2406,33 @@ class AdminBotService:
                 builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
                 builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
                 builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
+                builder.button(text="🧠 Xotira", callback_data="menu:memory")
                 builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-                builder.adjust(2, 2, 2)
+                builder.adjust(2, 2, 2, 1)
+                await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            elif action == "memory":
+                await callback.answer()
+                stats = await self.db_manager.get_overall_mem_stats()
+                embed_count = stats.get('embeddings', 0)
+                embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
+                text = (
+                    "🧠 <b>CONTACT MEMORY (KONTAKT XOTIRASI) BOSHQARUVI:</b>\n\n"
+                    f"• <b>Xotirasi faol kontaktlar:</b> <code>{stats.get('contacts_enabled', 0)}</code> ta\n"
+                    f"• <b>Jami xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
+                    f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
+                    f"• <b>Aylanma xulosalar:</b> <code>{stats.get('summaries', 0)}</code> ta\n"
+                    f"• <b>Vektorlar:</b> {embed_str}\n\n"
+                    "📌 <b>Xotira buyruqlari:</b>\n"
+                    "• <code>/memory @username</code> — Kontakt xotirasini ko'rish va aylanma xulosa\n"
+                    "• <code>/memory_facts @username</code> — Faktlarni ko'rish, tasdiqlash yoki o'chirish\n"
+                    "• <code>/remember @username [kategoriya] fakt</code> — Faktni qo'lda kiritish (tasdiqlangan holda)\n"
+                    "• <code>/forget @username</code> — Kontakt xotirasini butunlay o'chirish\n"
+                    "• <code>/memory stats</code> — To'liq xotira statistikasi"
+                )
+                builder = InlineKeyboardBuilder()
+                builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                builder.adjust(1, 1)
                 await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
             elif action == "mode":
                 await callback.answer()
@@ -2581,17 +2643,37 @@ class AdminBotService:
             if not self._is_admin(message.from_user.id):
                 return
             args = message.text[len("/memory"):].strip()
-            if not args:
+            if not args or args.lower() == "help":
                 return await safe_reply(
                     message,
-                    "ℹ️ <b>Contact Memory Boshqaruvi:</b>\n\n"
-                    "📌 <b>Buyruq formati:</b>\n"
+                    "🧠 <b>Contact Memory Boshqaruvi:</b>\n\n"
+                    "📌 <b>Buyruqlar:</b>\n"
                     "• <code>/memory @username</code> yoki <code>/memory &lt;user_id&gt;</code> — Kontakt xotirasi ko'rish\n"
-                    "• <code>/memory_facts @username</code> — Kontakt faktlari va ularni tahrirlash\n"
+                    "• <code>/memory stats</code> — Barcha kontaktlar bo'yicha umumiy statistika\n"
+                    "• <code>/memory_facts @username</code> — Faktlarni ko'rish va tasdiqlash\n"
+                    "• <code>/remember @username [kategoriya] fakt</code> — Faktni qo'lda kiritish (tasdiqlangan holda)\n"
                     "• <code>/forget @username</code> — Kontakt xotirasini butunlay o'chirish\n\n"
-                    "💡 <b>Misol:</b> <code>/memory @farrux</code>",
+                    "💡 <b>Kategoriyalar:</b> <code>identity</code>, <code>preference</code>, <code>interest</code>, <code>important_date</code>, <code>relationship_note</code>, <code>ongoing_topic</code>, <code>other</code>",
                     parse_mode="HTML",
                 )
+
+            if args.lower() == "stats":
+                stats = await self.db_manager.get_overall_mem_stats()
+                embed_count = stats.get("embeddings", 0)
+                embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
+                text = (
+                    "🧠 <b>UMUMIY XOTIRA STATISTIKASI:</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• <b>Xotirasi faol kontaktlar:</b> <code>{stats.get('contacts_enabled', 0)}</code> ta\n"
+                    f"• <b>Jami xabarlar (mem_messages):</b> <code>{stats.get('messages', 0)}</code> ta\n"
+                    f"• <b>Faol faktlar (mem_facts):</b> <code>{stats.get('facts', 0)}</code> ta\n"
+                    f"• <b>Ochiq vazifalar (mem_open_items):</b> <code>{stats.get('open_items', 0)}</code> ta\n"
+                    f"• <b>Aylanma xulosalar (mem_summaries):</b> <code>{stats.get('summaries', 0)}</code> ta\n"
+                    f"• <b>Vektorlar (mem_embeddings):</b> {embed_str}\n"
+                )
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                return await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
             contact = await _resolve_target_contact(args)
             if not contact:
@@ -2610,13 +2692,16 @@ class AdminBotService:
             if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
                 status_str += f" (Sabab: {mem_contact.paused_reason})"
 
-            summary_text = summary.summary_text if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
+            formatted_summary = html.escape(summary.summary_text) if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
 
             open_items_text = ""
             if open_items:
                 open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
                     [f"• {html.escape(it.text)}" for it in open_items[:5]]
                 )
+
+            embed_count = stats.get("embeddings", 0)
+            embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
 
             report = (
                 f"🧠 <b>KONTAKT XOTIRASI:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
@@ -2625,9 +2710,9 @@ class AdminBotService:
                 f"• <b>Xotira holati:</b> {status_str}\n"
                 f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
                 f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
-                f"• <b>Vektorlar:</b> <code>{stats.get('embeddings', 0)}</code> ta\n\n"
+                f"• <b>Vektorlar:</b> {embed_str}\n\n"
                 f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
-                f"{html.escape(summary_text)}"
+                f"{formatted_summary}"
                 f"{open_items_text}"
             )
 
@@ -2638,6 +2723,80 @@ class AdminBotService:
             builder.adjust(2, 1)
 
             await safe_reply(message, report, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(Command("remember"))
+        async def cmd_remember(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            args = message.text[len("/remember"):].strip()
+            if not args:
+                return await safe_reply(
+                    message,
+                    "ℹ️ <b>Faktni qo'lda kiritish (Tasdiqlangan):</b>\n\n"
+                    "Format: <code>/remember @username [kategoriya] Fakt matni</code>\n"
+                    "Misol: <code>/remember @farrux preference Ertalab doim qahva ichadi</code>\n\n"
+                    "💡 <b>Mavjud kategoriyalar:</b>\n"
+                    "<code>identity</code>, <code>preference</code>, <code>interest</code>, <code>important_date</code>, <code>relationship_note</code>, <code>ongoing_topic</code>, <code>other</code>",
+                    parse_mode="HTML",
+                )
+
+            parts = args.split(maxsplit=2)
+            target = parts[0]
+            contact = await _resolve_target_contact(target)
+            if not contact:
+                return await safe_reply(
+                    message,
+                    f"❌ Kontakt <b>'{html.escape(target)}'</b> topilmadi.",
+                    parse_mode="HTML",
+                )
+
+            if len(parts) < 2:
+                return await safe_reply(
+                    message,
+                    "❌ Fakt matni kiritilmadi.\nFormat: <code>/remember @username [kategoriya] Fakt matni</code>",
+                    parse_mode="HTML",
+                )
+
+            category = "other"
+            if len(parts) >= 3:
+                cand = parts[1].lower()
+                if cand in CANONICAL_CATEGORIES or cand in CATEGORY_SYNONYMS:
+                    category = normalize_category(cand)
+                    fact_text = parts[2].strip()
+                else:
+                    fact_text = args[len(target):].strip()
+            else:
+                fact_text = parts[1].strip()
+
+            if not fact_text:
+                return await safe_reply(message, "❌ Fakt matni bo'sh bo'lishi mumkin emas.", parse_mode="HTML")
+
+            is_forbidden, reason = is_forbidden_topic(fact_text, category)
+            if is_forbidden:
+                reason_label = reason or "maxfiy ma'lumot"
+                return await safe_reply(
+                    message,
+                    f"⚠️ <b>Taqiqlangan mavzu:</b> Ushbu fakt xotiraga saqlanmadi (sabab: {html.escape(reason_label)}).",
+                    parse_mode="HTML",
+                )
+
+            fact_id = await self.db_manager.create_mem_fact(
+                contact_user_id=contact.user_id,
+                category=category,
+                text=fact_text,
+                source_type="owner_confirmed",
+                source_message_ids=[-1],
+                confidence=1.0,
+            )
+
+            await safe_reply(
+                message,
+                f"✅ <b>Fakt muvaffaqiyatli saqlandi!</b>\n\n"
+                f"• <b>Kontakt:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
+                f"• <b>Fakt #{fact_id}</b> [<code>{html.escape(category)}</code>]:\n  {html.escape(fact_text)}\n"
+                f"• <b>Manba:</b> egasi tasdiqlagan (confidence: 1.0)",
+                parse_mode="HTML",
+            )
 
         @dp.message(Command("memory_facts"))
         async def cmd_memory_facts(message: types.Message):
@@ -2664,14 +2823,22 @@ class AdminBotService:
                 )
 
             builder = InlineKeyboardBuilder()
+            adjust_layout = []
             lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
             for f in facts[:10]:
                 src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
                 lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                builder.button(text=f"🗑 #{f.id} ni o'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                if f.source_type != "owner_confirmed":
+                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(2)
+                else:
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(1)
 
             builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            builder.adjust(1)
+            adjust_layout.append(1)
+            builder.adjust(*adjust_layout)
 
             await safe_reply(message, "\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -2721,14 +2888,64 @@ class AdminBotService:
                 return await callback.answer("Faol faktlar mavjud emas.", show_alert=True)
 
             builder = InlineKeyboardBuilder()
+            adjust_layout = []
             lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
             for f in facts[:10]:
                 src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
                 lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                builder.button(text=f"🗑 #{f.id} ni o'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                if f.source_type != "owner_confirmed":
+                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(2)
+                else:
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(1)
 
             builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            builder.adjust(1)
+            adjust_layout.append(1)
+            builder.adjust(*adjust_layout)
+            await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("mem_fact_confirm:"))
+        async def handle_mem_fact_confirm(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            contact_user_id = int(parts[1])
+            fact_id = int(parts[2])
+            ok = await self.db_manager.confirm_mem_fact(contact_user_id, fact_id)
+            if ok:
+                await callback.answer(f"✅ #{fact_id} fakt tasdiqlandi!", show_alert=True)
+            else:
+                await callback.answer("Fakt topilmadi yoki allaqachon tasdiqlangan.", show_alert=True)
+
+            contact = await self.db_manager.get_contact_by_id(contact_user_id)
+            if not contact:
+                return await callback.message.edit_text("Kontakt topilmadi.")
+            facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
+            if not facts:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact_user_id}")
+                await callback.message.edit_text("ℹ️ Faol faktlar qolmadi.", reply_markup=builder.as_markup(), parse_mode="HTML")
+                return
+
+            builder = InlineKeyboardBuilder()
+            adjust_layout = []
+            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
+            for f in facts[:10]:
+                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
+                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
+                if f.source_type != "owner_confirmed":
+                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(2)
+                else:
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(1)
+
+            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
+            adjust_layout.append(1)
+            builder.adjust(*adjust_layout)
             await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.callback_query(F.data.startswith("mem_fact_del:"))
@@ -2755,14 +2972,22 @@ class AdminBotService:
                 return
 
             builder = InlineKeyboardBuilder()
+            adjust_layout = []
             lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
             for f in facts[:10]:
                 src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
                 lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                builder.button(text=f"🗑 #{f.id} ni o'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                if f.source_type != "owner_confirmed":
+                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(2)
+                else:
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(1)
 
             builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            builder.adjust(1)
+            adjust_layout.append(1)
+            builder.adjust(*adjust_layout)
             await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.callback_query(F.data.startswith("mem_forget_prompt:"))
@@ -2819,12 +3044,15 @@ class AdminBotService:
             if mem_contact and not mem_contact.memory_enabled and mem_contact.paused_reason:
                 status_str += f" (Sabab: {mem_contact.paused_reason})"
 
-            summary_text = summary.summary_text if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
+            formatted_summary = html.escape(summary.summary_text) if (summary and summary.summary_text) else "<i>(Hozircha xulosa mavjud emas)</i>"
             open_items_text = ""
             if open_items:
                 open_items_text = "\n\n<b>📌 Ochiq vazifalar va va'dalar (Faqat siz uchun):</b>\n" + "\n".join(
                     [f"• {html.escape(it.text)}" for it in open_items[:5]]
                 )
+
+            embed_count = stats.get('embeddings', 0)
+            embed_str = f"<code>{embed_count}</code> ta" if embed_count > 0 else "o'chiq (FTS ishlaydi)"
 
             report = (
                 f"🧠 <b>KONTAKT XOTIRASI:</b> {html.escape(contact.full_name)} (<code>@{contact.username or contact.user_id}</code>)\n"
@@ -2833,9 +3061,9 @@ class AdminBotService:
                 f"• <b>Xotira holati:</b> {status_str}\n"
                 f"• <b>Saqlangan xabarlar:</b> <code>{stats.get('messages', 0)}</code> ta\n"
                 f"• <b>Faol faktlar:</b> <code>{stats.get('facts', 0)}</code> ta\n"
-                f"• <b>Vektorlar:</b> <code>{stats.get('embeddings', 0)}</code> ta\n\n"
+                f"• <b>Vektorlar:</b> {embed_str}\n\n"
                 f"<b>📝 Aylanma xulosa (Rolling Summary):</b>\n"
-                f"{html.escape(summary_text)}"
+                f"{formatted_summary}"
                 f"{open_items_text}"
             )
 

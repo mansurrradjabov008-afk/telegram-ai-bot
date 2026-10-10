@@ -95,12 +95,12 @@ def redact_otps(text: str, mask: str = "[REDACTED]") -> str:
     Preserves regular vocabulary words and numbers without code-like context.
     """
     otp_kws = [
-        r"tasdiqlash\s+kodi(?:ngiz)?",
-        r"bir\s+martalik\s+parol(?:ingiz)?",
-        r"maxfiy\s+kod(?:ingiz)?",
-        r"sms[-\s]?kod(?:ingiz)?",
-        r"kod(?:ingiz)?",
-        r"parol(?:ingiz)?",
+        r"tasdiqlash\s+kodi(?:ngiz|m)?",
+        r"bir\s+martalik\s+parol(?:ingiz|im|i)?",
+        r"maxfiy\s+kod(?:ingiz|im|i)?",
+        r"sms[-\s]?kod(?:ingiz|im|i)?",
+        r"(?<!hisob\s)(?<!pochta\s)(?<!shahar\s)(?<!bank\s)(?<!mfo\s)kod(?:ingiz|im|i)?",
+        r"parol(?:ingiz|im|i)?",
         r"код\s+подтверждения",
         r"одноразовый\s+пароль",
         r"смс[-\s]?код",
@@ -139,11 +139,16 @@ def redact_otps(text: str, mask: str = "[REDACTED]") -> str:
         full = m.group(0)
         sep = m.group(1) or ""
         secret = m.group(2)
-        has_delim = bool(sep.strip() in (":", "=", "-"))
+        has_delim = bool(sep.strip() in (":", "=", "-") or " is" in full.lower() or " bu" in full.lower())
         has_digits = any(c.isdigit() for c in secret)
 
         # If pure alphabetic and no delimiter, treat as regular dictionary phrase
         if not has_digits and not has_delim:
+            return full
+
+        # If it looks like the start of a multi-group card number (e.g. 8600 1234 ...)
+        remaining = text[m.end():]
+        if secret.isdigit() and len(secret) == 4 and re.match(r"^\s+\d{4}\s+\d{4}", remaining):
             return full
 
         # Candidate secret identified
@@ -152,7 +157,7 @@ def redact_otps(text: str, mask: str = "[REDACTED]") -> str:
         return full
 
     text = re.sub(
-        rf"(?i)(?:\b(?:{kw_re})\b)\s*([:=–-]|is|\bbu\b)?\s*([A-Za-z0-9@#$%^&*!_-]{{3,25}})",
+        rf"(?i)(?:\b(?:{kw_re})\b)(?:\s+(?:от|uchun|for|to)\s+[A-Za-zА-Яа-яЁё0-9_]+)?\s*(?:is|\bbu\b)?\s*([:=–-])?\s*([A-Za-z0-9@#$%^&*!_-]{{3,25}})",
         _fwd_repl,
         text,
     )

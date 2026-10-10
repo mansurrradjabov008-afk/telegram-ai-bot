@@ -128,6 +128,13 @@ class TestForbiddenCategoriesFilter:
             ("Sud qarori bilan qamoq jazosiga hukm qilindi", "criminal"),
             ("Болезнь и диагноз подтвердились", "health"),
             ("Взял большой кредит и долг в банке", "finances"),
+            ("Kompaniya moliya bo'limi haqida gaplashdik", "finances"),
+            ("Loyiha byudjeti 5000 dollar ekan", "finances"),
+            ("Утвержден годовой бюджет проекта", "finances"),
+            ("Uning oylik maoshi juda katta", "finances"),
+            ("Его зарплата составляет 2000 долларов", "finances"),
+            ("U kecha kasal bo'lib qoldi", "health"),
+            ("U dindor musulmon inson", "religion"),
         ]
         for text, topic in cases:
             is_forb, reason = is_forbidden_topic(text)
@@ -172,10 +179,11 @@ class TestNoSelfReinforcementAndSenderVerification:
         assert ok_b is True
         assert src_type_b == "owner_stated"
 
-        # Case C: Citing both contact and owner -> VALID (owner_confirmed)
+        # Case C: Citing both contact and owner -> VALID (owner_stated, owner_confirmed strictly reserved for owner actions)
         ok_c, src_type_c, _ = await extractor.verify_source_messages(201, [m1, m2])
         assert ok_c is True
-        assert src_type_c == "owner_confirmed"
+        assert src_type_c == "owner_stated"
+        assert src_type_c != "owner_confirmed"
 
         # Case D: Citing bot_auto message -> REJECTED (H9)
         ok_d, _, reason_d = await extractor.verify_source_messages(201, [m3])

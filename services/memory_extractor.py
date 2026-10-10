@@ -29,6 +29,8 @@ from database.crud import DatabaseManager
 from database.models import MemFact, MemMessage, MemOpenItem
 from services.memory_injection import contains_injection_patterns, is_forbidden_topic
 from services.memory_redactor import redact_text
+from services.memory_categories import normalize_category
+from services.memory_fact_verifier import verify_fact_content
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +113,10 @@ class MemoryExtractor:
             elif msg.sender in ("owner_manual", "owner_edited"):
                 has_owner = True
 
-        # Determine source_type per U3
-        if has_contact and has_owner:
-            source_type = "owner_confirmed"
-        elif has_owner:
+        # Determine source_type per U3 & Hardening Rule 2:
+        # owner_confirmed is strictly reserved for explicit owner actions (/memory confirm, /remember).
+        # Automatic extraction NEVER assigns owner_confirmed.
+        if has_owner:
             source_type = "owner_stated"
         else:
             source_type = "contact_claim"
@@ -185,18 +187,17 @@ class MemoryExtractor:
             "2. NO SELF-REINFORCEMENT (H9): You must extract facts and open items ONLY from messages "
             "where sender is 'contact', 'owner_manual', or 'owner_edited'. "
             "Messages from 'bot_auto' or 'bot_approved' may contain AI errors and MUST NEVER be cited in 'source_message_ids'.\n"
-            "3. FORBIDDEN TOPICS (H6): NEVER extract facts about: health, religion, ethnicity, political views, "
-            "sexual life, personal finances/debts/income, or criminal matters.\n"
+            "3. FORBIDDEN TOPICS (H6): NEVER extract facts about: personal finances/debts/budget/income/salaries (moliya, byudjet, qarz, maosh, daromad, kredit), health/illnesses/doctors/medicine (salomatlik, kasallik, dori), religion/faith/mosques/prayer (din, islom, musulmon, namoz, masjid), ethnicity/race, political views, sexual life, or criminal matters.\n"
             "4. THIRD PARTIES (H7): Facts must be about the contact only. Do not store personal details about third parties; "
             "only basic relation format like 'akasi: Ali' is permitted.\n"
-            "5. OUTPUT FORMAT: Respond strictly with valid JSON conforming to this schema:\n"
+            "5. GROUNDING & FIDELITY: Facts must be strictly grounded in what was actually said. Every name, number, date, and key technology/job in your extracted fact must literally appear in the cited source message. Do NOT hallucinate technologies, jobs, or numbers not present in the cited message.\n"
+            "6. OUTPUT FORMAT: Respond strictly with valid JSON conforming to this schema:\n"
             "{\n"
             '  "facts": [\n'
             '    {\n'
-            '      "category": "work|interest|preference|relationship|location|general",\n'
+            '      "category": "identity|preference|interest|important_date|relationship_note|ongoing_topic|other",\n'
             '      "text": "Brief statement in Uzbek (Latin) or original language, max 120 chars",\n'
-            '      "source_message_ids": [123],\n'
-            '      "confidence": 0.95\n'
+            '      "source_message_ids": [123]\n'
             "    }\n"
             "  ],\n"
             '  "open_items": [\n'
@@ -239,8 +240,10 @@ class MemoryExtractor:
                 if len(fact_text) > max_fact_len:
                     fact_text = fact_text[:max_fact_len].rstrip()
 
+                # Canonical category validation & mapping (Step 1.3)
+                category = normalize_category(str(raw_fact.get("category", "other")))
+
                 # H6: Forbidden categories check
-                category = str(raw_fact.get("category", "general")).strip().lower()
                 is_forb, forb_reason = is_forbidden_topic(fact_text, category)
                 if is_forb:
                     logger.info(f"Filtered forbidden topic fact (category={category}, reason={forb_reason}, chars={len(fact_text)})")
@@ -263,7 +266,18 @@ class MemoryExtractor:
                     logger.warning(f"Fact dropped due to invalid source IDs (reason={src_reason}, chars={len(fact_text)})")
                     continue
 
-                confidence = float(raw_fact.get("confidence", 1.0))
+                # Step 1.5 & 1.6: Grounding verification and confidence derivation
+                cited_msg_objs = [m for m in target_msgs if m.id in source_ids]
+                is_grounded, derived_conf, ground_reason = verify_fact_content(
+                    fact_text=fact_text,
+                    source_messages=cited_msg_objs,
+                    source_type=source_type,
+                )
+                if not is_grounded:
+                    logger.warning(f"Fact dropped by grounding verifier (reason={ground_reason}, chars={len(fact_text)})")
+                    continue
+
+                confidence = derived_conf
 
                 # Check existing facts to avoid duplicates or handle superseding
                 existing_facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
@@ -273,8 +287,8 @@ class MemoryExtractor:
                     if ef.text.lower() == fact_text.lower():
                         is_duplicate = True
                         break
-                    elif ef.category == category and category in ("location", "work"):
-                        # If same specific category updates (e.g. location changed), mark supersedes
+                    elif ef.category == category and category in ("identity", "ongoing_topic", "location", "work"):
+                        # If same specific category updates (e.g. identity/location changed), mark supersedes
                         supersedes_id = ef.id
 
                 if is_duplicate:

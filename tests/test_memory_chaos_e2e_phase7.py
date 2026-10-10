@@ -235,10 +235,10 @@ class TestMemoryChaosAndE2EPhase7:
         assert ok_human is True
         assert src_human == "contact_claim"
 
-        # 4. Fact citing contact human + owner_manual -> MUST BE ACCEPTED as owner_confirmed
+        # 4. Fact citing contact human + owner_manual -> MUST BE ACCEPTED as owner_stated (owner_confirmed only via /memory confirm)
         ok_conf, src_conf, _ = await extractor.verify_source_messages(user_id, [id_human, id_owner])
         assert ok_conf is True
-        assert src_conf == "owner_confirmed"
+        assert src_conf == "owner_stated"
 
     # 5. PROMPT INJECTION RESISTANCE MULTILINGUAL (U1, U2)
     async def test_multilingual_prompt_injection_detection(self):

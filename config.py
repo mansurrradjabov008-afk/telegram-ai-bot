@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     MEM_MAX_MESSAGES_PER_BATCH: int = 15
     MEM_MAX_FACT_LENGTH: int = 150
     MEM_FACT_VALIDITY_DAYS: int = 30
-    MEM_CONTEXT_TIMEOUT_SECONDS: float = 1.0
+    MEM_CONTEXT_TIMEOUT_SECONDS: float = 2.5
     MEM_MAX_CONTEXT_TOKENS: int = 1200
     MEM_IMPORT_ENABLED: bool = False
     MEM_IMPORT_MAX_MESSAGES: int = 200
@@ -145,22 +145,32 @@ class Settings(BaseSettings):
         "politics",
         "sexual_life",
         "finances",
+        "finance",
+        "moliya",
+        "byudjet",
+        "budget",
+        "debt",
+        "income",
         "criminal",
     ]
     MEM_FORBIDDEN_KEYWORDS: List[str] = [
-        # Health
-        "kasallik", "dori", "shifoxona", "tashxis", "болезнь", "лекарство", "диагноз", "illness", "medical", "hospital",
-        # Religion
-        "namoz", "masjid", "cherkov", "din", "islom", "xristian", "намаз", "мечеть", "религия", "церковь", "religion", "mosque", "church",
-        # Ethnicity
+        # Health / Salomatlik
+        "kasal", "kasallik", "dori", "shifoxona", "tashxis", "болен", "болезнь", "лекарство", "диагноз", "illness", "medical", "hospital", "sick",
+        # Religion / Din
+        "namoz", "masjid", "cherkov", "din", "islom", "musulmon", "xristian", "намаз", "мечеть", "религия", "мусульманин", "церковь", "religion", "mosque", "church", "muslim",
+        # Ethnicity / Millat
         "millat", "irq", "millati", "национальность", "раса", "ethnicity", "race",
-        # Politics
+        # Politics / Siyosat
         "siyosat", "saylov", "prezident", "partiya", "сиёсат", "политика", "выборы", "politics", "election",
-        # Finances
-        "qarz", "qarzim", "oylik", "daromad", "maosh", "kredit", "долг", "зарплата", "доход", "кредит", "debt", "salary", "income", "loan",
-        # Criminal
+        # Finances / Moliya / Byudjet / Qarz / Maosh
+        "moliya", "byudjet", "qarz", "qarzim", "oylik", "daromad", "maosh", "kredit", "pul", "молия", "бюджет", "қарз", "маош", "даромад", "кредит", "финансы", "долг", "зарплата", "доход", "finance", "budget", "debt", "salary", "income", "loan",
+        # Criminal / Jinoyat
         "sud", "qamoq", "jinoyat", "prokuror", "суд", "тюрьма", "преступление", "jail", "prison", "crime", "criminal",
     ]
+
+    # Retention & Backup policies (Step 1.7 & 1.10)
+    CONVERSATION_HISTORY_RETENTION_DAYS: int = 180
+    BACKUP_KEEP: int = 5
 
     # Base path
     BASE_DIR: Path = Path(__file__).resolve().parent

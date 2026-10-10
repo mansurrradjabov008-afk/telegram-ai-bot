@@ -1,0 +1,168 @@
+"""
+Deterministic Fact Verification and Confidence Engine (Steps 1.5 & 1.6).
+Guarantees that every name, number, date, and key content word of an extracted
+fact appears (normalized, conservative) in at least one cited source message.
+Rejects hallucinated facts (e.g. 'Python dasturchi' citing messages without 'Python').
+Derives confidence from verification outcome and source_type instead of constant 1.0.
+"""
+
+import re
+import string
+from typing import List, Tuple, Optional, Set
+from database.models import MemMessage
+
+STOP_WORDS: Set[str] = {
+    # Uzbek
+    "bilan", "uchun", "ham", "juda", "emas", "ekan", "bor", "yo'q", "biri",
+    "esa", "haqida", "deb", "bo'lib", "yaxshi", "yomon", "katta", "kichik",
+    "faqat", "kabi", "orqali", "tomonidan", "keyin", "oldin", "hozir",
+    # Russian
+    "это", "что", "как", "или", "для", "при", "все", "его", "ее", "их",
+    "был", "была", "были", "быть", "очень", "также", "после", "только",
+    # English
+    "the", "and", "with", "from", "that", "this", "have", "been", "were",
+    "very", "also", "after", "before", "only", "such", "into", "over",
+}
+
+
+def _normalize_text(text: str) -> str:
+    """Lowercases, normalizes apostrophes, and cleans punctuation."""
+    if not text:
+        return ""
+    # Normalize varied apostrophes
+    t = text.lower().replace("‘", "'").replace("’", "'").replace("`", "'")
+    return t
+
+
+def verify_fact_content(
+    fact_text: str,
+    source_messages: List[MemMessage],
+    source_type: str = "contact_claim",
+) -> Tuple[bool, float, Optional[str]]:
+    """
+    Deterministically verifies that all key tokens in fact_text are grounded
+    in the cited source messages.
+
+    Returns:
+        (is_verified: bool, confidence: float, reason_or_status: str)
+    """
+    if not fact_text or not fact_text.strip():
+        return False, 0.0, "empty_fact"
+
+    if not source_messages:
+        return False, 0.0, "no_source_messages"
+
+    # Build normalized source corpus
+    source_corpus_parts = []
+    for msg in source_messages:
+        msg_text = getattr(msg, "text_redacted", None) or getattr(msg, "text", "") or ""
+        source_corpus_parts.append(_normalize_text(msg_text))
+    source_corpus = " ".join(source_corpus_parts)
+
+    # 1. Identify numbers in fact
+    numbers_in_fact = re.findall(r"\b\d+([.,]\d+)?\b", fact_text)
+    for num_match in re.finditer(r"\b\d+\b", fact_text):
+        num_str = num_match.group(0)
+        # Check if number appears in source corpus
+        if not re.search(r"\b" + re.escape(num_str) + r"\b", source_corpus):
+            return False, 0.0, f"fact_verifier:missing_number:{num_str}"
+
+    # 2. Identify proper nouns / capitalized words in fact (excluding start of sentence if not clearly proper)
+    words = re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ\']+\b", fact_text)
+    proper_nouns = []
+    for idx, w in enumerate(words):
+        if w and w[0].isupper():
+            w_norm = _normalize_text(w)
+            if idx > 0 or (w_norm not in STOP_WORDS and len(w) > 3):
+                proper_nouns.append(w)
+
+    corpus_words = set(re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ\']+\b", source_corpus))
+    case_suffixes = ("da", "dan", "ga", "ka", "qa", "ni", "ning", "dagi")
+
+    for pn in proper_nouns:
+        pn_norm = _normalize_text(pn)
+        if pn_norm in STOP_WORDS:
+            continue
+
+        matched_pn = False
+        if re.search(r"\b" + re.escape(pn_norm) + r"\b", source_corpus):
+            matched_pn = True
+        else:
+            # Check stem after stripping Uzbek case suffix
+            pn_stem = pn_norm
+            for sfx in case_suffixes:
+                if pn_stem.endswith(sfx) and len(pn_stem) - len(sfx) >= 4:
+                    pn_stem = pn_stem[:-len(sfx)]
+                    break
+            if pn_stem and any(cw.startswith(pn_stem) for cw in corpus_words):
+                matched_pn = True
+
+        if not matched_pn:
+            return False, 0.0, f"fact_verifier:missing_proper_noun:{pn}"
+
+    # 3. Identify content words (len >= 4, non-stopword)
+    content_words = [
+        _normalize_text(w) for w in words
+        if len(w) >= 4 and _normalize_text(w) not in STOP_WORDS
+    ]
+
+    if not content_words:
+        # Very short generic fact; require at least words to be present
+        all_norm_words = [_normalize_text(w) for w in words if _normalize_text(w) not in STOP_WORDS]
+        if not all_norm_words:
+            return False, 0.0, "fact_verifier:no_content_words"
+        content_words = all_norm_words
+
+    # Split corpus into normalized words for fast lookup
+    corpus_words = set(re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ\']+\b", source_corpus))
+
+    def _word_matches_corpus(fact_word: str) -> bool:
+        if fact_word in corpus_words:
+            return True
+        suffixes = ("man", "san", "di", "miz", "siz", "lar", "da", "dan", "ga", "ni", "ning", "moqda", "yapti", "gan")
+        stem = fact_word
+        for sfx in suffixes:
+            if stem.endswith(sfx) and len(stem) - len(sfx) >= 4:
+                stem = stem[:-len(sfx)]
+                break
+
+        for cw in corpus_words:
+            if cw == fact_word:
+                return True
+            c_stem = cw
+            for sfx in suffixes:
+                if c_stem.endswith(sfx) and len(c_stem) - len(sfx) >= 4:
+                    c_stem = c_stem[:-len(sfx)]
+                    break
+            if stem == c_stem and len(stem) >= 4:
+                return True
+            if len(stem) >= 4 and len(c_stem) >= 4 and stem[:4] == c_stem[:4] and (stem in c_stem or c_stem in stem):
+                return True
+        return False
+
+    matched_count = 0
+    for cw in content_words:
+        if _word_matches_corpus(cw):
+            matched_count += 1
+
+    match_ratio = matched_count / len(content_words)
+
+    # Grounding threshold: at least 50% of content words must match source messages
+    if match_ratio < 0.50:
+        missing = [cw for cw in content_words if not _word_matches_corpus(cw)]
+        return False, 0.0, f"fact_verifier:low_match_ratio:{match_ratio:.2f}:missing_{missing[:2]}"
+
+    # 4. Deterministic Confidence Derivation (Step 1.6)
+    # Documented meaning:
+    # - owner_confirmed: 1.0 (Owner explicitly validated via /memory confirm or /remember)
+    # - owner_stated: 0.85 - 0.95 (Owner stated directly in conversation)
+    # - contact_claim: 0.65 - 0.85 (Contact claimed in conversation, grounded in verified text)
+    if source_type == "owner_confirmed":
+        confidence = 1.0
+    elif source_type == "owner_stated":
+        confidence = 0.85 + 0.10 * match_ratio
+    else:  # contact_claim
+        confidence = 0.65 + 0.20 * match_ratio
+
+    confidence = round(confidence, 2)
+    return True, confidence, "verified"

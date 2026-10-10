@@ -22,20 +22,33 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from config import settings
 from database.crud import DatabaseManager, get_db
+from database.connection import init_db
+from database.isolation_guard import ensure_not_production_db
 from database.models import Contact, MemMessage, MemFact
 from services.memory_service import MemoryService
 from services.memory_context import MemoryContextAssembler
 from services.memory_redactor import redact_text
 from services.ai_engine import AIEngine
+import tempfile
 
 
-async def main():
-    db_mgr = DatabaseManager(settings.db_file_path)
+async def run_shadow_check(custom_db_path: Path | str = None):
+    if custom_db_path is not None:
+        db_path = Path(custom_db_path).resolve()
+        ensure_not_production_db(db_path, caller_name="scratch/shadow_check.py")
+    else:
+        temp_dir = Path(tempfile.gettempdir())
+        db_path = temp_dir / f"shadow_check_isolated_{int(time.time())}.db"
+        ensure_not_production_db(db_path, caller_name="scratch/shadow_check.py")
+        await init_db(db_path)
+
+    db_mgr = DatabaseManager(db_path)
     mem_svc = MemoryService(db_manager=db_mgr)
     ai_engine = AIEngine()
 
     print("=" * 80)
     print("PHASE 8: LIVE SHADOW CHECK - CONTACT MEMORY VERIFICATION")
+    print(f"Isolated DB Path: {db_path}")
     print("=" * 80)
 
     # 1. Setup Two Test Contacts
@@ -196,4 +209,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_shadow_check())

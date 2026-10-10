@@ -29,6 +29,7 @@ from .models import (
     MemEmbedding,
 )
 from services.memory_redactor import redact_text
+from services.memory_categories import normalize_category
 
 
 class DatabaseManager:
@@ -315,13 +316,14 @@ class DatabaseManager:
         role: str,
         content: str,
     ):
-        """Save chat turn into history."""
+        """Save chat turn into history with automatic redaction (H4)."""
+        content_redacted = redact_text(content)
         query = """
         INSERT INTO conversation_history (chat_id, sender_name, role, content)
         VALUES (?, ?, ?, ?)
         """
         async with get_db(self.db_path) as db:
-            await db.execute(query, (chat_id, sender_name, role, content))
+            await db.execute(query, (chat_id, sender_name, role, content_redacted))
             await db.commit()
 
     async def get_recent_history(self, chat_id: int, limit: int = 10) -> List[ConversationMessage]:
@@ -1306,6 +1308,7 @@ class DatabaseManager:
         """Stores extracted fact with strict source_type validation and redaction."""
         src_json = json.dumps(source_message_ids or [])
         text_redacted = redact_text(text)
+        category = normalize_category(category)
         query = """
         INSERT INTO mem_facts (
             contact_user_id, category, text, source_type, source_message_ids,
@@ -1778,7 +1781,38 @@ class DatabaseManager:
                 (contact_user_id,),
             )
             counts["drafts_blanked"] = cur.rowcount
+            # Step 1.7: Clear conversation_history for this contact
+            cur = await db.execute("DELETE FROM conversation_history WHERE chat_id = ?", (contact_user_id,))
+            counts["conversation_history"] = cur.rowcount
+            # Clear scheduled_tasks for this contact
+            cur = await db.execute(
+                "DELETE FROM scheduled_tasks WHERE target_peer = ? OR target_peer LIKE ?",
+                (str(contact_user_id), f"%{contact_user_id}%"),
+            )
+            counts["scheduled_tasks"] = cur.rowcount
         return counts
+
+    async def confirm_mem_fact(
+        self,
+        contact_user_id: int,
+        fact_id: int,
+    ) -> bool:
+        """Sets source_type='owner_confirmed' and confidence=1.0 for an active fact per Step 1.2."""
+        query = """
+        UPDATE mem_facts
+        SET source_type = 'owner_confirmed', confidence = 1.0, updated_at = CURRENT_TIMESTAMP
+        WHERE contact_user_id = ? AND id = ?
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (contact_user_id, fact_id))
+            return cur.rowcount > 0
+
+    async def cleanup_conversation_history(self, days: int = 180) -> int:
+        """Purge conversation_history rows older than retention threshold per Step 1.7."""
+        query = "DELETE FROM conversation_history WHERE timestamp < datetime('now', ?)"
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (f"-{days} days",))
+            return cur.rowcount
 
     async def delete_mem_fact(self, contact_user_id: int, fact_id: int) -> bool:
         """Permanently deletes a specific fact for target contact (H4, H10)."""
@@ -1809,5 +1843,30 @@ class DatabaseManager:
                 "summaries": summaries,
                 "embeddings": embeddings,
             }
+
+    async def get_overall_mem_stats(self) -> Dict[str, int]:
+        """Returns overall memory statistics across all contacts."""
+        async with get_db(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM mem_contacts WHERE memory_enabled = 1") as cur:
+                contacts_enabled = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_messages") as cur:
+                messages = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_facts WHERE status = 'active'") as cur:
+                facts = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_open_items WHERE status = 'open'") as cur:
+                open_items = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_summaries") as cur:
+                summaries = (await cur.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM mem_embeddings") as cur:
+                embeddings = (await cur.fetchone())[0]
+            return {
+                "contacts_enabled": contacts_enabled,
+                "messages": messages,
+                "facts": facts,
+                "open_items": open_items,
+                "summaries": summaries,
+                "embeddings": embeddings,
+            }
+
 
 
