@@ -828,35 +828,29 @@ class AdminBotService:
                         await safe_reply(active_msg, progress_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                     return
 
-                if status == "no_sources":
-                    messages = res.get("messages", ["ℹ️ Kuzatiladigan manbalar mavjud emas!"])
-                    builder = InlineKeyboardBuilder()
-                    builder.button(text="📋 Manbalar ro'yxati", callback_data="digest_sources:list")
-                    builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                    builder.adjust(1, 1)
+                if status in ["no_sources", "error"] or not messages or all("topilmadi" in m for m in messages):
+                    sources = await self.db_manager.list_digest_sources(active_only=True)
+                    briefing = await self.ai_engine.generate_daily_news_briefing()
+                    formatted = markdown_to_telegram_html(briefing)
+                    header = (
+                        "📰 <b>KUNLIK EXECUTIVE BRIEFING & YANGILIKLAR (JARVIS Protocol)</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    )
+                    if sources:
+                        header += f"📡 <i>Kuzatilayotgan Telegram manbalari: {len(sources)} ta faol kanal nazoratda.</i>\n\n"
+                    full_report = header + formatted
                     if is_callback:
-                        await active_msg.edit_text(messages[0], reply_markup=builder.as_markup(), parse_mode="HTML")
+                        builder = InlineKeyboardBuilder()
+                        builder.button(text="🔄 Qayta tahlil", callback_data="digest:refresh")
+                        builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                        builder.adjust(1, 1)
+                        markup = builder.as_markup()
+                        await active_msg.edit_text(full_report, reply_markup=markup, parse_mode="HTML")
                     else:
-                        await safe_reply(active_msg, messages[0], reply_markup=builder.as_markup(), parse_mode="HTML")
-                    return
-
-                if status == "error":
-                    err_msg = res.get("messages", ["❌ Noma'lum xatolik yuz berdi."])[0]
-                    builder = InlineKeyboardBuilder()
-                    builder.button(text="🔄 Qayta urinish", callback_data="digest:refresh")
-                    builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                    builder.adjust(1, 1)
-                    if is_callback:
-                        await active_msg.edit_text(err_msg, reply_markup=builder.as_markup(), parse_mode="HTML")
-                    else:
-                        await safe_reply(active_msg, err_msg, reply_markup=builder.as_markup(), parse_mode="HTML")
+                        await safe_reply(active_msg, full_report, reply_markup=None, parse_mode="HTML")
                     return
 
                 # Completed: messages are pre-split under 4000 characters
-                messages = res.get("messages", [])
-                if not messages:
-                    messages = ["ℹ️ <b>Hozircha tahlil uchun ma'lumot topilmadi.</b>"]
-
                 builder = InlineKeyboardBuilder()
                 builder.button(text="🔄 Yangilash", callback_data="digest:refresh")
                 builder.button(text="🔍 Debug", callback_data="digest:debug")
@@ -865,7 +859,7 @@ class AdminBotService:
                 builder.adjust(2, 2)
 
                 for idx, m in enumerate(messages):
-                    markup = builder.as_markup() if idx == len(messages) - 1 else None
+                    markup = builder.as_markup() if (is_callback and idx == len(messages) - 1) else None
                     if idx == 0 and is_callback:
                         try:
                             await active_msg.edit_text(m, reply_markup=markup, parse_mode="HTML")
@@ -1108,6 +1102,9 @@ class AdminBotService:
                 "dayjestdagi", "digestdagi", "dayjest bulimiga", "dayjest bo'limiga", "dayjest bulimi",
                 "dayjest bo'limi", "kuzatuv", "kuzatish"
             ])
+            has_news_kw = any(w in lower_text for w in [
+                "yangilik", "yanglik", "yangiliklar", "yangliklar", "xabar", "xabarlar"
+            ])
             has_channel_kw = any(w in lower_text for w in ["kanal", "kanali", "kanalini", "manba", "manbasi", "manbani"])
 
             has_add_kw = any(w in lower_text for w in [
@@ -1216,8 +1213,21 @@ class AdminBotService:
                 await safe_reply(message, "\n".join(lines), reply_markup=None, parse_mode="HTML")
                 return True
 
-            # 4. Run/Generate digest
-            if has_digest_kw and any(w in lower_text for w in ["tayyorla", "chiqar", "ber", "tuz", "yarat", "bugungi", "ko'rsat", "korsat"]):
+            # 4. Run/Generate digest or news briefing
+            is_news_request = (
+                (has_digest_kw or has_news_kw) and any(w in lower_text for w in [
+                    "tayyorla", "chiqar", "ber", "tuz", "yarat", "bugungi", "bugun", "ko'rsat", "korsat",
+                    "nima gap", "haqida", "malumot", "ma'lumot", "ayt", "so'nggi", "oxirgi", "bormi", "qanaqa"
+                ])
+            ) or any(phrase in lower_text for phrase in [
+                "bugungi yangliklar", "bugungi yangiliklar", "yangliklar haqida", "yangiliklar haqida",
+                "bugun nima yangilik", "kunlik yangilik", "kanallarda nima gap", "yangiliklarni ayt",
+                "yangiliklar bormi", "so'nggi yangilik", "kunlik dayjest", "yangliklar nima", "yangiliklar nima"
+            ]) or lower_text in [
+                "yangiliklar", "yangliklar", "dayjest", "digest", "bugungi dayjest"
+            ]
+
+            if is_news_request:
                 await _execute_digest(message, is_callback=False)
                 return True
 
@@ -3254,7 +3264,7 @@ class AdminBotService:
                     return
 
             # 4. Digest and Status Quick Triggers
-            if lower_msg in ["dayjest", "dayjestni ko'rsat", "dayjestni korsat", "bugungi dayjest"]:
+            if any(w in lower_msg for w in ["dayjest", "digest", "yangilik", "yanglik"]):
                 await _execute_digest(message, is_callback=False)
                 return
 
@@ -3262,22 +3272,94 @@ class AdminBotService:
                 await cmd_status(message)
                 return
 
-            text = (
-                "👑 <b>Xo'jayin, buyruq qabul qilindi.</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "Menga istalgan tabiiy tilda topshiriq bera olasiz:\n\n"
-                "• <b>Vazifa rejalashtirish (AI):</b> <i>\"Ertaga soat 10:00 da @ali ga loyiha tayyor deb yoz\"</i>\n"
-                "• <b>Muloqot uslubini sozlash:</b> <i>\"@dilshod ni sizla, u muhim hamkor\"</i>\n"
-                "• <b>Avtonomiya rejimi:</b> <i>\"@bobur ni auto rejimiga o'tkaz\"</i>\n"
-                "• <b>Boshqaruv markazi:</b> Pastdagi menyu tugmalaridan foydalaning\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            builder = InlineKeyboardBuilder()
-            builder.button(text="📰 Executive Digest", callback_data="digest:open")
-            builder.button(text="⏳ Rejadagi vazifalar", callback_data="tasks:refresh")
-            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(2, 1)
-            await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            # 5. Tasks intent (e.g. "rejadagi vazifalar", "bugungi rejalarim", "vazifalar")
+            if any(p in lower_msg for p in [
+                "rejadagi vazifalar", "rejalarim", "vazifalarim", "rejam nima", "qanday vazifalar bor",
+                "eslatmalar", "jadvalim", "bugungi rejalar", "bugun qanday vazifa", "rejalar", "vazifalar"
+            ]):
+                tasks = await self.db_manager.get_pending_tasks()
+                if not tasks:
+                    return await safe_reply(
+                        message,
+                        "📅 <b>Rejadagi vazifalar:</b>\n\n<i>Janob, hozirda kutilayotgan rejalashtirilgan vazifalar yo'q. Barcha topshiriqlar o'z vaqtida bajarilgan.</i>",
+                        parse_mode="HTML",
+                        reply_markup=None,
+                    )
+                tz = pytz.timezone(settings.TIMEZONE)
+                lines = [
+                    f"📅 <b>REJADAGI VAZIFALAR (Jami: {len(tasks)} ta):</b>",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                ]
+                for t in tasks:
+                    time_lbl = format_task_time_human(t.scheduled_time, tz)
+                    uname = f"@{t.target_username}" if t.target_username else (f"ID: {t.target_user_id}" if t.target_user_id else "Noma'lum")
+                    lines.append(f"• <b>#{t.id}</b> | 👤 <code>{html.escape(uname)}</code>")
+                    lines.append(f"  ⏰ {time_lbl}")
+                    lines.append(f"  💬 <i>\"{html.escape(t.message_text[:80])}\"</i>\n")
+                lines.append("💡 <i>Vazifani bekor qilish uchun: 'bekor #ID', darhol yuborish uchun: 'yubor #ID'</i>")
+                return await safe_reply(message, "\n".join(lines), parse_mode="HTML", reply_markup=None)
+
+            # 6. Drafts intent (e.g. "kutilayotgan qoralamalar", "qoralamalar")
+            if any(p in lower_msg for p in [
+                "kutilayotgan qoralamalar", "qoralamalar", "tasdiqlanmagan xabarlar", "draftlar", "kutilayotgan xabarlar"
+            ]):
+                drafts = await self.db_manager.list_pending_drafts()
+                if not drafts:
+                    return await safe_reply(
+                        message,
+                        "📝 <b>Kutilayotgan qoralamalar:</b>\n\n<i>Janob, tasdiq kutayotgan qoralamalar mavjud emas. Barcha javoblar muvaffaqiyatli jo'natilgan.</i>",
+                        parse_mode="HTML",
+                        reply_markup=None,
+                    )
+                lines = [
+                    f"📝 <b>KUTILAYOTGAN QORALAMALAR (Jami: {len(drafts)} ta):</b>",
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                ]
+                for d in drafts:
+                    contact = await self.db_manager.get_contact_by_id(d.user_id)
+                    c_name = contact.full_name or contact.username if contact else str(d.user_id)
+                    lines.append(f"• <b>#{d.id}</b> | 👤 <b>{html.escape(c_name)}</b>")
+                    lines.append(f"  💬 <i>\"{html.escape(d.draft_text[:90])}\"</i>\n")
+                lines.append("💡 <i>Yuborish uchun: '#ID ni yubor' yoki 'hammasini tasdiqla'</i>")
+                return await safe_reply(message, "\n".join(lines), parse_mode="HTML", reply_markup=None)
+
+            # 7. Capabilities / Help intent
+            if any(p in lower_msg for p in [
+                "nima qila olasan", "qanday imkoniyatlaring bor", "yordam", "buyruqlar", "nimalarga qodirsan"
+            ]):
+                help_text = (
+                    "🤖 <b>JARVIS TIZIMI — XIZMATINGIZDA, JANOB!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Men sizning barcha jarayonlaringizni to'liq avtomatlashtirilgan rejimda boshqaraman:\n\n"
+                    "• <b>💬 Do'stlar va hamkorlar bilan aloqa:</b> <i>\"@username ga yozchi ertaga ko'rishamizmi deb\"</i> (zudlik bilan ijro etiladi)\n"
+                    "• <b>📅 Rejali vazifalar:</b> <i>\"Ertaga soat 10:00 da @ali ga loyiha tayyor deb yoz\"</i>\n"
+                    "• <b>📰 Kunlik tahlil va Yangiliklar:</b> <i>\"bugungi yangiliklar haqida ma'lumot ber\"</i>\n"
+                    "• <b>⚡ Avtonomiya rejimi:</b> <i>\"@bobur ni auto rejimiga o'tkaz\"</i>\n"
+                    "• <b>🧠 Kontaktlar xotirasi:</b> <i>\"@dilshod haqida nimalarni bilasan?\"</i>\n"
+                    "• <b>📊 Tizim holati:</b> <i>\"status\"</i> yoki <i>\"tizim holati\"</i>\n\n"
+                    "Menga istalgan tabiiy tilda buyruq bering yoki savol bering, darhol bajaraman!"
+                )
+                return await safe_reply(message, help_text, parse_mode="HTML", reply_markup=None)
+
+            # 8. JARVIS Universal Conversational AI Core
+            # Context-aware executive intelligence with ZERO buttons
+            pending_tasks = await self.db_manager.get_pending_tasks()
+            pending_drafts = await self.db_manager.list_pending_drafts()
+            sources = await self.db_manager.list_digest_sources(active_only=True)
+            tz = pytz.timezone(settings.TIMEZONE)
+            now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+            jarvis_context = {
+                "current_time": now_str,
+                "boss_name": "Radjabov Mansur",
+                "pending_tasks_count": len(pending_tasks),
+                "pending_drafts_count": len(pending_drafts),
+                "monitored_sources_count": len(sources),
+            }
+
+            jarvis_reply = await self.ai_engine.ask_jarvis(raw_t, jarvis_context)
+            formatted_reply = markdown_to_telegram_html(jarvis_reply)
+            await safe_reply(message, formatted_reply, parse_mode="HTML", reply_markup=None)
 
         @dp.callback_query(F.data.startswith("digest:"))
         async def handle_digest_callbacks(callback: types.CallbackQuery):

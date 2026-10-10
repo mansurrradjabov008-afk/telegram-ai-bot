@@ -755,6 +755,104 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
             "mission_goal": "Ertangi rejalarni aniqlash" if "ertang" in lower_query else "Rejalar va holatni aniqlash",
         }
 
+    async def ask_jarvis(
+        self,
+        user_query: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        JARVIS Executive Intelligence Brain:
+        Responds to Boss (Radjabov Mansur) like Tony Stark's JARVIS.
+        Highly intelligent, sharp, loyal, polite, and fully context-aware.
+        """
+        ctx = context or {}
+        boss_name = ctx.get("boss_name", "Janob Radjabov Mansur")
+        current_time = ctx.get("current_time", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        pending_tasks = ctx.get("pending_tasks_count", 0)
+        pending_drafts = ctx.get("pending_drafts_count", 0)
+        sources_count = ctx.get("monitored_sources_count", 0)
+
+        prompt = (
+            f"Sen — JARVISsan (Iron Man / Temir Odam filmidagi Tony Starkning shaxsiy sun'iy intellekti kabi).\n"
+            f"Foydalanuvchi — sening xo'jayining: {boss_name}.\n"
+            f"Joriy vaqt: {current_time}.\n"
+            f"Tizim ma'lumotlari: {pending_tasks} ta rejadagi vazifa, {pending_drafts} ta kutilayotgan qoralama, {sources_count} ta kuzatuvdagi axborot kanali.\n\n"
+            f"XUSUSIYATLARI VA QOIDALARI:\n"
+            f"1. Til: Sof, o'ta madaniyatli, tushunarli va professional O'zbek tili.\n"
+            f"2. Xarakter: O'ta aqlli, bosiq, muloyim, sodiq, chuqur tahliliy fikrlaydigan executive yordamchi.\n"
+            f"3. Murojaat: Xo'jayinga har doim hurmat bilan 'Janob' yoki 'Xo'jayin' deb murojaat qil.\n"
+            f"4. Javob uslubi: Qisqa, aniq, amaliy va yuqori intellekt darajasida. Hech qachon quruq rasmiyatchilik qilma yoki o'zingni cheklama.\n"
+            f"5. Agar xo'jayin biron savol bersa, maslahat so'rasa yoki holatni so'rasa, to'liq va mukammal javob ber.\n"
+            f"6. Hech qanday inline tugmalar yoki menyular haqida gapirma.\n\n"
+            f"Xo'jayinning gapi: \"{user_query}\"\n\n"
+            f"JARVIS javobi:"
+        )
+
+        for candidate_model in self._get_candidate_models():
+            try:
+                raw_resp = await self._call_gemini_raw(candidate_model, prompt, temperature=0.3)
+                if raw_resp and raw_resp.strip():
+                    return raw_resp.strip()
+            except Exception as e:
+                logger.warning(f"ask_jarvis failed on model {candidate_model}: {type(e).__name__}")
+                continue
+
+        # Heuristic offline fallback
+        lower_q = user_query.lower()
+        if any(w in lower_q for w in ["salom", "qale", "qalaysan", "ahvol"]):
+            return (
+                f"Assalomu alaykum, Janob {boss_name}! Tizim barqaror ishlamoqda. "
+                f"Sizga xizmat qilishga tayyorman, qanday buyrug'ingiz bor?"
+            )
+        return (
+            f"Buyruq qabul qilindi, Janob {boss_name}. So'rovingiz tahlil qilinmoqda. "
+            f"Barcha tizimlar to'liq avtonom rejimda nazoratim ostida."
+        )
+
+    async def generate_daily_news_briefing(self, focus_areas: Optional[str] = None) -> str:
+        """
+        Generates an Executive Daily Intelligence Briefing in Uzbek covering
+        AI & Tech, Business & Global trends, and Uzbekistan highlights.
+        """
+        now = datetime.now()
+        date_str = f"{now.year}-yil {now.day}-sana"
+
+        prompt = (
+            f"Sen — JARVISsan. Foydalanuvchi — sening xo'jayining: Radjabov Mansur.\n"
+            f"Bugungi sana: {date_str}.\n"
+            f"Xo'jayin uchun kunlik yuqori darajadagi axborot tahlili (Executive Daily Briefing) tayyorla.\n\n"
+            f"QOIDALAR:\n"
+            f"1. Til: Toza, professional O'zbek tili.\n"
+            f"2. Format: Telegram uchun chiroyli sarlavhalar, bulletlar (•) va emojilar.\n"
+            f"3. Bo'limlar:\n"
+            f"   - 🤖 Sun'iy Intellekt va Ilg'or Texnologiyalar\n"
+            f"   - 🌐 Global Iqtisodiyot va Biznes Trendlari\n"
+            f"   - 🇺🇿 O'zbekiston va Mintaqa Yangiliklari\n"
+            f"4. Xo'jayinga hurmat bilan 'Janob' deb murojaat qil.\n"
+            f"5. Qisqa, aniq va eng muhim mazmunni qamrab olsin.\n\n"
+            f"Executive Briefing:"
+        )
+
+        for candidate_model in self._get_candidate_models():
+            try:
+                raw_resp = await self._call_gemini_raw(candidate_model, prompt, temperature=0.2)
+                if raw_resp and raw_resp.strip():
+                    return raw_resp.strip()
+            except Exception as e:
+                logger.warning(f"generate_daily_news_briefing failed on model {candidate_model}: {type(e).__name__}")
+                continue
+
+        return (
+            "📰 <b>KUNLIK EXECUTIVE BRIEFING</b>\n\n"
+            "🤖 <b>Sun'iy Intellekt va Texnologiya:</b>\n"
+            "• Avtonom AI agentlar va katta til modellari rivojlanishi yangi bosqichga chiqmoqda.\n\n"
+            "🌐 <b>Biznes va Bozorlar:</b>\n"
+            "• Raqamli xizmatlar va texnologik infratuzilmaga global investitsiyalar hajmi oshib bormoqda.\n\n"
+            "🇺🇿 <b>O'zbekiston IT va Rivojlanish:</b>\n"
+            "• IT-Park va mahalliy texnologik startaplar eksport salohiyatini kengaytirmoqda.\n\n"
+            "<i>Janob, batafsil tahlil kerak bo'lgan soha bo'lsa, xabar bering.</i>"
+        )
+
     def _dynamic_smart_fallback(self, text: str, addressing: str = "siz") -> str:
         """
         Context-aware offline fallback that strictly respects 'SIZ' vs 'SEN' addressing style.

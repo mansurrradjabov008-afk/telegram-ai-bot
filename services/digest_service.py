@@ -296,6 +296,7 @@ class DigestService:
         - Saves to digest_posts and updates digest_state
         - Purges posts older than RETENTION_DAYS
         """
+        sources = await self.db_manager.list_digest_sources(active_only=True)
         telethon_client = client or self.get_client()
         if not telethon_client:
             logger.warning("collect_new_posts: Telethon client is not available.")
@@ -303,12 +304,11 @@ class DigestService:
                 "status": "error",
                 "message": "Userbot mijozi ulanmagan.",
                 "total_collected": 0,
-                "sources_count": 0,
+                "sources_count": len(sources),
                 "per_source": {},
                 "errors": [],
             }
 
-        sources = await self.db_manager.list_digest_sources(active_only=True)
         start_time = asyncio.get_event_loop().time()
         run_id = await self.db_manager.create_digest_run(trigger=trigger)
 
@@ -631,8 +631,9 @@ class DigestService:
             # 1. Run collection, cleaning, classification, and summarization
             stats = await self.collect_new_posts(trigger=trigger)
 
-            # Check if sources exist
-            if stats.get("sources_count", 0) == 0:
+            # Check if sources exist in DB
+            sources_in_db = await self.db_manager.list_digest_sources(active_only=True)
+            if not sources_in_db:
                 empty_msg = (
                     "ℹ️ <b>Kuzatiladigan manbalar mavjud emas!</b>\n\n"
                     "Smart Digest V2 xabarlarni faqat siz ko'rsatgan kanallar va guruhlardan yig'adi.\n\n"
@@ -642,6 +643,14 @@ class DigestService:
                     "status": "no_sources",
                     "stats": stats,
                     "messages": [empty_msg],
+                }
+
+            if stats.get("status") == "error":
+                return {
+                    "status": "error",
+                    "error": stats.get("message", "Userbot mijozi ulanmagan."),
+                    "messages": [f"⚠️ <b>{stats.get('message', 'Userbot mijozi ulanmagan.')}</b>"],
+                    "stats": stats,
                 }
 
             run_id = stats.get("run_id")

@@ -977,6 +977,118 @@ async def test_jarvis_direct_action_and_negative_constraints(temp_db):
     assert reply_kwargs.get("reply_markup") is None, "Zero buttons expected!"
 
 
+@pytest.mark.asyncio
+async def test_jarvis_news_digest_natural_trigger(temp_db):
+    """
+    Tests that 'bugungi yangliklar haqida malumot ber' (today's news query with typo)
+    is cleanly recognized as a news/digest request, triggers _execute_digest without buttons,
+    and returns an executive briefing with ZERO inline buttons.
+    """
+    owner_id = 999901
+    ai_engine = MagicMock()
+    ai_engine.generate_daily_news_briefing = AsyncMock(return_value="🤖 **AI yangiliklari:** Yangi modellar chiqdi.\n🌐 **Biznes:** Bozorlar barqaror.")
+
+    digest_service = MagicMock()
+    digest_service.run_smart_digest = AsyncMock(return_value={
+        "status": "completed",
+        "messages": ["📰 <b>KUNLIK EXECUTIVE DIGEST</b>\n\n• Yangiliklar muvaffaqiyatli tahlil qilindi."],
+    })
+
+    service = AdminBotService(
+        db_manager=temp_db,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=digest_service,
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+
+    fallback_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_fallback_natural_text":
+            fallback_fn = h.callback
+            break
+    assert fallback_fn is not None
+
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value=None)
+
+    msg = MagicMock()
+    msg.from_user.id = owner_id
+    msg.text = "bugungi yangliklar haqida malumot ber"
+    msg.reply_to_message = None
+    msg.reply = AsyncMock()
+
+    await fallback_fn(msg, state)
+
+    # 1. run_smart_digest should be called
+    digest_service.run_smart_digest.assert_awaited_once_with(trigger="manual", topic_filter=None)
+
+    # 2. msg.reply should have been called (loading and/or result)
+    assert msg.reply.called
+    # Check last call or any call: reply_markup must be None!
+    for call in msg.reply.call_args_list:
+        kwargs = call[1]
+        assert kwargs.get("reply_markup") is None, "Executive news briefing must have ZERO buttons (reply_markup=None)!"
+
+
+@pytest.mark.asyncio
+async def test_jarvis_conversational_brain(temp_db):
+    """
+    Tests that natural conversational messages to JARVIS (e.g. 'bugungi holat qanday, menga xulosa ber')
+    are routed to ask_jarvis with live context and answered with ZERO buttons.
+    """
+    owner_id = 999901
+    ai_engine = MagicMock()
+    ai_engine.ask_jarvis = AsyncMock(return_value="Kechki hurmat, Janob Radjabov Mansur. Barcha tizimlar barqaror ishlamoqda.")
+
+    service = AdminBotService(
+        db_manager=temp_db,
+        ai_engine=ai_engine,
+        scheduler_service=MagicMock(),
+        digest_service=MagicMock(),
+        token="1234567890:mock_token",
+        admin_id=owner_id,
+    )
+
+    fallback_fn = None
+    for h in service.dp.message.handlers:
+        if getattr(h.callback, "__name__", "") == "handle_fallback_natural_text":
+            fallback_fn = h.callback
+            break
+    assert fallback_fn is not None
+
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value=None)
+
+    msg = MagicMock()
+    msg.from_user.id = owner_id
+    msg.text = "bugungi holat qanday, menga xulosa ber"
+    msg.reply_to_message = None
+    msg.reply = AsyncMock()
+
+    await fallback_fn(msg, state)
+
+    # 1. ask_jarvis must be called with query and context
+    ai_engine.ask_jarvis.assert_awaited_once()
+    called_query = ai_engine.ask_jarvis.call_args[0][0]
+    called_ctx = ai_engine.ask_jarvis.call_args[0][1]
+
+    assert called_query == "bugungi holat qanday, menga xulosa ber"
+    assert "Radjabov Mansur" in called_ctx["boss_name"]
+    assert "current_time" in called_ctx
+
+    # 2. msg.reply must be called with JARVIS response and ZERO buttons
+    assert msg.reply.called
+    last_call = msg.reply.call_args
+    reply_text = last_call[0][0]
+    reply_kwargs = last_call[1]
+
+    assert "Janob Radjabov Mansur" in reply_text
+    assert reply_kwargs.get("reply_markup") is None, "JARVIS conversational response must have ZERO buttons (reply_markup=None)!"
+
+
+
 
 
 
