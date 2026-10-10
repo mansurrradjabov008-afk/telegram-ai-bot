@@ -499,12 +499,13 @@ Current Branch: `stage-memory-hardening`
   - Production DB Migration: All existing contacts in `data/butler.db` safely updated to `auto` (8/8 contacts now `auto`).
 - **Elimination of Non-Essential Clutter Buttons**:
   - `get_main_reply_keyboard`: Streamlined from 8 buttons down to 6 core executive buttons (`🧠 Xotira`, `👥 Kontaktlar`, `📝 Qoralamalar`, `⏰ Vazifalar`, `📰 Executive Digest`, `⚡ Tizim holati`). Redundant manual `⚙️ Avtonomiya (Mode)` (now automated) and `❓ Yordam` (handled transparently by natural language) removed from persistent keyboard.
+  - `_render_dashboard`: Streamlined message inline keyboard from 8 buttons down to the clean 6 executive hubs. Removed obsolete `⚙️ Avtonomiya (Mode)` and `🔄 Yangilash` inline buttons. Dynamically renders 1-tap `[🚀 Barcha qoralamalarni tasdiqlash (N)]` when pending drafts exist.
   - `_render_contacts_list`: Redundant `🔄 Yangilash` removed.
   - `_render_drafts_list`: Redundant `🔄 Yangilash` removed.
   - `_render_tasks_list`: Redundant `🔄 Yangilash` and `📜 Tarix` clutter buttons removed from active pending tasks view.
 - **Verification (P7 Red-Green Protocol)**:
-  - `test_crm_creates_contact_in_auto_mode` (in `tests/test_modes_commands.py`) and `test_main_reply_keyboard_structure` (in `tests/test_ui_interactive_hubs.py`).
-  - RED: Both failed before implementation (`AssertionError: assert 'draft' == 'auto'`, `AssertionError: Expected 6 buttons, got 8`).
-  - GREEN: Both passed cleanly after implementation.
-  - Regression Suite: 43/43 tests passed in 16.49s. Zero regressions across all test suites.
+  - `test_crm_creates_contact_in_auto_mode` (in `tests/test_modes_commands.py`), `test_main_reply_keyboard_structure` and `test_dashboard_renders_live_metrics_and_hubs` (in `tests/test_ui_interactive_hubs.py`).
+  - RED: Verified failures on all tests before fixes (`menu:mode` and `menu:main` assertion errors).
+  - GREEN: All tests passed cleanly after fixes.
+  - Regression Suite: 43/43 tests passed in 17.56s. Zero regressions across all test suites.
 
