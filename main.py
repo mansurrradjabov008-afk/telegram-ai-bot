@@ -115,6 +115,7 @@ async def main():
     tasks = []
     if admin_bot_service.bot:
         logger.info("🤖 Admin Cockpit Bot polling starting...")
+        await admin_bot_service.setup_bot_commands()
         tasks.append(
             asyncio.create_task(
                 admin_bot_service.dp.start_polling(

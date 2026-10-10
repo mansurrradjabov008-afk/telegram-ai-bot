@@ -262,6 +262,36 @@ def normalize_and_validate_username(raw: str) -> Optional[str]:
     return None
 
 
+MODE_ALIASES: Dict[str, str] = {
+    "auto": "auto",
+    "avto": "auto",
+    "avtomatik": "auto",
+    "automatic": "auto",
+    "draft": "draft",
+    "qoralama": "draft",
+    "tasdiq": "draft",
+    "tasdiqlash": "draft",
+    "tekshir": "draft",
+    "mute": "mute",
+    "ovozsiz": "mute",
+    "ochir": "mute",
+    "o'chir": "mute",
+    "jim": "mute",
+    "ignore": "mute",
+}
+
+
+def parse_autonomy_mode(raw: Optional[str]) -> Optional[str]:
+    """
+    Parses and normalizes autonomy mode string with support for Uzbek and English aliases.
+    Returns 'auto', 'draft', or 'mute', or None if unrecognized.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    cleaned = raw.strip().lower()
+    return MODE_ALIASES.get(cleaned)
+
+
 class ReplyState(StatesGroup):
     waiting_for_custom_reply = State()
     waiting_for_draft_edit = State()
@@ -311,6 +341,26 @@ class AdminBotService:
         self._manual_reply_check_fn = fn
 
 
+    async def setup_bot_commands(self):
+        """Registers clean, descriptive Telegram bot commands with BotFather/Telegram API."""
+        if not self.bot:
+            return
+        commands = [
+            types.BotCommand(command="mode", description="⚙️ Kontaktlar avtonomiya rejimlarini boshqarish"),
+            types.BotCommand(command="contacts", description="👥 Saqlangan kontaktlar ro'yxati"),
+            types.BotCommand(command="drafts", description="📝 Kutilayotgan qoralamalar va tasdiqlash"),
+            types.BotCommand(command="crm", description="👤 Kontakt munosabati va ko'rsatma"),
+            types.BotCommand(command="status", description="📊 Tizim holati va avtonomiya hisoboti"),
+            types.BotCommand(command="memory", description="🧠 Kontakt xotirasi boshqaruvi"),
+            types.BotCommand(command="digest", description="📰 Executive yangiliklar xulosasi"),
+            types.BotCommand(command="tasks", description="⏰ Rejalashtirilgan vazifalar"),
+        ]
+        try:
+            await self.bot.set_my_commands(commands)
+            logger.info("✅ Telegram bot commands menu registered successfully.")
+        except Exception as e:
+            logger.warning(f"Could not register Telegram bot commands: {e}")
+
     def _is_admin(self, user_id: int) -> bool:
         """Owner-only check comparing numeric Telegram ID with owner ID. Returns False if unconfigured or mismatched."""
         effective_id = self.admin_id if self.admin_id is not None else settings.owner_id_effective
@@ -341,11 +391,12 @@ class AdminBotService:
             )
             builder = InlineKeyboardBuilder()
             builder.button(text="📰 Executive Digest", callback_data="digest:open")
-            builder.button(text="📋 Kontaktlar", callback_data="menu:contacts")
+            builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
+            builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
             builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
             builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
             builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-            builder.adjust(2, 3)
+            builder.adjust(2, 2, 2)
             await safe_reply(message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
         @dp.message(Command("status"))
@@ -954,99 +1005,303 @@ class AdminBotService:
             else:
                 await _apply_contact_instruction(message, target, "Samimiy, do'stona muloqot")
 
+        async def _extract_contact_from_reply(reply_msg: types.Message) -> Optional[Any]:
+            """Helper to extract a CRM contact from a replied message."""
+            if not reply_msg:
+                return None
+            if getattr(reply_msg, "forward_from", None) and reply_msg.forward_from.id:
+                c = await self.db_manager.get_contact_by_id(reply_msg.forward_from.id)
+                if c:
+                    return c
+            text = reply_msg.text or reply_msg.caption or ""
+            # Check draft id pattern: #(\d+)
+            d_match = re.search(r"#(\d+)", text)
+            if d_match:
+                draft = await self.db_manager.get_draft_by_id(int(d_match.group(1)))
+                if draft:
+                    if draft.contact_user_id:
+                        c = await self.db_manager.get_contact_by_id(draft.contact_user_id)
+                        if c:
+                            return c
+                    if draft.contact_username:
+                        c = await self.db_manager.get_contact_by_username(draft.contact_username)
+                        if c:
+                            return c
+            # Check @username pattern
+            u_match = re.search(r"@([a-zA-Z0-9_]{3,32})", text)
+            if u_match:
+                c = await self.db_manager.find_contact(u_match.group(1))
+                if c:
+                    return c
+            return None
+
+        async def _render_single_contact_mode(target_msg: types.Message, contact: Any, is_callback: bool = False):
+            """Renders individual contact mode switch card with clear buttons."""
+            mode = getattr(contact, "mode", "draft") or "draft"
+            uname = f"@{contact.username}" if contact.username else f"ID:{contact.user_id}"
+            safe_uname = html.escape(uname)
+            safe_name = html.escape(contact.full_name or "Noma'lum")
+            style = getattr(contact, "addressing_style", "siz") or "siz"
+            safe_style = "🔵 SIZ (Sizlash)" if style == "siz" else "🟢 SEN (Sensirash)"
+            safe_instr = html.escape(contact.custom_instructions or "Mavjud emas")
+
+            mode_badges = {
+                "auto": "⚡ auto (Avtomatik javob)",
+                "draft": "📝 draft (Qoralama / Tasdiq bilan)",
+                "mute": "🔇 mute (Ovozsiz / E'tiborsiz)",
+            }
+
+            text = (
+                f"⚙️ <b>KONTAKT AVTONOMIYA REJIMI:</b>\n\n"
+                f"👤 <b>Kontakt:</b> <code>{safe_uname}</code> ({safe_name})\n"
+                f"🆔 <b>Telegram ID:</b> <code>{contact.user_id}</code>\n"
+                f"🔄 <b>Hozirgi rejim:</b> <b>{mode_badges.get(mode, mode)}</b>\n"
+                f"🗣 <b>Murojaat uslubi:</b> {safe_style}\n"
+                f"📜 <b>Ko'rsatma:</b> <i>\"{safe_instr}\"</i>\n\n"
+                f"💡 <i>Rejimni o'zgartirish uchun kerakli tugmani bosing:</i>"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(
+                text="✅ ⚡ Auto" if mode == "auto" else "⚡ Auto",
+                callback_data=f"mode_set:{contact.user_id}:auto",
+            )
+            builder.button(
+                text="✅ 📝 Draft" if mode == "draft" else "📝 Draft",
+                callback_data=f"mode_set:{contact.user_id}:draft",
+            )
+            builder.button(
+                text="✅ 🔇 Mute" if mode == "mute" else "🔇 Mute",
+                callback_data=f"mode_set:{contact.user_id}:mute",
+            )
+            builder.button(text="📋 Barcha rejimlar", callback_data="mode:refresh")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(3, 2)
+
+            if is_callback:
+                await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        async def _render_mode_panel(target_msg: types.Message, is_callback: bool = False):
+            """Renders interactive autonomy mode management cockpit with one-tap toggle buttons."""
+            contacts = await self.db_manager.list_contacts()
+            counts = await self.db_manager.get_mode_counts()
+
+            lines = [
+                "⚙️ <b>AVTONOMIYA REJIMLARI BOSHQARUVI:</b>\n",
+                "💡 <b>Rejimlar:</b>",
+                "• ⚡ <b>auto</b> — Bot avtomatik javob beradi (xavfsiz mavzularda)",
+                "• 📝 <b>draft</b> — Qoralama tayyorlaydi, faqat siz tasdiqlagach yuboriladi",
+                "• 🔇 <b>mute</b> — Bot bu kontaktni to'liq e'tiborsiz qoldiradi\n",
+                f"📊 <b>Statistika:</b> ⚡ auto: {counts.get('auto', 0)} | 📝 draft: {counts.get('draft', 0)} | 🔇 mute: {counts.get('mute', 0)} (Jami: {counts.get('total', 0)})\n",
+            ]
+
+            builder = InlineKeyboardBuilder()
+
+            if not contacts:
+                lines.append("<i>Hozircha kontaktlar mavjud emas. Uni /crm orqali qo'shing.</i>")
+            else:
+                lines.append("📋 <b>Kontaktlar va ularning faol rejimlari:</b>")
+                for idx, c in enumerate(contacts, 1):
+                    uname = f"@{c.username}" if c.username else f"ID:{c.user_id}"
+                    safe_uname = html.escape(uname)
+                    safe_name = html.escape(c.full_name or "")
+                    mode = getattr(c, "mode", "draft") or "draft"
+
+                    if mode == "auto":
+                        badge = "⚡ auto (Avtomatik)"
+                    elif mode == "mute":
+                        badge = "🔇 mute (Ovozsiz)"
+                    else:
+                        badge = "📝 draft (Qoralama)"
+
+                    lines.append(f"<b>{idx}. {safe_uname}</b> ({safe_name}): <code>{badge}</code>")
+
+                    # Row 1: Contact card opener
+                    builder.button(
+                        text=f"👤 {uname} ({safe_name[:12]})",
+                        callback_data=f"mode_pick:{c.user_id}",
+                    )
+                    # Row 2: 3 inline buttons for instant mode toggle
+                    builder.button(
+                        text="✅ ⚡ Auto" if mode == "auto" else "⚡ Auto",
+                        callback_data=f"mode_set:{c.user_id}:auto",
+                    )
+                    builder.button(
+                        text="✅ 📝 Draft" if mode == "draft" else "📝 Draft",
+                        callback_data=f"mode_set:{c.user_id}:draft",
+                    )
+                    builder.button(
+                        text="✅ 🔇 Mute" if mode == "mute" else "🔇 Mute",
+                        callback_data=f"mode_set:{c.user_id}:mute",
+                    )
+
+            # Bulk actions
+            builder.button(text="⚡ Barchasini Auto", callback_data="mode_bulk:auto")
+            builder.button(text="📝 Barchasini Draft", callback_data="mode_bulk:draft")
+            builder.button(text="🔇 Barchasini Mute", callback_data="mode_bulk:mute")
+
+            # Navigations
+            builder.button(text="🔄 Yangilash", callback_data="mode:refresh")
+            builder.button(text="👥 CRM Kontaktlar", callback_data="crm:refresh")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+
+            layout = []
+            for _ in contacts:
+                layout.extend([1, 3])
+            layout.extend([3, 3])
+            builder.adjust(*layout)
+
+            content = "\n".join(lines)
+            if is_callback:
+                await target_msg.edit_text(content, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply_or_send_long(target_msg, content, reply_markup=builder.as_markup())
+
         @dp.message(Command("mode"))
         async def cmd_mode(message: types.Message):
             if not self._is_admin(message.from_user.id):
                 return
 
             text_after = message.text[len("/mode"):].strip()
+
+            # 1. No arguments provided
             if not text_after:
-                contacts = await self.db_manager.list_contacts()
-                lines = [
-                    "⚙️ <b>AVTONOMIYA REJIMLARI BOSHQARUVI:</b>\n",
-                    "📌 <b>Foydalanish:</b>",
-                    "• <code>/mode @username auto|draft|mute</code>\n",
-                    "💡 <b>Rejimlar:</b>",
-                    "• ⚡ <b>auto</b> — Bot avtomatik javob beradi (xavfli mavzulardan tashqari)",
-                    "• 📝 <b>draft</b> — Bot javob tayyorlaydi, lekin faqat siz tasdiqlagach yuboriladi",
-                    "• 🔇 <b>mute</b> — Bot bu kontaktni to'liq e'tiborsiz qoldiradi\n",
-                    "📋 <b>Hozirgi kontaktlar rejimlari:</b>",
-                ]
-                if not contacts:
-                    lines.append("<i>Hozircha kontaktlar mavjud emas.</i>")
-                else:
-                    for c in contacts:
-                        uname = f"@{c.username}" if c.username else c.full_name
-                        safe_uname = html.escape(uname)
-                        mode = getattr(c, "mode", "draft") or "draft"
-                        if mode == "auto":
-                            badge = "⚡ auto (Avtomatik)"
-                        elif mode == "mute":
-                            badge = "🔇 mute (Ovozsiz)"
-                        else:
-                            badge = "📝 draft (Qoralama)"
-                        lines.append(f"• <b>{safe_uname}</b>: <code>{badge}</code>")
-
-                builder = InlineKeyboardBuilder()
-                builder.button(text="📋 Barcha kontaktlar", callback_data="crm:refresh")
-                builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                builder.adjust(1, 1)
-
-                return await safe_reply(message, "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+                if message.reply_to_message:
+                    replied_contact = await _extract_contact_from_reply(message.reply_to_message)
+                    if replied_contact:
+                        return await _render_single_contact_mode(message, replied_contact, is_callback=False)
+                return await _render_mode_panel(message, is_callback=False)
 
             parts = text_after.split()
-            if len(parts) < 2:
+
+            # 2. Check for bulk command: /mode all auto, /mode barchasi draft, /mode hammasi mute
+            if len(parts) >= 2 and parts[0].lower() in ("all", "barchasi", "hammasi", "hamma"):
+                target_mode = parse_autonomy_mode(parts[1])
+                if not target_mode:
+                    return await safe_reply(
+                        message,
+                        f"⚠️ <b>Noto'g'ri rejim:</b> '{html.escape(parts[1])}'\n"
+                        f"Mavjud rejimlar: <code>auto</code>, <code>draft</code>, <code>mute</code>",
+                        parse_mode="HTML",
+                    )
+                count = await self.db_manager.update_all_contacts_mode(target_mode)
+                label = {"auto": "⚡ auto (Avtomatik)", "draft": "📝 draft (Qoralama)", "mute": "🔇 mute (Ovozsiz)"}.get(target_mode, target_mode)
+                await safe_reply(
+                    message,
+                    f"✅ <b>Barcha {count} ta kontakt rejimi {label} ga o'zgartirildi!</b>",
+                    parse_mode="HTML",
+                )
+                return await _render_mode_panel(message, is_callback=False)
+
+            # 3. Check if single argument provided
+            if len(parts) == 1:
+                single_arg = parts[0]
+                mode_cand = parse_autonomy_mode(single_arg)
+                if mode_cand and message.reply_to_message:
+                    replied_contact = await _extract_contact_from_reply(message.reply_to_message)
+                    if replied_contact:
+                        await self.db_manager.update_contact_mode(replied_contact.user_id, mode_cand)
+                        label = {"auto": "⚡ auto (Avtomatik)", "draft": "📝 draft (Qoralama)", "mute": "🔇 mute (Ovozsiz)"}.get(mode_cand, mode_cand)
+                        return await safe_reply(
+                            message,
+                            f"✅ <code>@{replied_contact.username or replied_contact.user_id}</code> rejimi o'zgartirildi: <b>{label}</b>.",
+                            parse_mode="HTML",
+                        )
+                elif mode_cand:
+                    contacts = await self.db_manager.list_contacts()
+                    builder = InlineKeyboardBuilder()
+                    for c in contacts:
+                        uname = f"@{c.username}" if c.username else c.full_name
+                        builder.button(text=f"👤 {uname}", callback_data=f"mode_set:{c.user_id}:{mode_cand}")
+                    builder.button(text="🔙 Barcha rejimlar", callback_data="mode:refresh")
+                    builder.adjust(2)
+                    label = {"auto": "⚡ auto", "draft": "📝 draft", "mute": "🔇 mute"}.get(mode_cand, mode_cand)
+                    return await safe_reply(
+                        message,
+                        f"📌 <b>Qaysi kontaktni {label} rejimiga o'tkazmoqchisiz?</b>\n"
+                        f"Quyidagi ro'yxatdan tanlang:",
+                        reply_markup=builder.as_markup(),
+                        parse_mode="HTML",
+                    )
+
+                # Target contact lookup
+                contact = await self.db_manager.find_contact(single_arg)
+                if contact:
+                    return await _render_single_contact_mode(message, contact, is_callback=False)
+                else:
+                    return await safe_reply(
+                        message,
+                        f"❌ <b>'{html.escape(single_arg)}' nomli kontakt topilmadi.</b>\n\n"
+                        f"📌 <b>Foydalanish:</b> <code>/mode @username auto|draft|mute</code>\n"
+                        f"Yoki barcha kontaktlarni ko'rish uchun <code>/mode</code> deb yozing.",
+                        parse_mode="HTML",
+                    )
+
+            # 4. Two or more arguments: flexible ordering (/mode @username auto or /mode auto @username)
+            target_mode = None
+            target_contact_query = None
+
+            if parse_autonomy_mode(parts[0]):
+                target_mode = parse_autonomy_mode(parts[0])
+                target_contact_query = " ".join(parts[1:])
+            elif parse_autonomy_mode(parts[-1]):
+                target_mode = parse_autonomy_mode(parts[-1])
+                target_contact_query = " ".join(parts[:-1])
+            elif parse_autonomy_mode(parts[1]):
+                target_mode = parse_autonomy_mode(parts[1])
+                target_contact_query = parts[0]
+            else:
                 return await safe_reply(
                     message,
-                    "⚠️ <b>Noto'g'ri format.</b>\n"
-                    "Foydalanish: <code>/mode @username auto|draft|mute</code>\n"
-                    "Misol: <code>/mode @ali auto</code>",
+                    f"⚠️ <b>Noto'g'ri format yoki rejim!</b>\n\n"
+                    f"📌 <b>To'g'ri format:</b> <code>/mode @username auto|draft|mute</code>\n"
+                    f"💡 <b>Mavjud rejimlar:</b> <code>auto</code>, <code>draft</code>, <code>mute</code>\n"
+                    f"Misol: <code>/mode @ali auto</code> yoki <code>/mode auto @ali</code>",
                     parse_mode="HTML",
                 )
 
-            raw_username, raw_mode = parts[0], parts[1].lower()
-            normalized_username = normalize_and_validate_username(raw_username)
-            if not normalized_username:
-                return await safe_reply(
-                    message,
-                    "❌ <b>Noto'g'ri username formati!</b>\n"
-                    "Username 5-32 belgidan iborat bo'lishi va harf bilan boshlanishi kerak (masalan: <code>@foydalanuvchi</code>).",
-                    parse_mode="HTML",
-                )
-
-            if raw_mode not in ("auto", "draft", "mute"):
-                return await safe_reply(
-                    message,
-                    "⚠️ <b>Noto'g'ri rejim!</b>\n"
-                    "Mavjud rejimlar: <code>auto</code>, <code>draft</code>, <code>mute</code>.",
-                    parse_mode="HTML",
-                )
-
-            contact = await self.db_manager.get_contact_by_username(normalized_username)
+            contact = await self.db_manager.find_contact(target_contact_query)
             if not contact:
+                clean_uname = target_contact_query.lstrip("@").strip()
                 return await safe_reply(
                     message,
-                    f"❌ <code>@{normalized_username}</code> kontaktlar ro'yxatida topilmadi.\n"
-                    f"Uni avval <code>/crm @{normalized_username} [ko'rsatma]</code> orqali qo'shing.",
+                    f"❌ <code>@{html.escape(clean_uname)}</code> kontaktlar ro'yxatida topilmadi.\n\n"
+                    f"Uni avval qo'shish uchun: <code>/crm @{html.escape(clean_uname)} siz [ko'rsatma]</code>\n"
+                    f"Yoki barcha mavjud kontaktlar uchun: <code>/mode</code> deb yozing.",
                     parse_mode="HTML",
                 )
 
-            await self.db_manager.update_contact_mode_by_username(normalized_username, raw_mode)
-
+            await self.db_manager.update_contact_mode(contact.user_id, target_mode)
             mode_labels = {
                 "auto": "⚡ auto (Avtomatik javob)",
                 "draft": "📝 draft (Qoralama / Tasdiq kerak)",
                 "mute": "🔇 mute (Ovozsiz / E'tiborsiz)",
             }
-            label = mode_labels.get(raw_mode, raw_mode)
+            label = mode_labels.get(target_mode, target_mode)
 
             builder = InlineKeyboardBuilder()
-            builder.button(text="📋 Kontaktlar ro'yxati", callback_data="crm:refresh")
-            builder.adjust(1)
+            builder.button(
+                text="⚡ Auto" if target_mode != "auto" else "✅ Auto",
+                callback_data=f"mode_set:{contact.user_id}:auto",
+            )
+            builder.button(
+                text="📝 Draft" if target_mode != "draft" else "✅ Draft",
+                callback_data=f"mode_set:{contact.user_id}:draft",
+            )
+            builder.button(
+                text="🔇 Mute" if target_mode != "mute" else "✅ Mute",
+                callback_data=f"mode_set:{contact.user_id}:mute",
+            )
+            builder.button(text="📋 Barcha rejimlar", callback_data="mode:refresh")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(3, 2)
 
+            display_name = f"@{contact.username}" if contact.username else contact.full_name
             await safe_reply(
                 message,
-                f"✅ <code>@{normalized_username}</code> rejimi o'zgartirildi: <b>{label}</b>.",
+                f"✅ <code>{html.escape(display_name)}</code> rejimi o'zgartirildi: <b>{label}</b>.",
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML",
             )
@@ -1489,6 +1744,28 @@ class AdminBotService:
             if not self._is_admin(message.from_user.id):
                 return
 
+            # 0. Check if this is a natural mode change request (e.g. @username ni auto qil)
+            mode_intent_match = re.search(
+                r"(?i)(?:^|.*?)(@?[a-zA-Z0-9_]{3,32})\s+(?:ni\s+)?(auto|avto|avtomatik|draft|qoralama|tasdiq|mute|ovozsiz|ochir)\s*(?:rejimiga\s+o'tkaz|rejimiga\s+quyil|rejimiga\s+quy|rejimiga\s+o't|rejimiga|rejimida|qil|qoy|qo'y)?",
+                message.text
+            )
+            if mode_intent_match:
+                tgt = mode_intent_match.group(1)
+                raw_m = mode_intent_match.group(2)
+                parsed_m = parse_autonomy_mode(raw_m)
+                if parsed_m:
+                    contact = await self.db_manager.find_contact(tgt)
+                    if contact:
+                        await self.db_manager.update_contact_mode(contact.user_id, parsed_m)
+                        labels = {"auto": "⚡ auto (Avtomatik)", "draft": "📝 draft (Qoralama)", "mute": "🔇 mute (Ovozsiz)"}
+                        lbl = labels.get(parsed_m, parsed_m)
+                        uname = f"@{contact.username}" if contact.username else contact.full_name
+                        return await safe_reply(
+                            message,
+                            f"✅ <code>{html.escape(uname)}</code> avtonomiya rejimi o'zgartirildi: <b>{lbl}</b>.",
+                            parse_mode="HTML",
+                        )
+
             # 1. Check if this is a scheduling request
             handled = await _schedule_and_respond(message, message.text)
             if handled:
@@ -1905,12 +2182,16 @@ class AdminBotService:
                 )
                 builder = InlineKeyboardBuilder()
                 builder.button(text="📰 Executive Digest", callback_data="digest:open")
-                builder.button(text="📋 Kontaktlar", callback_data="menu:contacts")
+                builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
+                builder.button(text="⚙️ Avtonomiya (Mode)", callback_data="menu:mode")
                 builder.button(text="📝 Qoralamalar", callback_data="menu:drafts")
                 builder.button(text="⏰ Rejadagi vazifalar", callback_data="menu:tasks")
                 builder.button(text="⚡ Tizim holati", callback_data="menu:status")
-                builder.adjust(2, 3)
+                builder.adjust(2, 2, 2)
                 await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            elif action == "mode":
+                await callback.answer()
+                await _render_mode_panel(callback.message, is_callback=True)
             elif action == "contacts":
                 await callback.answer()
                 await _render_contacts_list(callback.message, is_callback=True)
@@ -2025,21 +2306,14 @@ class AdminBotService:
             if new_mode not in ("auto", "draft", "mute"):
                 return await callback.answer("Noto'g'ri rejim.", show_alert=True)
 
-            if target_user.isdigit():
-                contact = await self.db_manager.get_contact_by_id(int(target_user))
-                if contact:
-                    if contact.mode == new_mode:
-                        return await callback.answer("Allaqachon ushbu rejimda.")
-                    await self.db_manager.update_contact_mode(contact.user_id, new_mode)
-            else:
-                contact = await self.db_manager.get_contact_by_username(target_user)
-                if contact:
-                    if contact.mode == new_mode:
-                        return await callback.answer("Allaqachon ushbu rejimda.")
-                    await self.db_manager.update_contact_mode_by_username(target_user, new_mode)
-
+            contact = await self.db_manager.find_contact(target_user)
             if not contact:
                 return await callback.answer("Kontakt topilmadi.", show_alert=True)
+
+            if contact.mode == new_mode:
+                return await callback.answer("Allaqachon ushbu rejimda.")
+
+            await self.db_manager.update_contact_mode(contact.user_id, new_mode)
 
             mode_labels = {
                 "auto": "⚡ auto (Avtomatik)",
@@ -2049,15 +2323,75 @@ class AdminBotService:
             await callback.answer(f"✅ @{contact.username or target_user} rejimi {mode_labels.get(new_mode, new_mode)} ga o'zgartirildi!")
             await _render_contacts_list(callback.message, is_callback=True)
 
+        @dp.callback_query(F.data.startswith("mode_set:"))
+        async def handle_mode_set(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            user_id = int(parts[1])
+            new_mode = parts[2]
+
+            contact = await self.db_manager.get_contact_by_id(user_id)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+
+            if contact.mode == new_mode:
+                return await callback.answer("Allaqachon ushbu rejimda.")
+
+            await self.db_manager.update_contact_mode(user_id, new_mode)
+            labels = {
+                "auto": "⚡ auto (Avtomatik)",
+                "draft": "📝 draft (Qoralama)",
+                "mute": "🔇 mute (Ovozsiz)",
+            }
+            display_name = f"@{contact.username}" if contact.username else contact.full_name
+            await callback.answer(f"✅ {display_name} rejimi {labels.get(new_mode, new_mode)} ga o'zgartirildi!")
+
+            # If inside single-contact card, refresh single-contact card, else full panel
+            if "KONTAKT AVTONOMIYA REJIMI:" in (callback.message.text or ""):
+                updated_c = await self.db_manager.get_contact_by_id(user_id)
+                await _render_single_contact_mode(callback.message, updated_c, is_callback=True)
+            else:
+                await _render_mode_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("mode_bulk:"))
+        async def handle_mode_bulk(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            new_mode = callback.data.split(":")[1]
+            count = await self.db_manager.update_all_contacts_mode(new_mode)
+            labels = {
+                "auto": "⚡ auto (Avtomatik)",
+                "draft": "📝 draft (Qoralama)",
+                "mute": "🔇 mute (Ovozsiz)",
+            }
+            await callback.answer(f"✅ Barcha {count} ta kontakt {labels.get(new_mode, new_mode)} ga o'tkazildi!", show_alert=True)
+            await _render_mode_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("mode_pick:"))
+        async def handle_mode_pick(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(user_id)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+            await callback.answer()
+            await _render_single_contact_mode(callback.message, contact, is_callback=True)
+
+        @dp.callback_query(F.data == "mode:refresh")
+        async def handle_mode_refresh(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer("Rejimlar yangilandi")
+            await _render_mode_panel(callback.message, is_callback=True)
+
         # ------------------ CONTACT MEMORY MANAGEMENT (PHASE 6) ------------------
         async def _resolve_target_contact(target_str: str) -> Optional[Any]:
             target_str = target_str.strip()
             if not target_str:
                 return None
-            if target_str.isdigit():
-                return await self.db_manager.get_contact_by_id(int(target_str))
-            clean = target_str.lstrip("@").strip()
-            return await self.db_manager.get_contact_by_username(clean)
+            return await self.db_manager.find_contact(target_str)
 
         @dp.message(Command("memory"))
         async def cmd_memory(message: types.Message):

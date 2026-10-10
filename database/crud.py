@@ -125,6 +125,16 @@ class DatabaseManager:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def update_all_contacts_mode(self, mode: str) -> int:
+        """Update autonomy mode ('auto', 'draft', 'mute') for ALL contacts in CRM."""
+        if mode not in ("auto", "draft", "mute"):
+            raise ValueError(f"Invalid mode '{mode}'. Must be 'auto', 'draft', or 'mute'.")
+        query = "UPDATE contacts SET mode = ?, updated_at = CURRENT_TIMESTAMP"
+        async with get_db(self.db_path) as db:
+            cursor = await db.execute(query, (mode,))
+            await db.commit()
+            return cursor.rowcount
+
     async def get_mode_counts(self) -> Dict[str, int]:
         """Fetch contact counts grouped by autonomy mode ('auto', 'draft', 'mute')."""
         query = "SELECT mode, COUNT(*) as cnt FROM contacts GROUP BY mode"
@@ -176,6 +186,49 @@ class DatabaseManager:
                 if not row:
                     return None
                 return Contact(**dict(row))
+
+    async def find_contact(self, query_str: str) -> Optional[Contact]:
+        """
+        Flexibly find a contact by:
+        1. numeric user_id
+        2. username (with or without '@', case-insensitive)
+        3. full_name (case-insensitive exact or partial match)
+        """
+        if not query_str or not isinstance(query_str, str):
+            return None
+        cleaned = query_str.strip()
+        if not cleaned:
+            return None
+
+        # 1. By numeric user_id
+        if cleaned.isdigit():
+            c = await self.get_contact_by_id(int(cleaned))
+            if c:
+                return c
+
+        # 2. By username (case-insensitive)
+        uname = cleaned.lstrip("@").strip()
+        c = await self.get_contact_by_username(uname)
+        if c:
+            return c
+
+        # 3. By full_name exact match (case-insensitive)
+        query = "SELECT * FROM contacts WHERE LOWER(full_name) = LOWER(?) ORDER BY updated_at DESC"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (cleaned,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return Contact(**dict(row))
+
+        # 4. By full_name partial match (case-insensitive)
+        query = "SELECT * FROM contacts WHERE LOWER(full_name) LIKE LOWER(?) ORDER BY updated_at DESC"
+        async with get_db(self.db_path) as db:
+            async with db.execute(query, (f"%{cleaned}%",)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return Contact(**dict(row))
+
+        return None
 
     async def list_contacts(self) -> List[Contact]:
         """List all configured contacts in CRM."""
