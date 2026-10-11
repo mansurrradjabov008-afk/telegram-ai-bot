@@ -110,6 +110,31 @@ async def main():
             digest_time_str=getattr(settings, "DIGEST_TIME", "08:00"),
         )
 
+    # Register daily safe database backup and rotation (04:00 Asia/Tashkent)
+    from apscheduler.triggers.cron import CronTrigger
+    from services.backup_manager import create_safe_backup, execute_backup_rotation
+    import pytz
+
+    def _run_scheduled_backup():
+        try:
+            ok, b_path, res = create_safe_backup("data/butler.db", "data/backups")
+            if ok:
+                execute_backup_rotation("data/backups", keep_count=7, dry_run=False)
+                logger.info("Daily safe backup completed successfully.")
+            else:
+                logger.warning(f"Daily backup failed integrity check: {res}")
+        except Exception as e:
+            logger.error(f"Error during scheduled database backup: {type(e).__name__}")
+
+    scheduler_service.scheduler.add_job(
+        _run_scheduled_backup,
+        CronTrigger(hour=4, minute=0, timezone=pytz.timezone(settings.TIMEZONE)),
+        id="daily_safe_db_backup",
+        name="Daily Safe Database Backup",
+        replace_existing=True,
+    )
+    logger.info("✅ Daily safe database backup scheduled at 04:00.")
+
     # 6. Initialize MTProto Userbot
     has_userbot_creds = userbot_service.init_client()
     if has_userbot_creds:
@@ -121,7 +146,14 @@ async def main():
     else:
         logger.warning("⚠️ Userbot credentials not configured in .env. Running in dry/standby mode.")
 
-    # 7. Start Admin Bot Polling
+    # 7. Start Web Keep-Alive (Zero-Sleep Cloud Server)
+    from services.web_keepalive import start_keepalive_server
+    try:
+        await start_keepalive_server(default_port=7860)
+    except Exception as e:
+        logger.warning(f"Could not start Keep-Alive web server: {e}")
+
+    # 8. Start Admin Bot Polling
     tasks = []
     if admin_bot_service.bot:
         logger.info("🤖 Admin Cockpit Bot polling starting...")

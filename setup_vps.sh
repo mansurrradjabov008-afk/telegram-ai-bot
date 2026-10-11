@@ -33,6 +33,8 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 echo "⚙️ [4/5] Systemd 24/7 to'xtovsiz xizmati sozlanmoqda..."
+sudo touch /var/log/butler.log /var/log/butler_error.log
+sudo chown $CURRENT_USER:$CURRENT_USER /var/log/butler.log /var/log/butler_error.log
 SERVICE_FILE="/etc/systemd/system/butler.service"
 
 sudo bash -c "cat > $SERVICE_FILE" <<EOF
