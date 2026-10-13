@@ -73,3 +73,56 @@ async def test_ask_jarvis_no_canned_dodging():
     # Must NOT contain the old useless canned phrase!
     assert "Barcha tizimlar to'liq avtonom rejimda nazoratim ostida" not in reply
     assert "topshirig'ingiz qabul qilindi" in reply.lower() or "schedule" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_natural_schedule_cyrillic_contact_suhrob():
+    """Verifies that Latin 'Suhrobdan ... 2minutdan keyin yoz' matches Cyrillic contact 'Сухров Омонов'."""
+    contacts = [
+        MockContact(8747692548, "SuhrobOmonov12", "Сухров Омонов"),
+        MockContact(265367488, "ravshanov_dev", "ravshanov_dev"),
+    ]
+
+    query = "Suhrobdan surachi nima gaplar ekan 2minutdan keyin yoz"
+    res = parse_deterministic_schedule(query, tz_name="Asia/Tashkent", contacts=contacts)
+
+    assert res is not None
+    assert res.target_peer == "@SuhrobOmonov12"
+    assert "nima gaplar" in res.message_text.lower()
+    assert "2 daqiqadan so'ng" in res.human_time
+
+
+@pytest.mark.asyncio
+async def test_contextual_schedule_after_preview_without_peer():
+    """Verifies that contextual schedule command 'Bugun qayerga boramiz deb 5minutdan keyin yoz' uses default_peer."""
+    contacts = [
+        MockContact(8747692548, "SuhrobOmonov12", "Сухров Омонов"),
+        MockContact(265367488, "ravshanov_dev", "ravshanov_dev"),
+    ]
+
+    query = "Bugun qayerga boramiz deb 5minutdan keyin yoz"
+    res = parse_deterministic_schedule(
+        query,
+        tz_name="Asia/Tashkent",
+        contacts=contacts,
+        default_peer="@SuhrobOmonov12",
+    )
+
+    assert res is not None
+    assert res.target_peer == "@SuhrobOmonov12"
+    assert "bugun qayerga boramiz" in res.message_text.lower()
+    assert "5 daqiqadan so'ng" in res.human_time
+
+
+@pytest.mark.asyncio
+async def test_no_false_alias_from_stopwords():
+    """Verifies that ravshanov_dev (dev -> deb) does not accidentally match 'deb' in schedule sentences."""
+    contacts = [
+        MockContact(265367488, "ravshanov_dev", "ravshanov_dev"),
+    ]
+
+    query = "Ertaga soat 10:00 da dars boshlanadi deb yoz"
+    res = parse_deterministic_schedule(query, tz_name="Asia/Tashkent", contacts=contacts)
+    # Since neither ravshanov nor @ravshanov_dev is in query, it should NOT match ravshanov_dev
+    if res is not None:
+        assert res.target_peer != "@ravshanov_dev"

@@ -259,6 +259,21 @@ class DatabaseManager:
                 if row:
                     return Contact(**dict(row))
 
+        # 5. By transliterated full_name and smart alias matching
+        all_contacts = await self.list_contacts()
+        try:
+            from services.schedule_parser import generate_contact_aliases
+            clean_low = cleaned.lower().lstrip("@")
+            for c in all_contacts:
+                aliases = generate_contact_aliases(c.username, c.full_name)
+                if clean_low in aliases:
+                    return c
+                for a in aliases:
+                    if len(clean_low) >= 3 and (clean_low == a or clean_low in a or a in clean_low):
+                        return c
+        except Exception:
+            pass
+
         return None
 
     async def list_contacts(self) -> List[Contact]:

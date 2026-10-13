@@ -40,6 +40,7 @@ from services.schedule_parser import (
     extract_peer_and_text_without_time,
     clean_target_peer,
     clean_message_text,
+    generate_contact_aliases,
     ScheduleParseResult,
 )
 from services.memory_categories import normalize_category, CANONICAL_CATEGORIES, CATEGORY_SYNONYMS
@@ -397,8 +398,38 @@ class AdminBotService:
         self._pending_escalations: Dict[str, Dict[str, Any]] = {}
         self._pending_outreach: Optional[Dict[str, Any]] = None
         self._pending_outreach_drafts: Dict[str, Dict[str, Any]] = {}
+        self._last_active_contact: Optional[Dict[str, Any]] = None
 
         self._setup_handlers()
+
+    def _get_contextual_peer(self) -> Optional[str]:
+        """
+        Retrieves the most recent active target peer within the last 15 minutes,
+        checking pending outreach drafts, pending single-word outreach, or last active contact card.
+        """
+        now = time.time()
+        # 1. Check pending outreach drafts (most recent first)
+        if self._pending_outreach_drafts:
+            sorted_drafts = sorted(
+                self._pending_outreach_drafts.values(),
+                key=lambda x: x.get("created_at", 0),
+                reverse=True,
+            )
+            for d in sorted_drafts:
+                if now - d.get("created_at", 0) <= 900 and d.get("peer"):
+                    return d["peer"]
+
+        # 2. Check pending outreach confirmation
+        if self._pending_outreach and now - self._pending_outreach.get("time", 0) <= 900:
+            if self._pending_outreach.get("peer"):
+                return self._pending_outreach["peer"]
+
+        # 3. Check last viewed / interacted contact card
+        if self._last_active_contact and now - self._last_active_contact.get("time", 0) <= 900:
+            if self._last_active_contact.get("peer"):
+                return self._last_active_contact["peer"]
+
+        return None
 
     def set_memory_service(self, memory_service: Any):
         """Sets Contact Memory service instance."""
@@ -1345,6 +1376,20 @@ class AdminBotService:
             if not any(k in lower_text for k in inquiry_keywords):
                 return False
 
+            # If user message contains a scheduling time directive, do not intercept as immediate inquiry.
+            # Let _schedule_and_respond handle it.
+            rel_schedule_match = re.search(
+                r"\b(\d+)\s*(?:daqiqa|minut|минут|daq|min|soat|соат|час|hour|minute)[\w]*\s*(?:keyin|so['`’‘]?ng|song|o['`’‘]?tib|otib)\b",
+                raw_text,
+                re.IGNORECASE,
+            )
+            abs_schedule_match = re.search(
+                r"(?i)\b(?:ertaga|bugun)\s+soat\s+\d{1,2}:\d{2}\b|\b\d{1,2}:\d{2}\s*(?:da|ga)\s+yoz\b",
+                raw_text,
+            )
+            if rel_schedule_match or abs_schedule_match:
+                return False
+
             # Don't intercept digest or channel actions
             if any(w in lower_text for w in ["kanal", "channel", "dayjest", "digest", "manba"]):
                 return False
@@ -1356,27 +1401,11 @@ class AdminBotService:
                 raw_handle = target_match.group(1)
                 target_username = normalize_uzbek_username_token(raw_handle)
             else:
-                # Check if an existing contact is mentioned by name or honorific
+                # Check if an existing contact is mentioned by name, honorific, or smart alias
                 contacts = await self.db_manager.list_contacts()
                 for c in contacts:
-                    keys = []
-                    if c.username:
-                        keys.append(c.username.lower())
-                    if c.full_name:
-                        fn = c.full_name.lower()
-                        parts = [p.lower() for p in re.split(r"[\s_]+", fn) if len(p) >= 3]
-                        keys.append(fn)
-                        keys.append(f"{fn} aka")
-                        keys.append(f"{fn} opa")
-                        keys.append(f"{fn}jon")
-                        keys.append(f"{fn}bek")
-                        for p in parts:
-                            keys.append(p)
-                            keys.append(f"{p} aka")
-                            keys.append(f"{p} opa")
-                            keys.append(f"{p}jon")
-                    keys.sort(key=len, reverse=True)
-                    for k in keys:
+                    candidates = generate_contact_aliases(c.username, c.full_name)
+                    for k in candidates:
                         if re.search(rf"(?i)\b{re.escape(k)}(?:ga|da|dan|ni|ning|yga|yda)?\b", lower_text):
                             target_username = c.username or str(c.user_id)
                             break
@@ -1555,6 +1584,12 @@ class AdminBotService:
                 "time": time.time(),
                 "is_mission": is_delegation,
                 "deadline": deadline_str,
+            }
+            self._last_active_contact = {
+                "peer": f"@{clean_username}",
+                "user_id": resolved_peer_id or getattr(contact, "user_id", None),
+                "name": clean_display_name,
+                "time": time.time(),
             }
 
             if is_delegation:
@@ -1841,6 +1876,12 @@ class AdminBotService:
 
         async def _render_unified_contact_card(target_msg: types.Message, contact: Any, is_callback: bool = False):
             """Renders the Unified VIP Contact Card combining CRM tone, autonomy mode, memory stats and 1-tap controls."""
+            self._last_active_contact = {
+                "peer": f"@{contact.username}" if getattr(contact, "username", None) else str(contact.user_id),
+                "user_id": contact.user_id,
+                "name": getattr(contact, "full_name", None) or getattr(contact, "username", None) or str(contact.user_id),
+                "time": time.time(),
+            }
             mode = getattr(contact, "mode", "draft") or "draft"
             uname = f"@{contact.username}" if contact.username else f"ID:{contact.user_id}"
             safe_uname = html.escape(uname)
@@ -2172,10 +2213,16 @@ class AdminBotService:
             """Parses schedule request via hybrid parser and creates scheduled task."""
             tz = pytz.timezone(settings.TIMEZONE)
             contacts = await self.db_manager.list_contacts()
-            parsed = await parse_schedule_intent_hybrid(raw_text, self.ai_engine, settings.TIMEZONE, contacts=contacts)
+            ctx_peer = self._get_contextual_peer()
+            parsed = await parse_schedule_intent_hybrid(
+                raw_text,
+                self.ai_engine,
+                settings.TIMEZONE,
+                contacts=contacts,
+                default_peer=ctx_peer,
+            )
             if not parsed or not parsed.is_schedule:
                 return False
-
 
             target_peer = parsed.target_peer
             run_at = parsed.run_at
@@ -2187,6 +2234,13 @@ class AdminBotService:
                     message_text=msg_text,
                     run_at=run_at,
                 )
+
+                # Clear superseded immediate outreach drafts if this was for that peer
+                self._pending_outreach = None
+                if self._pending_outreach_drafts:
+                    for oid in list(self._pending_outreach_drafts.keys()):
+                        if self._pending_outreach_drafts[oid].get("peer") == target_peer:
+                            self._pending_outreach_drafts.pop(oid, None)
 
                 safe_target = html.escape(target_peer)
                 safe_msg = html.escape(msg_text)
@@ -3038,6 +3092,42 @@ class AdminBotService:
 
             contact = await self.db_manager.get_contact_by_id(target_user_id) if target_user_id else None
 
+            # Check if user typed a scheduling directive (e.g. "... 5 minutdan keyin yoz", "ertaga soat 10:00 da yubor")
+            contacts = await self.db_manager.list_contacts()
+            sched = parse_deterministic_schedule(
+                raw_text,
+                tz_name=settings.TIMEZONE,
+                contacts=contacts,
+                default_peer=target_peer,
+            )
+            if sched and sched.is_schedule:
+                try:
+                    task = await self.scheduler_service.schedule_message(
+                        target_peer=sched.target_peer,
+                        message_text=sched.message_text,
+                        run_at=sched.run_at,
+                    )
+                    await state.clear()
+                    tz = pytz.timezone(settings.TIMEZONE)
+                    formatted_time = format_task_time_human(sched.run_at.isoformat(), tz)
+                    safe_target = html.escape(sched.target_peer)
+                    safe_msg = html.escape(sched.message_text)
+
+                    return await safe_reply(
+                        message,
+                        f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
+                        f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
+                        f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
+                        f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
+                        f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🗑 <i>Bekor qilish uchun:</i> <code>bekor #{task.id}</code> deb yozing.",
+                        reply_markup=None,
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.error(f"Error scheduling in process_contact_outreach_message: {type(e).__name__}")
+
             # Check if this is an AI instruction (e.g. "deb yoz", "deb so'ra", "hol-ahvol so'ra")
             is_ai_prompt = any(w in raw_text.lower() for w in [
                 "deb yoz", "deb so'ra", "deb jonat", "deb jo'nat", "hol-ahvol", "surab ber",
@@ -3064,6 +3154,12 @@ class AdminBotService:
                 "username": target_username,
                 "text": prepared_text,
                 "created_at": time.time(),
+            }
+            self._last_active_contact = {
+                "peer": target_peer,
+                "user_id": target_user_id,
+                "name": target_name,
+                "time": time.time(),
             }
 
             style_badge = "🔵 SIZ (Sizlash)" if addressing_style == "siz" else "🟢 SEN (Sensirash)"
@@ -3163,15 +3259,8 @@ class AdminBotService:
             # Find matching contact from text
             matched_contact = None
             for c in contacts:
-                keys = []
-                if c.username:
-                    keys.append(c.username.lower().lstrip("@"))
-                if c.full_name:
-                    parts = [p.lower() for p in re.split(r"[\s_]+", c.full_name) if len(p) >= 3]
-                    keys.extend(parts)
-                keys.append(str(c.user_id))
-
-                for k in keys:
+                candidates = generate_contact_aliases(c.username, c.full_name)
+                for k in candidates:
                     if re.search(rf"(?i)\b{re.escape(k)}(?:ni|ga|da|dan|ning)?\b", lower_text):
                         matched_contact = c
                         break
@@ -3835,7 +3924,7 @@ class AdminBotService:
                     builder.adjust(1, 1)
                     await safe_edit(callback.message, success_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                 except Exception as e:
-                    logger.error(f"Failed to send outreach message to {peer}: {e}")
+                    logger.error(f"Failed to send outreach message to {peer}: {type(e).__name__}")
                     await safe_edit(
                         callback.message,
                         f"❌ <b>Xatolik yuz berdi:</b> Xabarni yuborib bo'lmadi ({html.escape(str(e))}).",

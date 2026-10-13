@@ -43,6 +43,85 @@ def clean_target_peer(peer_str: str) -> str:
     return peer
 
 
+ALIAS_STOPWORDS = {
+    "deb", "aka", "oka", "opa", "jon", "bek", "jura", "jo'ra", "siz", "sen",
+    "yoz", "ayt", "sura", "so'ra", "bormi", "qil", "ber", "edi", "bilan",
+    "uchun", "ham", "dev", "bot", "user", "admin", "test", "va", "da", "ga",
+    "dan", "ni", "ning", "yoq", "yo'q", "ha", "nima", "qayerga", "qayga",
+    "qachon", "kim", "qanday", "nechta", "bugun", "ertaga"
+}
+
+
+def generate_contact_aliases(username: Optional[str], full_name: Optional[str]) -> List[str]:
+    """
+    Generates a rich, phonetically and morphologically normalized list of alias candidates
+    for a contact, supporting Latin/Cyrillic transliteration, CamelCase usernames,
+    Uzbek honorifics ('aka', 'opa', 'jon', 'bek', 'jura'), and 'x'/'h' / 'v'/'b' orthographic variants.
+    """
+    from services.digest_cleaner import transliterate_uzbek_cyrillic_to_latin
+    raw_candidates = set()
+
+    if username:
+        u = username.lower().lstrip("@").strip()
+        if u:
+            raw_candidates.add(u)
+            no_digits = re.sub(r"\d+$", "", u)
+            if len(no_digits) >= 3:
+                raw_candidates.add(no_digits)
+            # CamelCase / word segment splitting: e.g. SuhrobOmonov12 -> ['Suhrob', 'Omonov']
+            parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\b)", username)
+            for p in parts:
+                p_clean = p.lower()
+                if len(p_clean) >= 3:
+                    raw_candidates.add(p_clean)
+
+    if full_name:
+        fn = full_name.strip()
+        if fn:
+            fn_lower = fn.lower()
+            raw_candidates.add(fn_lower)
+            lat = transliterate_uzbek_cyrillic_to_latin(fn).lower()
+            raw_candidates.add(lat)
+            for src in [fn_lower, lat]:
+                words = re.split(r"[\s_]+", src)
+                for w in words:
+                    w_clean = re.sub(r"[^a-zа-яё\']", "", w)
+                    if len(w_clean) >= 3:
+                        raw_candidates.add(w_clean)
+                        variants = [w_clean]
+                        if "x" in w_clean:
+                            variants.append(w_clean.replace("x", "h"))
+                        if "h" in w_clean:
+                            variants.append(w_clean.replace("h", "x"))
+                        for var in list(variants):
+                            raw_candidates.add(var)
+                            if var.endswith("v"):
+                                raw_candidates.add(var[:-1] + "b")
+                            if var.endswith("b"):
+                                raw_candidates.add(var[:-1] + "v")
+                            if var.endswith("rov"):
+                                raw_candidates.add(var[:-3] + "rob")
+                            if var.endswith("rob"):
+                                raw_candidates.add(var[:-3] + "rov")
+
+    # Filter out stopwords from base aliases
+    clean_base = {a for a in raw_candidates if a not in ALIAS_STOPWORDS and len(a) >= 3}
+    final_aliases = set(clean_base)
+
+    # Add common Uzbek honorifics and suffixes
+    for a in clean_base:
+        final_aliases.add(f"{a} aka")
+        final_aliases.add(f"{a} oka")
+        final_aliases.add(f"{a} opa")
+        final_aliases.add(f"{a}jon")
+        final_aliases.add(f"{a}bek")
+        final_aliases.add(f"{a} jura")
+        final_aliases.add(f"{a} jo'ra")
+
+    # Sort descending by length so most specific candidates match first
+    return sorted(final_aliases, key=len, reverse=True)
+
+
 def clean_message_text(text: str) -> str:
     """Cleans enclosing quotes, leading time particles ('da', 'ga'), and trailing Uzbek/Russian dispatch suffixes."""
     cleaned = text.strip()
@@ -50,7 +129,7 @@ def clean_message_text(text: str) -> str:
     if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
         cleaned = cleaned[1:-1].strip()
 
-    # Strip leading connectors: "da ", "ga "
+    # Strip leading connectors: "da ", "ga ", "в "
     cleaned = re.sub(r"^(?:da\s+|ga\s+|в\s+)", "", cleaned, flags=re.IGNORECASE).strip()
 
     # Strip Uzbek suffixes: "... deb yoz", "... deb jo'nat", "... deb xabar yoz", "... deb", "... deb yozib quy/qo'y/qoy"
@@ -69,7 +148,7 @@ def clean_message_text(text: str) -> str:
     if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
         cleaned = cleaned[1:-1].strip()
 
-    return cleaned
+    return cleaned.strip()
 
 
 def extract_peer_and_text_without_time(text: str) -> Optional[Tuple[str, str]]:
@@ -131,6 +210,7 @@ def parse_deterministic_schedule(
     text: str,
     tz_name: str = "Asia/Tashkent",
     contacts: Optional[List[Any]] = None,
+    default_peer: Optional[str] = None,
 ) -> Optional[ScheduleParseResult]:
     """
     High-speed deterministic parser covering:
@@ -180,19 +260,7 @@ def parse_deterministic_schedule(
             rem = rem[:p_match.start()] + " " + rem[p_match.end():]
         elif contacts:
             for c in contacts:
-                candidates = []
-                if getattr(c, "username", None):
-                    candidates.append(c.username.lower())
-                if getattr(c, "full_name", None):
-                    fn = c.full_name.lower()
-                    candidates.append(fn)
-                    candidates.append(f"{fn} aka")
-                    candidates.append(f"{fn} opa")
-                    candidates.append(f"{fn}jon")
-                    candidates.append(f"{fn}bek")
-                    candidates.append(f"{fn} jura")
-                    candidates.append(f"{fn} jo'ra")
-                candidates.sort(key=len, reverse=True)
+                candidates = generate_contact_aliases(getattr(c, "username", None), getattr(c, "full_name", None))
                 for cand in candidates:
                     cand_pat = rf"\b{re.escape(cand)}(?:ga|da|dan|ni|ning|yga|yda)?\b"
                     m_cand = re.search(cand_pat, rem, re.IGNORECASE)
@@ -203,7 +271,19 @@ def parse_deterministic_schedule(
                 if matched_peer:
                     break
 
+        if not matched_peer and default_peer:
+            matched_peer = default_peer
+
         if matched_peer:
+            rem = re.sub(
+                r"\s+(?:deb\s+)?(?:xabar\s+)?"
+                r"(?:yoz(?:ib\s+(?:qo['`’‘]?y|quy|qoy|tashla|yubor))?|yoz(?:ing)?|"
+                r"jo['`’‘]nat(?:ib\s+(?:yubor|qo['`’‘]?y|quy))?|jo['`’‘]nat(?:ing)?|"
+                r"yubor(?:ib\s+(?:qo['`’‘]?y|quy))?|yubor(?:ing)?)\.?$",
+                "",
+                rem.strip(),
+                flags=re.IGNORECASE,
+            )
             rem = re.sub(r"^(?:ga|da|dan|ni|ning)\s+", "", rem.strip(), flags=re.IGNORECASE)
             rem = re.sub(r"\b(?:shuni\s+)?(?:sura|so['`’‘]?ra|sorachi|surachi|so['`’‘]?rachi)\b", "", rem, flags=re.IGNORECASE)
             rem = re.sub(r"\b(?:deb|shuni|iltimos|ekan)\b", "", rem, flags=re.IGNORECASE)
@@ -311,8 +391,9 @@ def parse_deterministic_schedule(
         day_word = m_day.group(1).lower()
         time_match = re.search(r"\b(\d{1,2}:\d{2})\b", s)
         peer_match = re.search(r"(@[a-zA-Z0-9_]{3,32}|\+?\d{7,15})", s)
-        if time_match and peer_match:
-            peer = peer_match.group(1)
+        resolved_peer = peer_match.group(1) if peer_match else default_peer
+        if time_match and resolved_peer:
+            peer = resolved_peer
             time_str = time_match.group(1)
             hour, minute = map(int, time_str.split(":"))
 
@@ -324,7 +405,8 @@ def parse_deterministic_schedule(
 
             # Extract message text by removing peer, day word, time and connectors
             rem = s
-            rem = rem.replace(peer_match.group(0), "")
+            if peer_match:
+                rem = rem.replace(peer_match.group(0), "")
             rem = rem.replace(time_match.group(0), "")
             rem = re.sub(rf"(?i)\b{day_word}\b", "", rem)
             rem = re.sub(r"(?i)\b(?:soat|в|at|da|ga|deb|yoz|jo'nat)\b", "", rem)
@@ -393,6 +475,7 @@ async def parse_schedule_intent_hybrid(
     ai_engine: Any,
     tz_name: str = "Asia/Tashkent",
     contacts: Optional[List[Any]] = None,
+    default_peer: Optional[str] = None,
 ) -> Optional[ScheduleParseResult]:
     """
     Hybrid schedule parser:
@@ -400,7 +483,12 @@ async def parse_schedule_intent_hybrid(
     2. If text is free-form or complex natural language, falls back to AI model.
     """
     # 1. Deterministic local pass
-    deterministic_result = parse_deterministic_schedule(raw_text, tz_name=tz_name, contacts=contacts)
+    deterministic_result = parse_deterministic_schedule(
+        raw_text,
+        tz_name=tz_name,
+        contacts=contacts,
+        default_peer=default_peer,
+    )
     if deterministic_result:
         logger.info(
             f"Deterministic schedule parsed successfully: {deterministic_result.target_peer} at {deterministic_result.human_time}"
