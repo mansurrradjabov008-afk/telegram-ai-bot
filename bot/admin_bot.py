@@ -1338,7 +1338,9 @@ class AdminBotService:
                 "vaqti bormikin", "vaqti bormi", "kurishishga vaqti", "ko'rishishga vaqti",
                 "rejelari qanaqa", "rejalari qanaqa", "rejalari nima", "rejelari nima",
                 "surishtir", "so'rab ber", "sorab ber", "aniqlab ber", "gacha",
-                "surachi", "so'rachi", "sorachi", "surabchi", "so'rabchi", "surab ko'r", "so'rab ko'r"
+                "surachi", "so'rachi", "sorachi", "surabchi", "so'rabchi", "surab ko'r", "so'rab ko'r",
+                "sura", "so'ra", "sora", "surab", "so'rab", "sorab", "suravor", "so'ravor",
+                "kitob", "kola", "deb so'ra", "deb sura", "deb ayt"
             ]
             if not any(k in lower_text for k in inquiry_keywords):
                 return False
@@ -1354,17 +1356,28 @@ class AdminBotService:
                 raw_handle = target_match.group(1)
                 target_username = normalize_uzbek_username_token(raw_handle)
             else:
-                # Check if an existing contact is mentioned by name
+                # Check if an existing contact is mentioned by name or honorific
                 contacts = await self.db_manager.list_contacts()
                 for c in contacts:
                     keys = []
                     if c.username:
                         keys.append(c.username.lower())
                     if c.full_name:
-                        parts = [p.lower() for p in re.split(r"[\s_]+", c.full_name) if len(p) >= 3]
-                        keys.extend(parts)
+                        fn = c.full_name.lower()
+                        parts = [p.lower() for p in re.split(r"[\s_]+", fn) if len(p) >= 3]
+                        keys.append(fn)
+                        keys.append(f"{fn} aka")
+                        keys.append(f"{fn} opa")
+                        keys.append(f"{fn}jon")
+                        keys.append(f"{fn}bek")
+                        for p in parts:
+                            keys.append(p)
+                            keys.append(f"{p} aka")
+                            keys.append(f"{p} opa")
+                            keys.append(f"{p}jon")
+                    keys.sort(key=len, reverse=True)
                     for k in keys:
-                        if re.search(rf"(?i)\b{re.escape(k)}(?:ni|ga|da|dan|ning)?\b", lower_text):
+                        if re.search(rf"(?i)\b{re.escape(k)}(?:ga|da|dan|ni|ning|yga|yda)?\b", lower_text):
                             target_username = c.username or str(c.user_id)
                             break
                     if target_username:
@@ -1372,6 +1385,7 @@ class AdminBotService:
 
             if not target_username:
                 return False
+
 
             clean_username = target_username.lstrip("@").strip()
 
@@ -2157,9 +2171,11 @@ class AdminBotService:
         async def _schedule_and_respond(msg_obj: types.Message, raw_text: str) -> bool:
             """Parses schedule request via hybrid parser and creates scheduled task."""
             tz = pytz.timezone(settings.TIMEZONE)
-            parsed = await parse_schedule_intent_hybrid(raw_text, self.ai_engine, settings.TIMEZONE)
+            contacts = await self.db_manager.list_contacts()
+            parsed = await parse_schedule_intent_hybrid(raw_text, self.ai_engine, settings.TIMEZONE, contacts=contacts)
             if not parsed or not parsed.is_schedule:
                 return False
+
 
             target_peer = parsed.target_peer
             run_at = parsed.run_at

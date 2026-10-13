@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 # List of models ordered by preference for automatic quota/demand fallback
 FALLBACK_MODELS = [
     "gemini-3.1-flash-lite",
-    "gemini-3.6-flash",
+    "gemini-flash-lite-latest",
 ]
+
 
 
 class ClassificationResult(BaseModel):
@@ -862,12 +863,19 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
         else:
             greeting_str = greeting
 
-        if "ertang" in lower_query:
+        if any(w in lower_query for w in ["kitob", "o'qiyapti", "uqiyapti", "kitoblar"]):
+            time_focus = "Hozir qanaqa kitob o'qiyapsiz?" if use_siz else "Hozir qanaqa kitob o'qiyapsan?"
+        elif any(w in lower_query for w in ["kola", "ichimlik", "suv"]):
+            time_focus = "Sizga kola kerak emasmi deb so'ramoqchi edim)" if use_siz else "Senga kola kerak emasmi deb so'ramoqchi edim)"
+        elif any(w in lower_query for w in ["loyiha", "proyekt", "dastur"]):
+            time_focus = "Loyiha bo'yicha yangiliklar bormi?" if use_siz else "Loyiha bo'yicha nima yangiliklar bor?"
+        elif "ertang" in lower_query:
             time_focus = "Ertangi rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Ertangi rejalaring qanaqa, nimalar bilan bandsan?"
         elif any(w in lower_query for w in ["nima gap", "nima yangilik", "surachi", "so'rachi"]):
             time_focus = "Ishlaringiz qanday ketyapti, nima yangiliklar bor?" if use_siz else "Ishlaring qanday ketyapti, nima gaplar?"
         else:
             time_focus = "Bugun rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Bugun rejalaring qanaqa, nimalar bilan bandsan?"
+
 
         fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
         fallback_outreach = sanitize_outreach_constraints(fallback_outreach, user_query, clean_first_name)
@@ -945,10 +953,16 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
                 f"Assalomu alaykum, Janob {boss_name}! Tizim barqaror ishlamoqda. "
                 f"Sizga xizmat qilishga tayyorman, qanday buyrug'ingiz bor?"
             )
+        if any(w in lower_q for w in ["sura", "so'ra", "yoz", "jo'nat", "yubor", "ayt", "minut", "soat", "kola", "kitob"]):
+            return (
+                f"Janob {boss_name}, topshirig'ingiz qabul qilindi. "
+                f"Ushbu xabarni kontaktga yuborish uchun kontakt kartasidan <b>'✍️ Xabar yozish'</b> tugmasini bosing yoki "
+                f"<code>/schedule @username 5 daqiqadan keyin [matn]</code> buyrug'idan foydalaning."
+            )
         return (
-            f"Buyruq qabul qilindi, Janob {boss_name}. So'rovingiz tahlil qilinmoqda. "
-            f"Barcha tizimlar to'liq avtonom rejimda nazoratim ostida."
+            f"Janob {boss_name}, sizga qanday yordam bera olaman? Barcha tizimlar nazoratim ostida."
         )
+
 
     async def generate_daily_news_briefing(
         self,

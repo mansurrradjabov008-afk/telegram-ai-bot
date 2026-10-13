@@ -8,7 +8,7 @@ import re
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, Any, Tuple
+from typing import Optional, Any, Tuple, List
 import pytz
 
 logger = logging.getLogger(__name__)
@@ -127,9 +127,14 @@ DELEGATION_SIGNALS = [
 ]
 
 
-def parse_deterministic_schedule(text: str, tz_name: str = "Asia/Tashkent") -> Optional[ScheduleParseResult]:
+def parse_deterministic_schedule(
+    text: str,
+    tz_name: str = "Asia/Tashkent",
+    contacts: Optional[List[Any]] = None,
+) -> Optional[ScheduleParseResult]:
     """
     High-speed deterministic parser covering:
+    0. Flexible sentence-wide relative time + contact matching (e.g. 'mansur akaga kola kerakmi shuni sura 5 minutdan keyin')
     1. @username HH:MM [text] (or username HH:MM [text], HH:MMda ...)
     2. HH:MM @username [text]
     3. @username YYYY-MM-DD HH:MM [text] / DD.MM.YYYY
@@ -141,17 +146,86 @@ def parse_deterministic_schedule(text: str, tz_name: str = "Asia/Tashkent") -> O
     if not text:
         return None
 
-    # Guard: never misinterpret delegation, investigation, or assistant status inquiries as peer schedules
+    tz = pytz.timezone(tz_name)
+    now = datetime.now(tz)
     trimmed = text.strip()
+
+    # -------------------------------------------------------------
+    # Pattern 0: Flexible Sentence-Wide Relative Time & Contact Matching
+    # Handles:
+    # "mansur akaga kola kearkmi shuni sura 5 minutdan keyin"
+    # "@mansurjon_07 ga kola kerakmi deb so'ra 5 minutdan keyin"
+    # "5 minutdan keyin mansur akaga kola kerakmi deb sura"
+    # "mansur akaga 10 daqiqadan so'ng yoz"
+    # -------------------------------------------------------------
+    rel_anywhere = re.search(
+        r"\b(\d+)\s*(daqiqad?a?n?|minutd?a?n?|минутd?a?n?|daqd?a?n?|mind?a?n?|soatd?a?n?|соатd?a?n?|час[а-я]*|hour[s]?|minute[s]?)\s*(?:keyin|so['`’‘]?ng|song|o['`’‘]?tib|otib)\b",
+        trimmed,
+        re.IGNORECASE,
+    )
+    if rel_anywhere:
+        num = int(rel_anywhere.group(1))
+        unit_str = rel_anywhere.group(2).lower()
+        delta = timedelta(hours=num) if any(u in unit_str for u in ["soat", "соат", "час", "hour"]) else timedelta(minutes=num)
+        run_at = now + delta
+        human = f"{num} daqiqadan so'ng" if delta.seconds < 3600 else f"{num} soatdan so'ng"
+
+        rem = trimmed[:rel_anywhere.start()] + " " + trimmed[rel_anywhere.end():]
+        rem = rem.strip()
+
+        matched_peer = None
+        p_match = re.search(r"(@[a-zA-Z0-9_]{3,32}|\+?\d{7,15})", rem)
+        if p_match:
+            matched_peer = p_match.group(1)
+            rem = rem[:p_match.start()] + " " + rem[p_match.end():]
+        elif contacts:
+            for c in contacts:
+                candidates = []
+                if getattr(c, "username", None):
+                    candidates.append(c.username.lower())
+                if getattr(c, "full_name", None):
+                    fn = c.full_name.lower()
+                    candidates.append(fn)
+                    candidates.append(f"{fn} aka")
+                    candidates.append(f"{fn} opa")
+                    candidates.append(f"{fn}jon")
+                    candidates.append(f"{fn}bek")
+                    candidates.append(f"{fn} jura")
+                    candidates.append(f"{fn} jo'ra")
+                candidates.sort(key=len, reverse=True)
+                for cand in candidates:
+                    cand_pat = rf"\b{re.escape(cand)}(?:ga|da|dan|ni|ning|yga|yda)?\b"
+                    m_cand = re.search(cand_pat, rem, re.IGNORECASE)
+                    if m_cand:
+                        matched_peer = f"@{c.username}" if c.username else str(c.user_id)
+                        rem = rem[:m_cand.start()] + " " + rem[m_cand.end():]
+                        break
+                if matched_peer:
+                    break
+
+        if matched_peer:
+            rem = re.sub(r"^(?:ga|da|dan|ni|ning)\s+", "", rem.strip(), flags=re.IGNORECASE)
+            rem = re.sub(r"\b(?:shuni\s+)?(?:sura|so['`’‘]?ra|sorachi|surachi|so['`’‘]?rachi)\b", "", rem, flags=re.IGNORECASE)
+            rem = re.sub(r"\b(?:deb|shuni|iltimos|ekan)\b", "", rem, flags=re.IGNORECASE)
+            rem = re.sub(r"\bkearkmi\b", "kerakmi", rem, flags=re.IGNORECASE)
+            rem = re.sub(r"\buiyapsiz\b", "o'qiyapsiz", rem, flags=re.IGNORECASE)
+            rem = re.sub(r"\buqiyapti\b", "o'qiyapti", rem, flags=re.IGNORECASE)
+            clean_msg = clean_message_text(rem)
+            if not clean_msg:
+                clean_msg = "Salom, yaxshimisiz?"
+            return ScheduleParseResult(
+                target_peer=clean_target_peer(matched_peer),
+                run_at=run_at,
+                message_text=clean_msg,
+                human_time=human,
+            )
+
+    # Guard: never misinterpret delegation, investigation, or assistant status inquiries as peer schedules
     if not trimmed.lower().startswith("/schedule"):
         if any(re.search(pat, trimmed, re.IGNORECASE) for pat in DELEGATION_SIGNALS):
             return None
 
-    tz = pytz.timezone(tz_name)
-    now = datetime.now(tz)
     s = trimmed
-
-    # Remove optional leading /schedule or /schedule@botname
     s = re.sub(r"^/schedule(?:@[a-zA-Z0-9_]+)?\s+", "", s, flags=re.IGNORECASE).strip()
 
     # -------------------------------------------------------------
@@ -164,6 +238,7 @@ def parse_deterministic_schedule(text: str, tz_name: str = "Asia/Tashkent") -> O
         s,
         re.IGNORECASE,
     )
+
     if not m:
         # 1b: N daqiqa/minutdan keyin peer [ga] [text]
         m2 = re.match(
@@ -317,6 +392,7 @@ async def parse_schedule_intent_hybrid(
     raw_text: str,
     ai_engine: Any,
     tz_name: str = "Asia/Tashkent",
+    contacts: Optional[List[Any]] = None,
 ) -> Optional[ScheduleParseResult]:
     """
     Hybrid schedule parser:
@@ -324,12 +400,13 @@ async def parse_schedule_intent_hybrid(
     2. If text is free-form or complex natural language, falls back to AI model.
     """
     # 1. Deterministic local pass
-    deterministic_result = parse_deterministic_schedule(raw_text, tz_name=tz_name)
+    deterministic_result = parse_deterministic_schedule(raw_text, tz_name=tz_name, contacts=contacts)
     if deterministic_result:
         logger.info(
             f"Deterministic schedule parsed successfully: {deterministic_result.target_peer} at {deterministic_result.human_time}"
         )
         return deterministic_result
+
 
     # 2. AI semantic fallback pass
     trimmed = (raw_text or "").strip()
