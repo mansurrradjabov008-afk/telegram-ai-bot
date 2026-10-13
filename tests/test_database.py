@@ -254,3 +254,34 @@ async def test_migration_idempotent_and_data_preserved(tmp_path: Path):
     assert contact_after.username == "legacy_boss"
     assert contact_after.mode == "draft"
 
+
+@pytest.mark.asyncio
+async def test_contact_in_memory_cache_and_invalidation(temp_db: DatabaseManager):
+    """Verify that get_contact uses in-memory cache and write operations invalidate it."""
+    # 1. Upsert contact
+    await temp_db.upsert_contact(user_id=777, full_name="Cache Test", username="cache_user", mode="auto")
+
+    # 2. First fetch populates cache
+    c1 = await temp_db.get_contact_by_id(777)
+    assert c1 is not None
+    assert 777 in temp_db._contact_id_cache
+    assert "cache_user" in temp_db._contact_uname_cache
+
+    # 3. Second fetch returns cached instance
+    c2 = await temp_db.get_contact_by_id(777)
+    assert c2 is c1
+
+    # 4. By username returns cached instance
+    c3 = await temp_db.get_contact_by_username("cache_user")
+    assert c3 is c1
+
+    # 5. Update mode invalidates cache
+    await temp_db.update_contact_mode(user_id=777, mode="draft")
+    assert 777 not in temp_db._contact_id_cache
+
+    # 6. Re-fetch brings fresh data
+    c4 = await temp_db.get_contact_by_id(777)
+    assert c4.mode == "draft"
+    assert 777 in temp_db._contact_id_cache
+
+

@@ -22,6 +22,7 @@ except ImportError:
 
 from config import settings
 from database.models import Contact, ConversationMessage
+from services.circuit_breaker import circuit_registry
 
 logger = logging.getLogger(__name__)
 
@@ -195,10 +196,13 @@ class AIEngine:
     ) -> str:
         """
         Executes a single Gemini content generation call safely off the main event loop
-        in a background worker thread with a strict timeout.
+        in a background worker thread with a strict timeout and Circuit Breaker protection.
         """
         if not self._client:
             raise RuntimeError("Gemini client is not initialized.")
+
+        if not circuit_registry.can_execute(model):
+            raise RuntimeError(f"Circuit breaker is OPEN for {model} (fast-fail).")
 
         def _sync_call() -> str:
             if NEW_SDK:
@@ -219,7 +223,13 @@ class AIEngine:
                 resp = mod.generate_content(prompt, generation_config=gen_config)
                 return getattr(resp, "text", "") or ""
 
-        return await asyncio.wait_for(asyncio.to_thread(_sync_call), timeout=timeout)
+        try:
+            res = await asyncio.wait_for(asyncio.to_thread(_sync_call), timeout=timeout)
+            circuit_registry.record_success(model)
+            return res
+        except Exception as e:
+            circuit_registry.record_failure(model)
+            raise e
 
     async def classify_incoming_message(
         self,

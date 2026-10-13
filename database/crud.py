@@ -50,6 +50,18 @@ class DatabaseManager:
 
     def __init__(self, db_path=None):
         self.db_path = db_path
+        self._contact_id_cache: Dict[int, Contact] = {}
+        self._contact_uname_cache: Dict[str, Contact] = {}
+
+    def _invalidate_contact_cache(self, user_id: Optional[int] = None, username: Optional[str] = None):
+        """Invalidates in-memory contact caches on write."""
+        if user_id is not None:
+            self._contact_id_cache.pop(user_id, None)
+        if username is not None:
+            self._contact_uname_cache.pop(username.lower().lstrip("@"), None)
+        if user_id is None and username is None:
+            self._contact_id_cache.clear()
+            self._contact_uname_cache.clear()
 
     @asynccontextmanager
     async def serialized_transaction(self):
@@ -102,6 +114,7 @@ class DatabaseManager:
             )
             await db.commit()
 
+        self._invalidate_contact_cache(user_id, username)
         return await self.get_contact_by_id(user_id)
 
     async def update_contact_mode(self, user_id: int, mode: str) -> bool:
@@ -112,6 +125,7 @@ class DatabaseManager:
         async with get_db(self.db_path) as db:
             cursor = await db.execute(query, (mode, user_id))
             await db.commit()
+            self._invalidate_contact_cache(user_id=user_id)
             return cursor.rowcount > 0
 
     async def update_contact_mode_by_username(self, username: str, mode: str) -> bool:
@@ -124,6 +138,7 @@ class DatabaseManager:
         async with get_db(self.db_path) as db:
             cursor = await db.execute(query, (mode, username))
             await db.commit()
+            self._invalidate_contact_cache(username=username)
             return cursor.rowcount > 0
 
     async def update_all_contacts_mode(self, mode: str) -> int:
@@ -134,6 +149,7 @@ class DatabaseManager:
         async with get_db(self.db_path) as db:
             cursor = await db.execute(query, (mode,))
             await db.commit()
+            self._invalidate_contact_cache()
             return cursor.rowcount
 
     async def get_mode_counts(self) -> Dict[str, int]:
@@ -156,6 +172,7 @@ class DatabaseManager:
         async with get_db(self.db_path) as db:
             await db.execute(query, (addressing_style, user_id))
             await db.commit()
+            self._invalidate_contact_cache(user_id=user_id)
             return True
 
     async def delete_contact(self, user_id: int) -> bool:
@@ -164,29 +181,42 @@ class DatabaseManager:
         async with get_db(self.db_path) as db:
             await db.execute(query, (user_id,))
             await db.commit()
+            self._invalidate_contact_cache(user_id=user_id)
             return True
 
     async def get_contact_by_id(self, user_id: int) -> Optional[Contact]:
-        """Fetch contact profile by user_id."""
+        """Fetch contact profile by user_id with fast in-memory cache."""
+        if user_id in self._contact_id_cache:
+            return self._contact_id_cache[user_id]
+
         query = "SELECT * FROM contacts WHERE user_id = ?"
         async with get_db(self.db_path) as db:
             async with db.execute(query, (user_id,)) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None
-                return Contact(**dict(row))
+                contact = Contact(**dict(row))
+                self._contact_id_cache[user_id] = contact
+                if contact.username:
+                    self._contact_uname_cache[contact.username.lower()] = contact
+                return contact
 
     async def get_contact_by_username(self, username: str) -> Optional[Contact]:
-        """Fetch contact profile by @username."""
-        if username.startswith("@"):
-            username = username[1:]
+        """Fetch contact profile by @username with fast in-memory cache."""
+        clean_uname = username.lstrip("@").lower()
+        if clean_uname in self._contact_uname_cache:
+            return self._contact_uname_cache[clean_uname]
+
         query = "SELECT * FROM contacts WHERE LOWER(username) = LOWER(?) ORDER BY updated_at DESC"
         async with get_db(self.db_path) as db:
-            async with db.execute(query, (username,)) as cursor:
+            async with db.execute(query, (clean_uname,)) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None
-                return Contact(**dict(row))
+                contact = Contact(**dict(row))
+                self._contact_id_cache[contact.user_id] = contact
+                self._contact_uname_cache[clean_uname] = contact
+                return contact
 
     async def find_contact(self, query_str: str) -> Optional[Contact]:
         """

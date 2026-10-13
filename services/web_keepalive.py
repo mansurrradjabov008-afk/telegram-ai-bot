@@ -48,6 +48,8 @@ async def handle_metrics(request: web.Request) -> web.Response:
     except Exception:
         pass
 
+    from services.circuit_breaker import circuit_registry
+
     data = {
         "status": "HEALTHY_OPTIMAL",
         "service": "Antigravity Telegram AI Butler (Tier-4 Master Server)",
@@ -64,7 +66,8 @@ async def handle_metrics(request: web.Request) -> web.Response:
             "zero_rudeness": True,
             "zero_hallucination": True,
             "fail_closed_guard": True,
-        }
+        },
+        "circuit_breakers": circuit_registry.get_status(),
     }
     return web.json_response(data)
 
