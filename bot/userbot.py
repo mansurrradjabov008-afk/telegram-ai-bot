@@ -457,7 +457,8 @@ class UserbotService:
         last_item = batch[-1]
         last_msg_id = last_item["message_id"]
         chat_id = last_item["chat_id"]
-        first_name = last_item["first_name"]
+        from services.digest_cleaner import transliterate_uzbek_cyrillic_to_latin
+        first_name = transliterate_uzbek_cyrillic_to_latin(last_item["first_name"] or "")
         username = last_item["username"]
         peer_repr = last_item["peer_repr"]
         contact = last_item["contact"]
@@ -468,7 +469,7 @@ class UserbotService:
         )
 
         # Step 5: Generate reply with existing AI logic and Contact Memory (Integration Point 2)
-        history = await self.db_manager.get_recent_history(chat_id=sender_id, limit=6)
+        history = await self.db_manager.get_recent_history(chat_id=sender_id, limit=15)
         memory_context = ""
         if self.memory_service and contact and getattr(contact, "user_id", None):
             try:
