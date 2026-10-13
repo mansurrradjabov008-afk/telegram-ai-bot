@@ -115,25 +115,38 @@ async def main():
     from services.backup_manager import create_safe_backup, execute_backup_rotation
     import pytz
 
-    def _run_scheduled_backup():
+    async def _run_scheduled_maintenance():
         try:
-            ok, b_path, res = create_safe_backup("data/butler.db", "data/backups")
+            # 1. Online transaction-safe backup & integrity verification
+            ok, b_path, res = await asyncio.to_thread(create_safe_backup, "data/butler.db", "data/backups")
             if ok:
-                execute_backup_rotation("data/backups", keep_count=7, dry_run=False)
-                logger.info("Daily safe backup completed successfully.")
+                await asyncio.to_thread(execute_backup_rotation, "data/backups", keep_count=7, dry_run=False)
+                logger.info("✅ Daily safe backup completed successfully.")
             else:
-                logger.warning(f"Daily backup failed integrity check: {res}")
+                logger.warning(f"⚠️ Daily backup failed integrity check: {res}")
+                if admin_bot_service.bot:
+                    await admin_bot_service.send_notification(
+                        f"⚠️ <b>Ma'lumotlar bazasi zaxira ogohlantirishi:</b>\n"
+                        f"Integritet natijasi: <code>{res}</code>"
+                    )
+
+            # 2. SQLite maintenance: checkpoint WAL and optimize query planner
+            from database.connection import get_db
+            async with get_db() as db:
+                await db.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                await db.execute("PRAGMA optimize;")
+            logger.info("✅ SQLite WAL checkpoint and query planner optimization complete.")
         except Exception as e:
-            logger.error(f"Error during scheduled database backup: {type(e).__name__}")
+            logger.error(f"Error during scheduled database maintenance: {type(e).__name__}")
 
     scheduler_service.scheduler.add_job(
-        _run_scheduled_backup,
+        _run_scheduled_maintenance,
         CronTrigger(hour=4, minute=0, timezone=pytz.timezone(settings.TIMEZONE)),
         id="daily_safe_db_backup",
-        name="Daily Safe Database Backup",
+        name="Daily Safe Database Backup & Maintenance",
         replace_existing=True,
     )
-    logger.info("✅ Daily safe database backup scheduled at 04:00.")
+    logger.info("✅ Daily safe database backup and maintenance scheduled at 04:00.")
 
     # 6. Initialize MTProto Userbot
     has_userbot_creds = userbot_service.init_client()
@@ -202,11 +215,21 @@ async def main():
         return
 
     logger.info("✨ [bold cyan]Antigravity AI Butler is fully operational![/bold cyan]", extra={"markup": True})
-    await asyncio.gather(*tasks)
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        logger.info("🛑 Graceful shutdown initiated...")
+        if scheduler_service.scheduler.running:
+            scheduler_service.stop()
+        if userbot_service.client and userbot_service.client.is_connected():
+            await userbot_service.client.disconnect()
+        if admin_bot_service.bot and admin_bot_service.bot.session:
+            await admin_bot_service.bot.session.close()
+        logger.info("✅ All services stopped safely with zero data loss.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("🛑 Antigravity AI Butler shutting down gracefully.")
+        logger.info("🛑 Antigravity AI Butler shutdown complete.")

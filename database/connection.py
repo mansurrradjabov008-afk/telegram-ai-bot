@@ -294,6 +294,9 @@ async def get_db(db_path: Path = None) -> AsyncGenerator[aiosqlite.Connection, N
         await db.execute("PRAGMA journal_mode = WAL;")
         await db.execute("PRAGMA busy_timeout = 5000;")
         await db.execute("PRAGMA synchronous = NORMAL;")
+        await db.execute("PRAGMA cache_size = -64000;")
+        await db.execute("PRAGMA mmap_size = 268435456;")
+        await db.execute("PRAGMA temp_store = MEMORY;")
         yield db
 
 
@@ -307,6 +310,9 @@ async def init_db(db_path: Path = None):
         await db.execute("PRAGMA journal_mode = WAL;")
         await db.execute("PRAGMA busy_timeout = 5000;")
         await db.execute("PRAGMA synchronous = NORMAL;")
+        await db.execute("PRAGMA cache_size = -64000;")
+        await db.execute("PRAGMA mmap_size = 268435456;")
+        await db.execute("PRAGMA temp_store = MEMORY;")
         await db.executescript(DB_SCHEMA)
 
         # Baseline schema version
