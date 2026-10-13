@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Callable, Dict, Any, List
 import pytz
 import time
+import uuid
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -359,6 +360,7 @@ def parse_autonomy_mode(raw: Optional[str]) -> Optional[str]:
 class ReplyState(StatesGroup):
     waiting_for_custom_reply = State()
     waiting_for_draft_edit = State()
+    waiting_for_contact_message = State()
 
 
 class ScheduleWizardState(StatesGroup):
@@ -394,6 +396,7 @@ class AdminBotService:
         self._manual_reply_check_fn: Optional[Callable] = None
         self._pending_escalations: Dict[str, Dict[str, Any]] = {}
         self._pending_outreach: Optional[Dict[str, Any]] = None
+        self._pending_outreach_drafts: Dict[str, Dict[str, Any]] = {}
 
         self._setup_handlers()
 
@@ -1878,11 +1881,17 @@ class AdminBotService:
             )
 
             builder = InlineKeyboardBuilder()
+            target_user = contact.username or str(contact.user_id)
+
+            # Row 0: Direct message button
+            builder.button(
+                text=f"✍️ @{contact.username or target_user} ga xabar yozish",
+                callback_data=f"crm_outreach_direct:{contact.user_id}",
+            )
 
             # Row 1: SIZ / SEN 1-tap toggle
             switch_to = "sen" if style == "siz" else "siz"
             switch_btn = "🟢 'SEN' ga o'tkazish" if style == "siz" else "🔵 'SIZ' ga o'tkazish"
-            target_user = contact.username or str(contact.user_id)
             builder.button(text=switch_btn, callback_data=f"crm_style:{target_user}:{switch_to}")
 
             # Row 2: Mode 1-tap toggles with checkmark
@@ -1907,7 +1916,8 @@ class AdminBotService:
             builder.button(text="👥 Kontaktlar", callback_data="menu:contacts")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
 
-            builder.adjust(1, 3, 2, 2)
+            builder.adjust(1, 1, 3, 2, 2)
+
 
             if is_callback:
                 await target_msg.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -2581,11 +2591,13 @@ class AdminBotService:
                     callback_data=f"crm_view:{c.user_id}",
                 )
 
-            lines.append("💡 <i>Kontakt ustiga bosib, uning to'liq kartasi, uslubi va xotirasini boshqarishingiz mumkin.</i>")
+            lines.append("💡 <i>Kontakt ustiga bosib uning kartasini ko'rishingiz yoki pastdagi <b>'Kontaktga xabar yozish'</b> orqali xabar yuborishingiz mumkin.</i>")
 
+            builder.button(text="✍️ Kontaktga xabar yozish", callback_data="crm:outreach_menu")
             builder.button(text="➕ Yangi kontakt", callback_data="crm:add_prompt")
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-            builder.adjust(*([1] * len(contacts) + [2]))
+            builder.adjust(*([1] * len(contacts) + [1, 2]))
+
 
             content = "\n".join(lines)
             if is_callback:
@@ -2987,6 +2999,83 @@ class AdminBotService:
                 card_chat_id=card_chat_id,
                 card_msg_id=card_msg_id,
             )
+
+        @dp.message(ReplyState.waiting_for_contact_message)
+        async def process_contact_outreach_message(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+
+            if message.text and message.text.strip().lower() in ["/cancel", "bekor", "bekor qilish"]:
+                await state.clear()
+                return await safe_reply(message, "🛑 Xabar yozish bekor qilindi.")
+
+            raw_text = (message.text or "").strip()
+            if not raw_text:
+                return await safe_reply(message, "⚠️ Iltimos, xabar matnini kiriting.")
+
+            data = await state.get_data()
+            target_user_id = data.get("target_user_id")
+            target_peer = data.get("target_peer")
+            target_name = data.get("target_name", target_peer)
+            target_username = data.get("target_username", "")
+            addressing_style = data.get("addressing_style", "siz")
+
+            contact = await self.db_manager.get_contact_by_id(target_user_id) if target_user_id else None
+
+            # Check if this is an AI instruction (e.g. "deb yoz", "deb so'ra", "hol-ahvol so'ra")
+            is_ai_prompt = any(w in raw_text.lower() for w in [
+                "deb yoz", "deb so'ra", "deb jonat", "deb jo'nat", "hol-ahvol", "surab ber",
+                "so'rab ber", "sorab ber", "nima qilyapti", "nima bo'ldi", "surachi", "so'rachi"
+            ])
+
+            prepared_text = raw_text
+            if is_ai_prompt:
+                history = await self.db_manager.get_chat_history(chat_id=target_user_id, limit=10) if target_user_id else []
+                ai_reply = await self.ai_engine.generate_reply(
+                    incoming_text=raw_text,
+                    sender_name=target_name,
+                    contact_profile=contact,
+                    history=history,
+                )
+                if ai_reply and len(ai_reply.strip()) > 3:
+                    prepared_text = ai_reply.strip()
+
+            outreach_id = str(uuid.uuid4())[:8]
+            self._pending_outreach_drafts[outreach_id] = {
+                "user_id": target_user_id,
+                "peer": target_peer,
+                "name": target_name,
+                "username": target_username,
+                "text": prepared_text,
+                "created_at": time.time(),
+            }
+
+            style_badge = "🔵 SIZ (Sizlash)" if addressing_style == "siz" else "🟢 SEN (Sensirash)"
+            safe_peer = html.escape(target_peer)
+            safe_name = html.escape(target_name)
+            safe_text = html.escape(prepared_text)
+
+            preview_text = (
+                f"✉️ <b>XABAR YUBORISHGA TAYYOR (PREVIEW):</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>Qabul qiluvchi:</b> <code>{safe_peer}</code> ({safe_name})\n"
+                f"🗣 <b>Murojaat uslubi:</b> {style_badge}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📝 <b>Yuboriladigan matn:</b>\n"
+                f"<i>\"{safe_text}\"</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚀 <b>Xabarni profilingiz nomidan yuborishni tasdiqlaysizmi?</b>"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🚀 Darhol yuborish", callback_data=f"outreach_confirm:{outreach_id}")
+            builder.button(text="✏️ Qayta yozish", callback_data=f"crm_outreach_direct:{target_user_id}")
+            builder.button(text="❌ Bekor qilish", callback_data=f"outreach_cancel:{outreach_id}")
+            builder.adjust(1, 2)
+
+            await state.clear()
+            await safe_reply(message, preview_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
 
         # ------------------ PERSISTENT REPLY KEYBOARD DISPATCHERS ------------------
         @dp.message(F.text.in_(["🧠 Xotira", "Xotira"]))
@@ -3603,6 +3692,152 @@ class AdminBotService:
             builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
             builder.adjust(1, 1)
             await safe_edit(callback.message, help_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data == "crm:outreach_menu")
+        async def handle_crm_outreach_menu(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer()
+            contacts = await self.db_manager.list_contacts()
+            if not contacts:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="🔙 Kontaktlar", callback_data="menu:contacts")
+                return await safe_edit(
+                    callback.message,
+                    "❌ <b>Hozircha kontaktlar mavjud emas.</b>\nAvval /contacts orqali kontakt qo'shing.",
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML",
+                )
+
+            builder = InlineKeyboardBuilder()
+            for c in contacts:
+                uname = f"@{c.username}" if c.username else c.full_name
+                builder.button(
+                    text=f"✍️ {uname}",
+                    callback_data=f"crm_outreach_direct:{c.user_id}",
+                )
+            builder.button(text="🔙 Kontaktlar ro'yxati", callback_data="menu:contacts")
+            builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+            builder.adjust(*([1] * len(contacts) + [2]))
+
+            text = (
+                "✍️ <b>KONTAKTGA XABAR YOZISH (OUTREACH COCKPIT)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Qaysi kontaktga xabar yozmoqchisiz? Quyidagilardan birini tanlang:\n\n"
+                "💡 <i>Yoki chatga to'g'ridan-to'g'ri tabiiy tilda yozishingiz ham mumkin:</i>\n"
+                "• <code>@username [xabar matni]</code>\n"
+                "• <i>\"@SuhrobOmonov12 ga salom deb yoz\"</i>\n"
+                "• <i>\"@umid_namozovdan hol-ahvol so'ra\"</i>"
+            )
+            await safe_edit(callback.message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("crm_outreach_direct:"))
+        async def handle_crm_outreach_direct(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer()
+            user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(user_id)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+
+            uname = f"@{contact.username}" if contact.username else f"ID:{contact.user_id}"
+            clean_name = contact.full_name or uname
+            style = getattr(contact, "addressing_style", "siz") or "siz"
+            style_badge = "🔵 SIZ (Sizlash / Hurmat)" if style == "siz" else "🟢 SEN (Sensirash / Yaqin do'st)"
+            mode = getattr(contact, "mode", "draft") or "draft"
+            mode_badge = "⚡ auto" if mode == "auto" else ("🔇 mute" if mode == "mute" else "📝 draft")
+
+            await state.set_state(ReplyState.waiting_for_contact_message)
+            await state.update_data(
+                target_user_id=contact.user_id,
+                target_peer=f"@{contact.username}" if contact.username else str(contact.user_id),
+                target_name=clean_name,
+                target_username=contact.username or "",
+                addressing_style=style,
+                msg_chat_id=callback.message.chat.id,
+                msg_message_id=callback.message.message_id,
+            )
+
+            prompt_text = (
+                f"✍️ <b>XABAR YOZISH: {html.escape(clean_name)} ({html.escape(uname)})</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🗣 <b>Murojaat uslubi:</b> {style_badge}\n"
+                f"⚙️ <b>Rejim:</b> <code>{mode_badge}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Yubormoqchi bo'lgan xabaringizni yozing:\n\n"
+                f"💡 <b>2 xil usulda yozishingiz mumkin:</b>\n"
+                f"1️⃣ <b>To'g'ridan-to'g'ri matn:</b> Xabarni qanday yozsangiz, aynan shunday yuboriladi.\n"
+                f"2️⃣ <b>AI buyrug'i:</b> <i>\"kechagi loyiha nima bo'ldi deb so'ra\"</i> yoki <i>\"ishlar qalay deb yoz\"</i> desangiz, AI xuddi sizdek samimiy matn tuzib beradi!\n\n"
+                f"<i>Bekor qilish uchun pastdagi tugmani bosing yoki /cancel yozing.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Bekor qilish", callback_data="crm_outreach_cancel")
+            await safe_edit(callback.message, prompt_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data == "crm_outreach_cancel")
+        async def handle_crm_outreach_cancel(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await state.clear()
+            await callback.answer("Bekor qilindi.")
+            await _render_contacts_list(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("outreach_confirm:"))
+        async def handle_outreach_confirm(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            outreach_id = callback.data.split(":")[1]
+            draft = self._pending_outreach_drafts.pop(outreach_id, None)
+            if not draft:
+                return await callback.answer("Xabar topilmadi yoki muddati tugagan.", show_alert=True)
+
+            peer = draft["peer"]
+            text_to_send = draft["text"]
+            name = draft["name"]
+
+            await callback.answer("Yuborilmoqda...")
+
+            if self._userbot_send_fn:
+                try:
+                    await self._userbot_send_fn(peer, text_to_send)
+                    safe_peer = html.escape(peer)
+                    safe_name = html.escape(name)
+                    safe_text = html.escape(text_to_send)
+
+                    success_text = (
+                        f"🚀 <b>XABAR MUVAFFAQIYATLI YUBORILDI!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 <b>Kimga:</b> <code>{safe_peer}</code> ({safe_name})\n"
+                        f"💬 <b>Matn:</b> <i>\"{safe_text}\"</i>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚡ <i>Xabar shaxsiy hisobingiz nomidan insoniy kechikish bilan jo'natildi.</i>"
+                    )
+                    builder = InlineKeyboardBuilder()
+                    builder.button(text="👥 Kontaktlar ro'yxatiga qaytish", callback_data="menu:contacts")
+                    builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                    builder.adjust(1, 1)
+                    await safe_edit(callback.message, success_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Failed to send outreach message to {peer}: {e}")
+                    await safe_edit(
+                        callback.message,
+                        f"❌ <b>Xatolik yuz berdi:</b> Xabarni yuborib bo'lmadi ({html.escape(str(e))}).",
+                        reply_markup=InlineKeyboardBuilder().button(text="🔙 Kontaktlar", callback_data="menu:contacts").as_markup(),
+                        parse_mode="HTML",
+                    )
+            else:
+                await callback.message.edit_text("❌ MTProto Userbot ulanmagan.")
+
+        @dp.callback_query(F.data.startswith("outreach_cancel:"))
+        async def handle_outreach_cancel(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            outreach_id = callback.data.split(":")[1]
+            self._pending_outreach_drafts.pop(outreach_id, None)
+            await callback.answer("Xabar bekor qilindi.")
+            await _render_contacts_list(callback.message, is_callback=True)
+
 
         @dp.callback_query(F.data.startswith("crm_style:"))
         async def handle_crm_style_toggle(callback: types.CallbackQuery):
