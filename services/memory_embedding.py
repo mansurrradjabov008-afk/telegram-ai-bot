@@ -7,8 +7,16 @@ and cosine similarity computation.
 
 import asyncio
 import logging
-from typing import List, Optional, Sequence, Union
-import numpy as np
+import array
+import math
+from typing import Any, List, Optional, Sequence, Union
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    np = None
 
 try:
     from google import genai
@@ -25,28 +33,42 @@ logger = logging.getLogger(__name__)
 
 def vector_to_blob(vector: Sequence[float]) -> bytes:
     """Serializes a float vector into a 32-bit float binary BLOB."""
-    return np.asarray(vector, dtype=np.float32).tobytes()
+    if HAS_NUMPY:
+        return np.asarray(vector, dtype=np.float32).tobytes()
+    return array.array('f', [float(x) for x in vector]).tobytes()
 
 
-def blob_to_vector(blob: bytes) -> np.ndarray:
-    """Deserializes a 32-bit float binary BLOB into a NumPy array."""
-    return np.frombuffer(blob, dtype=np.float32)
+def blob_to_vector(blob: bytes) -> Union[List[float], Any]:
+    """Deserializes a 32-bit float binary BLOB into a float list or array."""
+    if HAS_NUMPY:
+        return np.frombuffer(blob, dtype=np.float32)
+    a = array.array('f')
+    a.frombytes(blob)
+    return a.tolist()
 
 
 def cosine_similarity(
-    vec_a: Union[Sequence[float], np.ndarray],
-    vec_b: Union[Sequence[float], np.ndarray],
+    vec_a: Union[Sequence[float], Any],
+    vec_b: Union[Sequence[float], Any],
 ) -> float:
     """
     Computes cosine similarity between two vectors.
     Returns 0.0 if either vector has near-zero magnitude.
     """
-    a = np.asarray(vec_a, dtype=np.float32)
-    b = np.asarray(vec_b, dtype=np.float32)
-    norm = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if HAS_NUMPY:
+        a = np.asarray(vec_a, dtype=np.float32)
+        b = np.asarray(vec_b, dtype=np.float32)
+        norm = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if norm <= 1e-9:
+            return 0.0
+        return float(np.dot(a, b) / norm)
+    dot = sum(float(x) * float(y) for x, y in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(float(x) * float(x) for x in vec_a))
+    norm_b = math.sqrt(sum(float(y) * float(y) for y in vec_b))
+    norm = norm_a * norm_b
     if norm <= 1e-9:
         return 0.0
-    return float(np.dot(a, b) / norm)
+    return float(dot / norm)
 
 
 class MemoryEmbeddingService:

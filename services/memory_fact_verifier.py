@@ -16,6 +16,9 @@ STOP_WORDS: Set[str] = {
     "bilan", "uchun", "ham", "juda", "emas", "ekan", "bor", "yo'q", "biri",
     "esa", "haqida", "deb", "bo'lib", "yaxshi", "yomon", "katta", "kichik",
     "faqat", "kabi", "orqali", "tomonidan", "keyin", "oldin", "hozir",
+    "kontakt", "kontaktning", "kontaktga", "kontaktda", "foydalanuvchi",
+    "foydalanuvchining", "suhbatdosh", "suhbatdoshning", "inson", "insonning",
+    "uning", "ularning", "o'zi", "o'zining", "ushbu", "bu", "shu", "o'sha",
     # Russian
     "это", "что", "как", "или", "для", "при", "все", "его", "ее", "их",
     "был", "была", "были", "быть", "очень", "также", "после", "только",
@@ -68,15 +71,16 @@ def verify_fact_content(
             return False, 0.0, f"fact_verifier:missing_number:{num_str}"
 
     # 2. Identify proper nouns / capitalized words in fact (excluding start of sentence if not clearly proper)
+    corpus_words = set(re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ\']+\b", source_corpus))
     words = re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ\']+\b", fact_text)
     proper_nouns = []
     for idx, w in enumerate(words):
         if w and w[0].isupper():
             w_norm = _normalize_text(w)
-            if idx > 0 or (w_norm not in STOP_WORDS and len(w) > 3):
-                proper_nouns.append(w)
+            if w_norm in STOP_WORDS:
+                continue
+            proper_nouns.append(w)
 
-    corpus_words = set(re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ\']+\b", source_corpus))
     case_suffixes = ("da", "dan", "ga", "ka", "qa", "ni", "ning", "dagi")
 
     for pn in proper_nouns:

@@ -5,7 +5,7 @@ Uses Pydantic Settings for strict typing and environment variable management.
 
 from pathlib import Path
 from typing import Optional, List
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from services.pydantic_compat import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Google Gemini AI Studio (aistudio.google.com)
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
 
     # Database & System settings
     DATABASE_PATH: str = "data/butler.db"

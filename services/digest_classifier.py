@@ -9,7 +9,7 @@ import inspect
 import json
 import logging
 from typing import List, Dict, Any, Optional, Set
-from pydantic import BaseModel, Field
+from services.pydantic_compat import BaseModel, Field
 
 from config import settings
 from database.models import DigestPost

@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 # 1. 13-19 digit card-like sequences (with optional spaces or dashes)
 CARD_PATTERN_CANDIDATE = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
-# 2. Currency amounts (e.g. 50 000 so'm, 100$, $500, 5000 rubl, 200 USD, 15 mln som)
+# 2. Currency amounts (e.g. 50 000 so'm, 100$, $500, 5000 rubl, 200 USD, 70+ mln som, 10-15 mln)
 AMOUNT_PATTERN = re.compile(
-    r"(?:(?:(?<!\w)\d+[\d\s.,]*(?:\s*(?:so['`’‘]m|som|сўм|сум|usd|dollar|доллар|\$|rubl|рубл|руб|евро|euro|eur|ming|минг|mln|млн|million|миллион))(?!\w))|(?:(?<!\w)[$€£]\s*\d+[\d\s.,]*(?!\w)))",
+    r"(?:(?:(?<!\w)\d+[\d\s.,+~-]*\s*(?:so['`’‘]m|som|сўм|сум|usd|dollar|доллар|\$|rubl|рубл|руб|евро|euro|eur|ming|минг|mln|млн|million|миллион))(?!\w)|(?:(?<!\w)[$€£]\s*\d+[\d\s.,+~-]*(?!\w)))",
     re.IGNORECASE,
 )
 
@@ -35,50 +35,64 @@ AMOUNT_PATTERN = re.compile(
 SENSITIVE_CATEGORIES: Dict[str, List[str]] = {
     "money_payments": [
         # Uzbek Latin
-        "pul", "to'lov", "to‘lov", "to`lov", "tolov", "so'm", "som", "karta", "kartaga",
-        "karta raqam", "shot", "hisob", "hisob raqam", "narxi", "qancha", "qancha bo'ladi",
+        "pul", "to'lov", "to‘lov", "to`lov", "tolov", "so'm", "som", "so’m", "karta", "kartaga",
+        "kartangiz", "kartam", "kartamga", "kartangizga", "kartasi", "kartasiga",
+        "karta raqam", "karta raqami", "kartangiz raqami", "karta raqamingiz", "kartangiz raqamini",
+        "shot", "hisob", "hisob raqam", "narxi", "narx", "qancha", "qancha bo'ladi",
         "qarz", "dollor", "dollar", "usd", "summa", "to'ladim", "toladim", "click", "payme",
-        "uzum", "uzum bank", "tranzaksiya", "otpravil", "oplata",
+        "uzum", "uzum bank", "tranzaksiya", "otpravil", "oplata", "daromad", "daromadi", "maosh",
+        "maoshi", "oylik", "oyligi", "ish haqi", "bepul", "pullik", "million", "mln", "ming",
+        "kurs", "valyuta", "rubl", "yevro", "investitsiya",
         # Uzbek Cyrillic
-        "пул", "тўлов", "толов", "сўм", "сом", "карта", "картага", "карта рақам",
-        "ҳисоб", "ҳисоб рақам", "нархи", "қанча", "қанча бўлади", "қарз", "доллар",
-        "сумма", "тўладим", "толадим", "транзакция",
+        "пул", "тўлов", "толов", "сўм", "сом", "карта", "картага", "картангиз", "картам",
+        "карта рақам", "карта рақами", "картангиз рақами", "карта рақамингиз",
+        "ҳисоб", "ҳисоб рақам", "нархи", "нарх", "қанча", "қанча бўлади", "қарз", "доллар",
+        "сумма", "тўладим", "толадим", "транзакция", "даромад", "даромади", "маош", "ойлик",
+        "иш ҳақи", "бепул", "пуллик", "миллион", "млн", "минг", "курс", "валюта", "рубль",
         # Russian
         "деньги", "денег", "оплата", "платеж", "перевод", "цена", "стоимость", "сколько стоит",
         "карта", "номер карты", "счет", "транзакция", "доллар", "оплатил", "перевел", "долг",
-        "рубль", "рублей", "переведи",
+        "рубль", "рублей", "переведи", "доход", "зарплата", "оклад", "бесплатно", "миллион",
         # English
         "money", "payment", "pay", "transfer", "price", "how much", "credit card", "debit card",
-        "bank account", "invoice", "bill", "debt", "cash", "transaction", "fee",
+        "bank account", "invoice", "bill", "debt", "cash", "transaction", "fee", "salary", "income",
     ],
     "personal_data": [
         # Uzbek Latin
         "parol", "password", "kod", "pin", "sms kod", "tasdiqlash kodi", "pasport",
         "passport", "pinfl", "jshshir", "seriya", "karta raqam", "cvv", "cvc",
+        "kartangiz raqami", "karta raqamingiz", "kartangiz raqamini", "karta raqami",
         "kod keldimi", "kodni ayt", "maxfiy kod", "token", "maxfiy",
+        "telefon raqam", "tel raqam", "raqamiz", "raqamingiz", "nomer", "nomeriz",
+        "nomerini", "raqamizni bering", "kontakt", "kontaktiz", "telefoniz", "telefoningiz",
         # Uzbek Cyrillic
         "парол", "код", "пин", "смс код", "тасдиқлаш коди", "паспорт", "пинфл", "жшшир",
-        "серия", "карта рақам", "махфий код", "токен",
+        "серия", "карта рақам", "махфий код", "токен", "телефон рақам", "тел рақам",
+        "карта рақами", "картангиз рақами", "карта рақамингиз",
+        "рақам", "рақамиз", "номер", "номериз", "номерингиз", "контакт",
         # Russian
         "пароль", "код", "пин", "смс код", "код подтверждения", "паспорт", "номер карты",
-        "свв", "сививи", "секретный код", "токен", "логин",
+        "свв", "сививи", "секретный код", "токен", "логин", "номер телефона", "твой номер",
+        "номер", "контакты", "телефон",
         # English
         "password", "passcode", "pin", "sms code", "verification code", "otp", "passport",
         "ssn", "card number", "cvv", "cvc", "secret key", "secret token", "credentials",
+        "phone number", "your number", "contact number",
     ],
     "promises_commitments": [
         # Uzbek Latin
         "va'da", "vada", "va'da beraman", "so'z beraman", "aniq qilaman", "aniq bitadi",
         "garantiya", "kafolat", "kafolatlayman", "100% bo'ladi", "so'z berdim", "ishonchim komil",
+        "ish bilan ta'minlash", "ishga joylash", "shogird", "hamkorlik", "taklif qilaman",
         # Uzbek Cyrillic
         "ваъда", "вада", "ваъда бераман", "сўз бераман", "аниқ қиламан", "гарантия",
-        "кафолат", "кафолатлайман", "100% бўлади", "сўз бердим",
+        "кафолат", "кафолатлайман", "100% бўлади", "сўз бердим", "иш билан таъминлаш", "шогирд",
         # Russian
         "обещаю", "гарантирую", "точно сделаю", "слово даю", "ручаюсь", "100% будет",
-        "клянусь", "гарантия", "обязуюсь",
+        "клянусь", "гарантия", "обязуюсь", "трудоустройство", "сотрудничество",
         # English
         "promise", "guarantee", "swear", "i will definitely", "commit", "warranty",
-        "assure", "100% sure", "i promise",
+        "assure", "100% sure", "i promise", "employment guarantee", "partnership",
     ],
     "meeting_schedule": [
         # Uzbek Latin

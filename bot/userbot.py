@@ -514,6 +514,25 @@ class UserbotService:
         is_sensitive = guard_result.is_sensitive
         sensitive_reason = guard_result.primary_reason
 
+        # Tier 1 Guardrail: AI Intent Classification (SAFE_CHITCHAT vs ESCALATE_TO_BOSS)
+        # Even if keyword guard did not trigger, verify if message requires Boss decision
+        try:
+            intent_result = await self.ai_engine.classify_incoming_message(
+                incoming_text=combined_text,
+                sender_name=first_name,
+                contact_profile=contact,
+                history=history,
+            )
+            if intent_result.category == "ESCALATE_TO_BOSS":
+                is_sensitive = True
+                if not sensitive_reason:
+                    sensitive_reason = intent_result.reason or "Xo'jayin qarori talab etiladi"
+                logger.info(
+                    f"🚨 [ESCALATE INTENT] Message from {peer_repr} requires Boss decision: {sensitive_reason}"
+                )
+        except Exception as e:
+            logger.warning(f"Error during intent classification for {peer_repr}: {type(e).__name__}")
+
         # Writing Style Honesty Guard (Phase 5, Rule D6)
         # If incoming message asks whether AI/bot or owner, route to draft with "Muhim - tasdiq kerak"
         if getattr(self, "style_service", None) and contact and getattr(contact, "user_id", None):
@@ -579,6 +598,14 @@ class UserbotService:
                     )
 
                 logger.info(f"Auto-replied to {peer_repr} (chars={len(reply_text)})")
+                if self.memory_service:
+                    async def _bg_mem_auto(uid: int):
+                        try:
+                            await self.memory_service.extract_facts_and_items(contact_user_id=uid)
+                            await self.memory_service.process_pending_embeddings(limit=10)
+                        except Exception:
+                            pass
+                    asyncio.create_task(_bg_mem_auto(sender_id))
                 return
 
         # Step 8: Draft mode OR Sensitive topic
@@ -598,6 +625,14 @@ class UserbotService:
                 logger.info(
                     f"Draft #{draft.id} created for {peer_repr} (sensitive={is_sensitive}, reason={sensitive_reason})."
                 )
+                if self.memory_service:
+                    async def _bg_mem_draft(uid: int):
+                        try:
+                            await self.memory_service.extract_facts_and_items(contact_user_id=uid)
+                            await self.memory_service.process_pending_embeddings(limit=10)
+                        except Exception:
+                            pass
+                    asyncio.create_task(_bg_mem_draft(sender_id))
             else:
                 logger.warning(f"Duplicate draft skipped for {peer_repr} (source msg {last_msg_id}).")
 

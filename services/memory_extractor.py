@@ -356,45 +356,53 @@ class MemoryExtractor:
         }
 
     async def _call_ai(self, system_instruction: str, user_content: str) -> Optional[str]:
-        """Calls Gemini API off-thread with timeout (fail-open)."""
+        """Calls Gemini API off-thread with multi-model fallback and strict timeout (fail-open)."""
         if self._client is None:
             return None
 
-        timeout_sec = getattr(settings, "MEM_EXTRACT_TIMEOUT_SECONDS", 20.0)
+        candidate_models = [self.model_name]
+        for m in ["gemini-3.1-flash-lite", "gemini-3.6-flash"]:
+            if m not in candidate_models:
+                candidate_models.append(m)
 
-        def _sync_call() -> Optional[str]:
-            if NEW_SDK:
-                config = types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.1,
-                    response_mime_type="application/json",
-                )
-                resp = self._client.models.generate_content(
-                    model=self.model_name,
-                    contents=user_content,
-                    config=config,
-                )
-                return resp.text
-            else:
-                model = genai.GenerativeModel(
-                    model_name=self.model_name,
-                    system_instruction=system_instruction,
-                    generation_config={"temperature": 0.1, "response_mime_type": "application/json"},
-                )
-                resp = model.generate_content(user_content)
-                return resp.text
+        full_prompt = f"{system_instruction}\n\n{user_content}"
 
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(_sync_call),
-                timeout=timeout_sec,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"Extraction AI call timed out after {timeout_sec}s.")
-            return None
-        except Exception as e:
-            logger.warning(f"Extraction AI call error: {type(e).__name__}")
-            return None
+        for model_cand in candidate_models:
+            def _sync_call() -> Optional[str]:
+                if NEW_SDK:
+                    config = types.GenerateContentConfig(
+                        temperature=0.1,
+                        response_mime_type="application/json",
+                    )
+                    resp = self._client.models.generate_content(
+                        model=model_cand,
+                        contents=full_prompt,
+                        config=config,
+                    )
+                    return getattr(resp, "text", None) or ""
+                else:
+                    model = genai.GenerativeModel(
+                        model_name=model_cand,
+                        generation_config={"temperature": 0.1, "response_mime_type": "application/json"},
+                    )
+                    resp = model.generate_content(full_prompt)
+                    return getattr(resp, "text", None) or ""
+
+            try:
+                res = await asyncio.wait_for(
+                    asyncio.to_thread(_sync_call),
+                    timeout=8.0,
+                )
+                if res and res.strip():
+                    return res
+            except asyncio.TimeoutError:
+                logger.warning(f"Extraction AI call timed out after 8.0s on model {model_cand}.")
+                continue
+            except Exception as e:
+                logger.warning(f"Extraction AI call error on model {model_cand}: {type(e).__name__}")
+                continue
+
+        return None
 
     def _parse_json(self, raw_text: str) -> Optional[Dict[str, Any]]:
         """Cleans and parses JSON from AI response."""

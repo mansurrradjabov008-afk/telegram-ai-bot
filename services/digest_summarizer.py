@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, Set
-from pydantic import BaseModel, Field
+from services.pydantic_compat import BaseModel, Field
 
 from config import settings
 from database.models import DigestPost

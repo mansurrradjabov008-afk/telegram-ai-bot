@@ -21,6 +21,7 @@ def create_deploy_package():
         ".git",
         "*.pyc",
         "*.zip",
+        "*.apk",
     ]
 
     print(f"📦 Arxiv yaratilmoqda: {output_zip.name}...")
@@ -30,7 +31,7 @@ def create_deploy_package():
             dirs[:] = [d for d in dirs if d not in ["__pycache__", ".pytest_cache", ".git"]]
             
             for file in files:
-                if file.endswith((".pyc", ".zip")) or file in ("sim_test.db", "temp_isolated.db", "telegram_ai_butler.db"):
+                if file.endswith((".pyc", ".zip", ".apk")) or file in ("sim_test.db", "temp_isolated.db", "telegram_ai_butler.db"):
                     continue
                 if file.startswith("butler_backup_") or file.startswith("butler_dryrun_") or file.startswith("butler_pre_maint_"):
                     continue

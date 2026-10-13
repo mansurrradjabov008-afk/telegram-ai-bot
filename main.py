@@ -151,28 +151,50 @@ async def main():
     try:
         await start_keepalive_server(default_port=7860)
     except Exception as e:
-        logger.warning(f"Could not start Keep-Alive web server: {e}")
+        logger.warning(f"Could not start Keep-Alive web server: {type(e).__name__}")
 
-    # 8. Start Admin Bot Polling
+    # 8. Start Admin Bot and Userbot with Resilient Reconnect Loops
+    async def _run_admin_bot_resilient():
+        while True:
+            try:
+                await admin_bot_service.dp.start_polling(
+                    admin_bot_service.bot,
+                    skip_updates=True,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Admin bot polling interrupted ({type(e).__name__}). Retrying in 5s...")
+                await asyncio.sleep(5)
+
+    async def _run_userbot_resilient():
+        while True:
+            try:
+                if userbot_service.client and userbot_service._is_running:
+                    await userbot_service.client.run_until_disconnected()
+                else:
+                    await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Userbot MTProto disconnected ({type(e).__name__}). Reconnecting in 5s...")
+                await asyncio.sleep(5)
+                try:
+                    if userbot_service.client and not userbot_service.client.is_connected():
+                        await userbot_service.client.connect()
+                except Exception as e2:
+                    logger.error(f"Userbot reconnect attempt failed: {type(e2).__name__}")
+
     tasks = []
     if admin_bot_service.bot:
         logger.info("🤖 Admin Cockpit Bot polling starting...")
         await admin_bot_service.setup_bot_commands()
-        tasks.append(
-            asyncio.create_task(
-                admin_bot_service.dp.start_polling(
-                    admin_bot_service.bot,
-                    skip_updates=True,
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_run_admin_bot_resilient()))
     else:
         logger.warning("⚠️ Admin Bot Token not configured in .env. Admin polling skipped.")
 
     if userbot_service.client and userbot_service._is_running:
-        tasks.append(
-            asyncio.create_task(userbot_service.client.run_until_disconnected())
-        )
+        tasks.append(asyncio.create_task(_run_userbot_resilient()))
 
     if not tasks:
         logger.info("ℹ️ No active bot tasks were started because credentials are pending in .env.")
