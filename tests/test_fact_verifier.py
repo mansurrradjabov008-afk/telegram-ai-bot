@@ -94,3 +94,44 @@ def test_fact_verifier_confidence_by_source_type():
     ok_conf, conf_conf, _ = verify_fact_content("Toshkent shahrida yashaydi", [msg], source_type="owner_confirmed")
     assert ok_conf is True
     assert conf_conf == 1.0
+
+
+def test_fact_verifier_uzbek_kinship_and_meta_words():
+    """Verifies that Uzbek kinship (uka, aka) and meta references (Mansurni, murojaat) verify accurately."""
+    msg = MemMessage(
+        id=5,
+        contact_user_id=8036556250,
+        tg_message_id=505,
+        sender="contact",
+        text_redacted="Assalomu alaykum yaxshimisiz ukam, bugun vaqting bormi",
+        sent_at="2026-10-14 10:00:00",
+    )
+    ok, conf, status = verify_fact_content(
+        fact_text="Kontakt Mansurni uka deb ataydi",
+        source_messages=[msg],
+        source_type="contact_claim",
+    )
+    assert ok is True
+    assert status == "verified"
+    assert 0.65 <= conf <= 0.85
+
+
+def test_fact_verifier_uzbek_phonetic_variation_and_suffixes():
+    """Verifies that Uzbek phonetic variations (Ingliz vs ingilizchasiga) verify properly."""
+    msg = MemMessage(
+        id=6,
+        contact_user_id=8036556250,
+        tg_message_id=506,
+        sender="contact",
+        text_redacted="Menga kitob kerak ingilizchasiga nima bular edi",
+        sent_at="2026-10-14 10:05:00",
+    )
+    ok, conf, status = verify_fact_content(
+        fact_text="Ingliz tili so'zlariga qiziqadi",
+        source_messages=[msg],
+        source_type="contact_claim",
+    )
+    assert ok is True
+    assert status == "verified"
+    assert 0.65 <= conf <= 0.85
+

@@ -1308,10 +1308,12 @@ class DatabaseManager:
         Enforces strict per-contact isolation (H4).
         """
         query = """
-        SELECT * FROM mem_messages 
-        WHERE contact_user_id = ? 
-        ORDER BY id ASC 
-        LIMIT ?
+        SELECT * FROM (
+            SELECT * FROM mem_messages 
+            WHERE contact_user_id = ? 
+            ORDER BY id DESC 
+            LIMIT ?
+        ) ORDER BY id ASC
         """
         async with get_db(self.db_path) as db:
             async with db.execute(query, (contact_user_id, limit)) as cur:

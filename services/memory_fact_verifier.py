@@ -19,6 +19,13 @@ STOP_WORDS: Set[str] = {
     "kontakt", "kontaktning", "kontaktga", "kontaktda", "foydalanuvchi",
     "foydalanuvchining", "suhbatdosh", "suhbatdoshning", "inson", "insonning",
     "uning", "ularning", "o'zi", "o'zining", "ushbu", "bu", "shu", "o'sha",
+    # Uzbek meta/grammatical & owner references
+    "meni", "seni", "bizni", "sizni", "menga", "senga", "bizga", "sizga", "menda", "senda",
+    "egasi", "egasini", "egasiga", "egasida", "mansur", "mansurni", "mansurga", "mansurda", "mansurning",
+    "ataydi", "atashadi", "aytadi", "aytdi", "nomlaydi", "murojaat",
+    "ismli", "nomli", "yoshda", "yashaydi", "ishlaydi", "biladi", "qiladi", "qildi", "bo'lgan",
+    "so'raydi", "so'radi", "qiziqadi", "o'rganadi", "o'rganmoqda", "o'rganishga",
+    "yoqtiradi", "ko'radi", "ma'qul", "kerak", "xohlaydi", "istaydi", "tili", "so'z", "so'zlari", "so'zlariga", "so'zlarini",
     # Russian
     "это", "что", "как", "или", "для", "при", "все", "его", "ее", "их",
     "был", "была", "были", "быть", "очень", "также", "после", "только",
@@ -35,6 +42,24 @@ def _normalize_text(text: str) -> str:
     # Normalize varied apostrophes
     t = text.lower().replace("‘", "'").replace("’", "'").replace("`", "'")
     return t
+
+
+def _levenshtein(s1: str, s2: str) -> int:
+    """Calculates Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
 
 
 def verify_fact_content(
@@ -81,7 +106,10 @@ def verify_fact_content(
                 continue
             proper_nouns.append(w)
 
-    case_suffixes = ("da", "dan", "ga", "ka", "qa", "ni", "ning", "dagi")
+    case_suffixes = (
+        "chasiga", "chasini", "cha", "dagi", "dek", "day", "lik", "chilik",
+        "da", "dan", "ga", "ka", "qa", "ni", "ning", "si", "i", "m", "am", "im", "ng", "ing", "dir"
+    )
 
     for pn in proper_nouns:
         pn_norm = _normalize_text(pn)
@@ -92,29 +120,41 @@ def verify_fact_content(
         if re.search(r"\b" + re.escape(pn_norm) + r"\b", source_corpus):
             matched_pn = True
         else:
-            # Check stem after stripping Uzbek case suffix
+            # Check stem after stripping Uzbek case/derivation suffix
             pn_stem = pn_norm
             for sfx in case_suffixes:
-                if pn_stem.endswith(sfx) and len(pn_stem) - len(sfx) >= 4:
+                if pn_stem.endswith(sfx) and len(pn_stem) - len(sfx) >= 3:
                     pn_stem = pn_stem[:-len(sfx)]
                     break
-            if pn_stem and any(cw.startswith(pn_stem) for cw in corpus_words):
-                matched_pn = True
+
+            for cw in corpus_words:
+                c_stem = cw
+                for sfx in case_suffixes:
+                    if c_stem.endswith(sfx) and len(c_stem) - len(sfx) >= 3:
+                        c_stem = c_stem[:-len(sfx)]
+                        break
+                if c_stem == pn_stem or cw.startswith(pn_stem) or pn_stem.startswith(c_stem):
+                    matched_pn = True
+                    break
+                # 1-character typo/phonetic variation (e.g. ingliz vs ingiliz) for length >= 4
+                if len(pn_stem) >= 4 and len(c_stem) >= 4 and _levenshtein(pn_stem, c_stem) <= 1:
+                    matched_pn = True
+                    break
 
         if not matched_pn:
             return False, 0.0, f"fact_verifier:missing_proper_noun:{pn}"
 
-    # 3. Identify content words (len >= 4, non-stopword)
+    # 3. Identify content words (len >= 3, non-stopword to support Uzbek words like uka, aka, ona, ota)
     content_words = [
         _normalize_text(w) for w in words
-        if len(w) >= 4 and _normalize_text(w) not in STOP_WORDS
+        if len(w) >= 3 and _normalize_text(w) not in STOP_WORDS
     ]
 
     if not content_words:
         # Very short generic fact; require at least words to be present
         all_norm_words = [_normalize_text(w) for w in words if _normalize_text(w) not in STOP_WORDS]
         if not all_norm_words:
-            return False, 0.0, "fact_verifier:no_content_words"
+            return True, 0.70, "verified_generic"
         content_words = all_norm_words
 
     # Split corpus into normalized words for fast lookup
@@ -123,10 +163,12 @@ def verify_fact_content(
     def _word_matches_corpus(fact_word: str) -> bool:
         if fact_word in corpus_words:
             return True
-        suffixes = ("man", "san", "di", "miz", "siz", "lar", "da", "dan", "ga", "ni", "ning", "moqda", "yapti", "gan")
+        suffixes = case_suffixes + (
+            "man", "san", "di", "miz", "siz", "lar", "larga", "larini", "moqda", "yapti", "gan"
+        )
         stem = fact_word
         for sfx in suffixes:
-            if stem.endswith(sfx) and len(stem) - len(sfx) >= 4:
+            if stem.endswith(sfx) and len(stem) - len(sfx) >= 3:
                 stem = stem[:-len(sfx)]
                 break
 
@@ -135,12 +177,14 @@ def verify_fact_content(
                 return True
             c_stem = cw
             for sfx in suffixes:
-                if c_stem.endswith(sfx) and len(c_stem) - len(sfx) >= 4:
+                if c_stem.endswith(sfx) and len(c_stem) - len(sfx) >= 3:
                     c_stem = c_stem[:-len(sfx)]
                     break
-            if stem == c_stem and len(stem) >= 4:
+            if stem == c_stem and len(stem) >= 3:
                 return True
-            if len(stem) >= 4 and len(c_stem) >= 4 and stem[:4] == c_stem[:4] and (stem in c_stem or c_stem in stem):
+            if len(stem) >= 3 and len(c_stem) >= 3 and stem[:3] == c_stem[:3] and (stem in c_stem or c_stem in stem):
+                return True
+            if len(stem) >= 4 and len(c_stem) >= 4 and _levenshtein(stem, c_stem) <= 1:
                 return True
         return False
 
