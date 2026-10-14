@@ -563,6 +563,7 @@ class UserbotService:
 
         # Tier 1 Guardrail: AI Intent Classification (SAFE_CHITCHAT vs ESCALATE_TO_BOSS)
         # Distinguish hard critical security boundaries from routine chitchat:
+        intent_result = None
         try:
             intent_result = await self.ai_engine.classify_incoming_message(
                 incoming_text=combined_text,
