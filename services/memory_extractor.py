@@ -30,11 +30,77 @@ from database.models import MemFact, MemMessage, MemOpenItem
 from services.memory_injection import contains_injection_patterns, is_forbidden_topic
 from services.memory_redactor import redact_text
 from services.memory_categories import normalize_category
-from services.memory_fact_verifier import verify_fact_content
+from services.memory_fact_verifier import verify_fact_content, STOP_WORDS
 
 logger = logging.getLogger(__name__)
 
 ALLOWED_FACT_SENDERS = {"contact", "owner_manual", "owner_edited"}
+
+
+def consolidate_fact_with_existing(
+    fact_text: str,
+    category: str,
+    existing_facts: List[MemFact],
+) -> Tuple[bool, str, Optional[int]]:
+    """
+    Intelligently consolidates, deduplicates, and merges new facts with existing facts.
+    Returns:
+        (is_duplicate: bool, final_fact_text: str, supersedes_id: Optional[int])
+    """
+    clean_fact = fact_text.strip()
+    norm_new = clean_fact.lower()
+
+    for ef in existing_facts:
+        norm_ef = ef.text.strip().lower()
+
+        # 1. Exact match
+        if norm_new == norm_ef:
+            return True, clean_fact, None
+
+        # Same category checks
+        if ef.category == category:
+            # 2. Relationship addressing consolidation
+            if category == "relationship_note":
+                addressing_terms = ["uka", "bro", "aka", "do'stim", "jigar", "og'a", "brat", "sherik", "usta"]
+                new_terms = [t for t in addressing_terms if re.search(r"\b" + re.escape(t) + r"\b", norm_new)]
+                ef_terms = [t for t in addressing_terms if re.search(r"\b" + re.escape(t) + r"\b", norm_ef)]
+
+                if new_terms and ef_terms:
+                    all_terms = list(dict.fromkeys(ef_terms + new_terms))
+                    if len(all_terms) > len(ef_terms):
+                        joined_terms = " va ".join([f"'{t}'" for t in all_terms])
+                        merged_text = f"Kontakt egasiga {joined_terms} deb murojaat qiladi"
+                        return False, merged_text, ef.id
+                    elif len(all_terms) == len(ef_terms):
+                        # All terms are already captured in existing fact
+                        return True, clean_fact, None
+
+            # 3. Content word overlap / semantic similarity (>= 60% overlap in same category)
+            words_new = set(re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ']+\b", norm_new))
+            words_ef = set(re.findall(r"\b[A-Za-zА-Яа-яЎўҚқҒғҲҳ']+\b", norm_ef))
+            core_new = {w for w in words_new if w not in STOP_WORDS and len(w) >= 3}
+            core_ef = {w for w in words_ef if w not in STOP_WORDS and len(w) >= 3}
+
+            if core_new and core_ef:
+                overlap = len(core_new & core_ef) / min(len(core_new), len(core_ef))
+                if overlap >= 0.60:
+                    # Same core preference/interest/activity!
+                    if len(clean_fact) >= len(ef.text):
+                        return False, clean_fact, ef.id
+                    else:
+                        return True, clean_fact, None
+
+            # 4. Richer / Subsuming fact
+            if norm_ef in norm_new and len(clean_fact) > len(ef.text):
+                return False, clean_fact, ef.id
+            elif norm_new in norm_ef and len(ef.text) >= len(clean_fact):
+                return True, clean_fact, None
+
+            # 5. Same topic updates for single-value / temporal categories
+            if category in ("identity", "location", "work", "ongoing_topic"):
+                return False, clean_fact, ef.id
+
+    return False, clean_fact, None
 
 
 class MemoryExtractor:
@@ -303,17 +369,13 @@ class MemoryExtractor:
 
                 confidence = derived_conf
 
-                # Check existing facts to avoid duplicates or handle superseding
+                # Smart Fact Consolidation (deduplication, relationship merging, and superseding)
                 existing_facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
-                is_duplicate = False
-                supersedes_id = None
-                for ef in existing_facts:
-                    if ef.text.lower() == fact_text.lower():
-                        is_duplicate = True
-                        break
-                    elif ef.category == category and category in ("identity", "ongoing_topic", "location", "work"):
-                        # If same specific category updates (e.g. identity/location changed), mark supersedes
-                        supersedes_id = ef.id
+                is_duplicate, fact_text, supersedes_id = consolidate_fact_with_existing(
+                    fact_text=fact_text,
+                    category=category,
+                    existing_facts=existing_facts,
+                )
 
                 if is_duplicate:
                     continue

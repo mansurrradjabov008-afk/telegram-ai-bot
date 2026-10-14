@@ -4299,6 +4299,89 @@ class AdminBotService:
                 parse_mode="HTML",
             )
 
+        CATEGORY_BADGES = {
+            "relationship_note": "🤝 Munosabat",
+            "interest": "🎯 Qiziqish",
+            "preference": "💡 Afzallik",
+            "identity": "👤 Shaxsiyat",
+            "ongoing_topic": "🔄 Joriy mavzu",
+            "important_date": "📅 Muhim sana",
+            "work": "💼 Ish/Kasb",
+            "location": "📍 Manzil",
+            "other": "📌 Umumiy",
+        }
+
+        async def _render_facts_view(target_msg: types.Message, contact: Any, is_callback: bool = True):
+            facts = await self.db_manager.get_mem_facts(contact.user_id, status="active")
+            if not facts:
+                builder = InlineKeyboardBuilder()
+                builder.button(text="➕ Yangi fakt qo'shish", callback_data=f"mem_fact_add_prompt:{contact.user_id}")
+                builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
+                builder.adjust(1, 1)
+                empty_text = (
+                    f"📋 <b>FAKTLAR RO'YXATI: {html.escape(contact.full_name)}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"ℹ️ <i>Hozircha saqlangan faol faktlar mavjud emas.</i>\n\n"
+                    f"💡 <i>Yangi fakt qo'shish uchun:</i>\n"
+                    f"<code>/remember @{contact.username or contact.user_id} [kategoriya] matn</code>"
+                )
+                if is_callback:
+                    return await target_msg.edit_text(empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                else:
+                    return await safe_reply(target_msg, empty_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+            builder = InlineKeyboardBuilder()
+            adjust_layout = []
+
+            # Quick 1-tap confirm all if unconfirmed facts exist
+            has_unconfirmed = any(f.source_type != "owner_confirmed" for f in facts)
+            if has_unconfirmed:
+                builder.button(text="✨ Barchasini tasdiqlash", callback_data=f"mem_facts_confirm_all:{contact.user_id}")
+                adjust_layout.append(1)
+
+            lines = [
+                f"📋 <b>FAKTLAR RO'YXATI: {html.escape(contact.full_name)}</b> (<code>{len(facts)} ta</code>)\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+
+            for f in facts[:10]:
+                cat_badge = CATEGORY_BADGES.get(f.category, f"📌 {f.category or 'Umumiy'}")
+                if f.source_type == "owner_confirmed":
+                    src_badge = "⭐️ 100% (Tasdiqlangan)"
+                elif f.source_type == "owner_stated":
+                    src_badge = "👑 95% (Egasi aytgan)"
+                else:
+                    conf_pct = int((f.confidence or 0.75) * 100)
+                    src_badge = f"👁 {conf_pct}% (Kuzatilgan)"
+
+                lines.append(
+                    f"• <b>#{f.id} [{cat_badge}]</b> <i>({src_badge})</i>:\n"
+                    f"  <i>\"{html.escape(f.text)}\"</i>"
+                )
+
+                if f.source_type != "owner_confirmed":
+                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(2)
+                else:
+                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
+                    adjust_layout.append(1)
+
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("💡 <i>Tugmalar orqali faktlarni 1 ta bosishda tasdiqlang yoki o'chiring:</i>")
+
+            builder.button(text="➕ Yangi fakt qo'shish", callback_data=f"mem_fact_add_prompt:{contact.user_id}")
+            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
+            adjust_layout.append(2)
+
+            builder.adjust(*adjust_layout)
+
+            full_text = "\n\n".join(lines[:-2]) + "\n" + lines[-2] + "\n" + lines[-1]
+            if is_callback:
+                await target_msg.edit_text(full_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, full_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
         @dp.message(Command("memory_facts"))
         async def cmd_memory_facts(message: types.Message):
             if not self._is_admin(message.from_user.id):
@@ -4315,33 +4398,7 @@ class AdminBotService:
             if not contact:
                 return await safe_reply(message, f"❌ Kontakt <b>'{html.escape(args)}'</b> topilmadi.", parse_mode="HTML")
 
-            facts = await self.db_manager.get_mem_facts(contact.user_id, status="active")
-            if not facts:
-                return await safe_reply(
-                    message,
-                    f"ℹ️ <b>{html.escape(contact.full_name)}</b> uchun saqlangan faol faktlar mavjud emas.",
-                    parse_mode="HTML",
-                )
-
-            builder = InlineKeyboardBuilder()
-            adjust_layout = []
-            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
-            for f in facts[:10]:
-                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
-                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                if f.source_type != "owner_confirmed":
-                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(2)
-                else:
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(1)
-
-            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            adjust_layout.append(1)
-            builder.adjust(*adjust_layout)
-
-            await safe_reply(message, "\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+            await _render_facts_view(message, contact, is_callback=False)
 
         @dp.message(Command("forget"))
         async def cmd_forget(message: types.Message):
@@ -4384,28 +4441,31 @@ class AdminBotService:
             contact = await self.db_manager.get_contact_by_id(contact_user_id)
             if not contact:
                 return await callback.answer("Kontakt topilmadi.", show_alert=True)
-            facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
-            if not facts:
-                return await callback.answer("Faol faktlar mavjud emas.", show_alert=True)
+            await _render_facts_view(callback.message, contact, is_callback=True)
 
-            builder = InlineKeyboardBuilder()
-            adjust_layout = []
-            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
-            for f in facts[:10]:
-                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
-                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                if f.source_type != "owner_confirmed":
-                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(2)
-                else:
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(1)
+        @dp.callback_query(F.data.startswith("mem_facts_confirm_all:"))
+        async def handle_mem_facts_confirm_all(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            contact_user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(contact_user_id)
+            if not contact:
+                return await callback.answer("Kontakt topilmadi.", show_alert=True)
+            updated = await self.db_manager.confirm_all_mem_facts(contact_user_id)
+            await callback.answer(f"✅ Barcha faol faktlar tasdiqlandi! ({updated} ta)", show_alert=True)
+            await _render_facts_view(callback.message, contact, is_callback=True)
 
-            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            adjust_layout.append(1)
-            builder.adjust(*adjust_layout)
-            await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+        @dp.callback_query(F.data.startswith("mem_fact_add_prompt:"))
+        async def handle_mem_fact_add_prompt(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            contact_user_id = int(callback.data.split(":")[1])
+            contact = await self.db_manager.get_contact_by_id(contact_user_id)
+            target = f"@{contact.username}" if (contact and contact.username) else str(contact_user_id)
+            await callback.answer(
+                f"Yangi fakt qo'shish uchun xabar yuboring:\n/remember {target} [kategoriya] Matn",
+                show_alert=True,
+            )
 
         @dp.callback_query(F.data.startswith("mem_fact_confirm:"))
         async def handle_mem_fact_confirm(callback: types.CallbackQuery):
@@ -4423,31 +4483,7 @@ class AdminBotService:
             contact = await self.db_manager.get_contact_by_id(contact_user_id)
             if not contact:
                 return await callback.message.edit_text("Kontakt topilmadi.")
-            facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
-            if not facts:
-                builder = InlineKeyboardBuilder()
-                builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact_user_id}")
-                await callback.message.edit_text("ℹ️ Faol faktlar qolmadi.", reply_markup=builder.as_markup(), parse_mode="HTML")
-                return
-
-            builder = InlineKeyboardBuilder()
-            adjust_layout = []
-            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
-            for f in facts[:10]:
-                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
-                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                if f.source_type != "owner_confirmed":
-                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(2)
-                else:
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(1)
-
-            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            adjust_layout.append(1)
-            builder.adjust(*adjust_layout)
-            await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+            await _render_facts_view(callback.message, contact, is_callback=True)
 
         @dp.callback_query(F.data.startswith("mem_fact_del:"))
         async def handle_mem_fact_del(callback: types.CallbackQuery):
@@ -4465,31 +4501,7 @@ class AdminBotService:
             contact = await self.db_manager.get_contact_by_id(contact_user_id)
             if not contact:
                 return await callback.message.edit_text("Kontakt topilmadi.")
-            facts = await self.db_manager.get_mem_facts(contact_user_id, status="active")
-            if not facts:
-                builder = InlineKeyboardBuilder()
-                builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact_user_id}")
-                await callback.message.edit_text("ℹ️ Faol faktlar qolmadi.", reply_markup=builder.as_markup(), parse_mode="HTML")
-                return
-
-            builder = InlineKeyboardBuilder()
-            adjust_layout = []
-            lines = [f"📋 <b>FAKTLAR RO'YXATI:</b> {html.escape(contact.full_name)}\n━━━━━━━━━━━━━━━━━━━━"]
-            for f in facts[:10]:
-                src_label = "kontakt da'vosi" if f.source_type == "contact_claim" else ("egasi tasdiqlagan" if f.source_type == "owner_confirmed" else "egasi ta'kidlagan")
-                lines.append(f"• <b>#{f.id}</b> [{html.escape(f.category or 'umumiy')}] ({src_label}):\n  {html.escape(f.text)}")
-                if f.source_type != "owner_confirmed":
-                    builder.button(text=f"✅ #{f.id} Tasdiqlash", callback_data=f"mem_fact_confirm:{contact.user_id}:{f.id}")
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(2)
-                else:
-                    builder.button(text=f"🗑 #{f.id} O'chirish", callback_data=f"mem_fact_del:{contact.user_id}:{f.id}")
-                    adjust_layout.append(1)
-
-            builder.button(text="🔙 Xotiraga qaytish", callback_data=f"mem_back:{contact.user_id}")
-            adjust_layout.append(1)
-            builder.adjust(*adjust_layout)
-            await callback.message.edit_text("\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+            await _render_facts_view(callback.message, contact, is_callback=True)
 
         @dp.callback_query(F.data.startswith("mem_forget_prompt:"))
         async def handle_mem_forget_prompt(callback: types.CallbackQuery):

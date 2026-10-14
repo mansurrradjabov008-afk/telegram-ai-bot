@@ -1870,6 +1870,17 @@ class DatabaseManager:
             cur = await db.execute(query, (contact_user_id, fact_id))
             return cur.rowcount > 0
 
+    async def confirm_all_mem_facts(self, contact_user_id: int) -> int:
+        """Sets source_type='owner_confirmed' and confidence=1.0 for all active facts of target contact."""
+        query = """
+        UPDATE mem_facts
+        SET source_type = 'owner_confirmed', confidence = 1.0, updated_at = CURRENT_TIMESTAMP
+        WHERE contact_user_id = ? AND status = 'active' AND source_type != 'owner_confirmed'
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(query, (contact_user_id,))
+            return cur.rowcount
+
     async def cleanup_conversation_history(self, days: int = 180) -> int:
         """Purge conversation_history rows older than retention threshold per Step 1.7."""
         query = "DELETE FROM conversation_history WHERE timestamp < datetime('now', ?)"
@@ -1885,6 +1896,15 @@ class DatabaseManager:
                 (contact_user_id, fact_id),
             )
             return cur.rowcount > 0
+
+    async def delete_all_mem_facts(self, contact_user_id: int) -> int:
+        """Permanently deletes all facts for target contact (H4)."""
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                "DELETE FROM mem_facts WHERE contact_user_id = ?",
+                (contact_user_id,),
+            )
+            return cur.rowcount
 
     async def get_mem_stats(self, contact_user_id: int) -> Dict[str, int]:
         """Returns statistics of stored memory items for target contact (H4)."""

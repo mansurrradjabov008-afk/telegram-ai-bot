@@ -128,7 +128,7 @@ class MemoryContextAssembler:
             sections.append(
                 f"SUHBATDOSH HAQIDAGI FAKTLAR:\n"
                 f"{facts_block}\n"
-                f"(Izoh: 'kontaktning da'vosi' bo'lgan ma'lumotlar tekshirilmagan deb hisoblansin va qat'iy haqiqat deb ta'kidlanmasin)"
+                f"(Izoh: 'kontaktning da'vosi' bo'lgan ma'lumotlar tekshirilmagan deb hisoblansin va qat'iy haqiqat deb ta'kidlanmasin, lekin suhbatdoshning murojaat uslubi va qiziqishlariga mos javob berishda tabiiy foydalanilsin)"
             )
 
         # 4. Relevant Moments Retrieval (Phase 2 Retriever)
