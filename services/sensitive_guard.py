@@ -307,9 +307,10 @@ async def check_sensitive(
     if in_detail["hard_sensitive"]:
         hard_sensitive = True
 
-    # Any sensitive keyword in proposed reply ALWAYS forces hard sensitive
-    if out_detail["reasons"]:
+    # Proposed reply only forces hard sensitive if it contains HARD sensitive keywords (money, cards, credentials, guarantees)
+    if out_detail["hard_sensitive"]:
         hard_sensitive = True
+    if out_detail["reasons"]:
         for r in out_detail["reasons"]:
             reasons.append(f"Javobda: {r}")
         for c in out_detail["categories"]:
@@ -333,10 +334,29 @@ async def check_sensitive(
                 ai_reasons = ai_result.get("reasons", ["AI tomonidan nozik mavzu aniqlandi"])
                 reasons.extend(ai_reasons)
                 categories.append("ai_classifier")
+
+                # Differentiate hard security threats from soft scheduling/coordination
+                is_ai_hard = bool(ai_result.get("hard_sensitive", False))
+                cat = str(ai_result.get("category", "")).lower()
+                reasons_str = " ".join(ai_reasons).lower()
+
+                # If category or reasons are purely meeting/scheduling or soft chitchat without money/credentials
+                if any(w in cat for w in ["meeting", "casual", "chitchat", "schedule"]) or any(
+                    w in reasons_str for w in ["uchrashuv", "joyi", "vaqti", "kutubxona", "choyxona"]
+                ):
+                    if not any(k in reasons_str for k in ["pul", "karta", "parol", "sud", "shartnoma", "kod"]):
+                        is_ai_hard = False
+                elif not any(k in reasons_str for k in ["pul", "karta", "parol", "sud", "shartnoma", "kod", "inj"]):
+                    if not in_detail["hard_sensitive"] and not out_detail["hard_sensitive"]:
+                        is_ai_hard = False
+
+                if is_ai_hard:
+                    hard_sensitive = True
+
                 return SensitiveCheckResult(
                     is_sensitive=True,
                     reasons=reasons,
-                    hard_sensitive=True,
+                    hard_sensitive=hard_sensitive,
                     categories=categories,
                 )
         except Exception as e:

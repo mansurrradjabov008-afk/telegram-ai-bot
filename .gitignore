@@ -14,3 +14,5 @@ data/*.session*
 scratch/
 temp_isolated.db
 docs/log_scan_report.txt
+*.apk
+wheels/

@@ -47,16 +47,19 @@ _EN_WORDS = {
 }
 
 _SIZ_PATTERNS = [
-    r"\bsiz\b", r"\bsizga\b", r"\bsizni\b", r"\bsizda\b", r"\bsizdan\b",
-    r"\b(yaxshimisiz|salomatmisiz|bormisiz|qandaysiz|charchamayapsizmi)\b",
-    r"\b\w+(?:yapsiz|yapsizmi|yapsizlar|dingiz|dingizmi|ingiz|ingizni|ingizga)\b",
-    r"\b(rahmat|tashakkur)\b",
+    r"\bsiz\b", r"\bsizga\b", r"\bsizni\b", r"\bsizda\b", r"\bsizdan\b", r"\bsizlar\b",
+    r"\b(yaxshimisiz|salomatmisiz|bormisiz|qandaysiz|charchamayapsizmi|ahvollaringiz)\b",
+    r"\b\w+(?:yapsiz|yapsizmi|yapsizlar|dingiz|dingizmi|ingiz|ingizni|ingizga|asiz|asizmi)\b",
+    r"\b(rahmat|tashakkur|marhamat|salomat bo'ling)\b",
+    r"\b(tayyor turing|turing|gapiring|yozing|qiling|bering|ayting|keling|boring|kuting|qarang|tushuning|to'xtang|chiqing|eshiting)\b",
 ]
 _SEN_PATTERNS = [
     r"\bsen\b", r"\bsenga\b", r"\bsenni\b", r"\bsenda\b", r"\bsendan\b",
-    r"\b(qalaysan|yaxshimisan|nima gap|bormisan|qandaysan)\b",
-    r"\b\w+(?:yapsan|yapsanmi|ding|dingmi|san|sanmi)\b",
-    r"\b(bro|jigar|og'ayni|ogayni|o'rtoq|ortoq)\b",
+    r"\b(qalaysan|yaxshimisan|nima gap|bormisan|qandaysan|qalesan|charchavossanmi|nima qvosan|tinchtmi)\b",
+    r"\b\w+(?:yapsan|yapsanmi|ding|dingmi|san|sanmi|vossan|vossanmi|asan|asanmi|yapsan-ku|ding-ku)\b",
+    r"\b(bro|jigar|og'ayni|ogayni|o'rtoq|ortoq|uka|brat|og'a|jo'ra|jora)\b",
+    r"\b(tayyor tur|tur|gapir|yoz|qil|ber|ayt|kel|bor|kut|qara|tushun|to'xta|chiq|eshit|bo'l|bol)\b",
+    r"\b(yebana|chort|dalbayob|blin|bla|ey|eey)\b",
 ]
 
 

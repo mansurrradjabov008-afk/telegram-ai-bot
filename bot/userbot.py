@@ -501,6 +501,19 @@ class UserbotService:
             f"Processing debounced batch ({len(batch)} messages) for {peer_repr} (chars={len(combined_text)})"
         )
 
+        # Dynamic Register & Addressing Adaptation (Street Uzbek / Sen detection)
+        from services.style_sampler import detect_register
+        detected_reg = detect_register(combined_text)
+        if detected_reg == "sen" and contact and contact.addressing_style == "siz":
+            inst = (contact.custom_instructions or "").lower()
+            if not any(w in inst for w in ["qat'iy siz", "faqat siz", "rasmiy", "sizlash shart"]):
+                logger.info(f"Dynamic register detected 'sen' for {peer_repr}. Updating contact addressing style.")
+                contact.addressing_style = "sen"
+                try:
+                    await self.db_manager.update_addressing_style(user_id=contact.user_id, addressing_style="sen")
+                except Exception as e:
+                    logger.warning(f"Failed to persist addressing style update for {peer_repr}: {type(e).__name__}")
+
         # Step 5: Generate reply with existing AI logic and Contact Memory (Integration Point 2)
         history = await self.db_manager.get_recent_history(chat_id=sender_id, limit=15)
         memory_context = ""
@@ -573,6 +586,21 @@ class UserbotService:
                 )
         except Exception as e:
             logger.warning(f"Error during intent classification for {peer_repr}: {type(e).__name__}")
+
+        # AUTO MODE AUTONOMY GUARANTEE:
+        # When contact is set to 'auto', routine coordination, casual meetings (library, cafe, meetup),
+        # routine questions ("nega javob bermayapsan"), and everyday chatter must auto-reply smoothly
+        # without bothering the Boss. Only true hard security risks (cards, money, passwords, lawsuits,
+        # prompt injections) or explicit escalation to Boss ("ESCALATE_TO_BOSS") will trigger draft approval.
+        if mode == "auto" and not getattr(guard_result, "hard_sensitive", False):
+            if not (intent_result and intent_result.category == "ESCALATE_TO_BOSS"):
+                if is_sensitive:
+                    logger.info(
+                        f"⚡ [AUTO MODE AUTONOMY] Overriding soft sensitivity ({sensitive_reason}) for {peer_repr} "
+                        f"in auto mode. Auto-replying autonomously."
+                    )
+                    is_sensitive = False
+                    sensitive_reason = None
 
         # Writing Style Honesty Guard (Phase 5, Rule D6)
         # If incoming message asks whether AI/bot or owner, route to draft with "Muhim - tasdiq kerak"
