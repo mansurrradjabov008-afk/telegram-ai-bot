@@ -90,6 +90,10 @@ class UserbotService:
             str(self.session_path),
             api_id=settings.TELEGRAM_API_ID,
             api_hash=settings.TELEGRAM_API_HASH,
+            connection_retries=None,
+            retry_delay=2,
+            auto_reconnect=True,
+            flood_sleep_threshold=60,
         )
         self._setup_event_handlers()
         return True
