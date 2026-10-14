@@ -152,7 +152,53 @@ async def test_dynamic_register_adaptation_in_ai_engine():
 
     assert reply == "Bo'ldi kelishdik, 8 da kutubxonada ko'rishamiz."
     assert len(captured_prompts) > 0
-    # The prompt sent to Gemini must enforce "SEN" addressing because the incoming text is informal:
     prompt_text = captured_prompts[0]
     assert "MUROJAAT SHAKLI: \"SEN\"" in prompt_text, "AI engine failed to dynamically adapt to 'sen' addressing"
     assert "ZERO CALL-CENTER CLICHES" in prompt_text, "Rule 10/11 must be present in prompt"
+
+
+@pytest.mark.asyncio
+async def test_ai_classifier_transient_server_error_not_hard_sensitive():
+    """
+    When AI classifier raises transient ServerError on a safe friend message,
+    hard_sensitive must be False so auto mode is NOT blocked by draft cards.
+    """
+    mock_ai = MagicMock()
+    mock_ai.classify_sensitive_topic = AsyncMock(side_effect=RuntimeError("ServerError: 503 Service Unavailable"))
+
+    incoming = "Ha boryapman sen tayyor bulib tur"
+    proposed = "Bo'ldi, tushundim. Kutib turibman, tezroq kel, gaplashadigan gaplarimiz ham bor."
+
+    res = await check_sensitive(incoming, proposed_reply=proposed, ai_engine=mock_ai)
+    assert res.is_sensitive is True
+    assert res.hard_sensitive is False, "Transient ServerError on safe message must NOT be hard_sensitive"
+    assert any("fail-closed" in r.lower() for r in res.reasons)
+
+
+@pytest.mark.asyncio
+async def test_classify_sensitive_topic_continues_on_first_model_failure():
+    """
+    Verifies that classify_sensitive_topic falls back to subsequent candidate models
+    when the first model throws an error.
+    """
+    from services.ai_engine import AIEngine
+
+    ai = AIEngine()
+    ai._get_candidate_models = MagicMock(return_value=["model-fail", "model-succeed"])
+    ai._client = MagicMock()
+
+    call_count = 0
+
+    async def mock_call(model, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if model == "model-fail":
+            raise RuntimeError("ServerError: 503")
+        return '{"sensitive": false, "hard_sensitive": false, "category": "casual_coordination", "reasons": []}'
+
+    ai._call_gemini_raw = AsyncMock(side_effect=mock_call)
+
+    res = await ai.classify_sensitive_topic("Ha boryapman sen tayyor bulib tur", "Bo'ldi kelishdik")
+    assert call_count == 2, "Must have fallen back to second candidate model"
+    assert res["sensitive"] is False
+    assert res["hard_sensitive"] is False

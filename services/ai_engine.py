@@ -645,7 +645,7 @@ Respond with STRICT JSON ONLY in this exact format:
                     }
             except Exception as e:
                 logger.warning(f"Sensitive classifier failed on {candidate_model}: {type(e).__name__}")
-                raise e
+                continue
 
         return {"sensitive": False, "hard_sensitive": False, "category": "safe", "reasons": []}
 
@@ -1374,18 +1374,19 @@ Return STRICT JSON ONLY:
                 confidence=0.90,
             )
 
-        # 2. Financial, meeting and confidential escalations
+        # 2. Financial, confidential, formal meeting and legal escalations
         urgent_keywords = [
             "to'lov", "tulov", "dollar", "$", "pul", "qarz", "summa", "so'm", "som",
-            "uchrashuv", "ko'rishaylik", "shartnoma", "karta raqam", "shot raqam",
-            "parol", "sms kod", "pasport", "sud", "militsiya", "shaxsan mansur"
+            "uchrashuv", "shartnoma", "karta raqam", "shot raqam", "karta", "karta raqami",
+            "parol", "sms kod", "pasport", "sud", "militsiya", "shaxsan mansur",
+            "telefonni ber", "shaxsan o'zi", "shaxsan ozi"
         ]
         is_urgent = any(kw in lower for kw in urgent_keywords)
 
         if is_urgent:
             return ClassificationResult(
                 category="ESCALATE_TO_BOSS",
-                reason="Xabarda jiddiy moliyaviy, uchrashuv yoki maxfiy masala aniqlandi.",
+                reason="Xabarda jiddiy moliyaviy, huquqiy yoki maxfiy masala aniqlandi.",
                 urgency="high",
                 suggested_reply="Buni ko'rib chiqib, birozdan keyin o'zim yozaman.",
                 confidence=0.85,

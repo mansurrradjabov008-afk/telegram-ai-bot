@@ -360,12 +360,14 @@ async def check_sensitive(
                     categories=categories,
                 )
         except Exception as e:
-            # FAIL-CLOSED: Any failure, timeout, or invalid output forces sensitive draft
+            # FAIL-CLOSED: Any failure, timeout, or invalid output forces sensitive flag,
+            # but only marks hard_sensitive if keyword layer detected true critical boundaries.
             logger.warning(f"Sensitive guard AI classifier failed ({type(e).__name__}). Enforcing fail-closed sensitive flag.")
+            is_fail_hard = bool(in_detail.get("hard_sensitive") or out_detail.get("hard_sensitive"))
             return SensitiveCheckResult(
                 is_sensitive=True,
                 reasons=[f"AI xavfsizlik tekshiruvi xatosi (fail-closed): {type(e).__name__}"],
-                hard_sensitive=True,
+                hard_sensitive=is_fail_hard,
                 categories=["fail_closed_error"],
             )
 
