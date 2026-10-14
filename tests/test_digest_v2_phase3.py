@@ -355,3 +355,73 @@ async def test_digest_service_classification_pipeline(temp_db_crud):
     db_discarded = await crud.get_digest_posts(status="discarded")
     assert len(db_discarded) == 1
     assert db_discarded[0].id == id2
+
+
+def test_parse_json_array_without_items_wrapper():
+    """Verifies classifier handles top-level JSON list [ {...} ] without items wrapper."""
+    ai_mock = MagicMock(spec=AIEngine)
+    classifier = DigestClassifier(ai_mock)
+
+    raw_array = json.dumps([
+        {"post_id": 10, "topic": "A", "importance": 4, "is_advertisement": False},
+        {"post_id": 11, "topic": "E", "importance": 5, "is_advertisement": False},
+    ])
+    res = classifier.parse_and_validate_response(raw_array, {10, 11})
+    assert res is not None
+    assert len(res) == 2
+    assert res[0].post_id == 10
+    assert res[0].topic == "A"
+    assert res[1].post_id == 11
+    assert res[1].topic == "E"
+
+
+def test_parse_json_with_alternative_keys():
+    """Verifies classifier handles alternative top-level keys like 'posts' or 'results'."""
+    ai_mock = MagicMock(spec=AIEngine)
+    classifier = DigestClassifier(ai_mock)
+
+    raw_posts = json.dumps({
+        "posts": [
+            {"post_id": 20, "topic": "B", "importance": 3, "is_advertisement": False},
+        ]
+    })
+    res = classifier.parse_and_validate_response(raw_posts, {20})
+    assert res is not None
+    assert len(res) == 1
+    assert res[0].post_id == 20
+    assert res[0].topic == "B"
+
+
+@pytest.mark.asyncio
+async def test_topic_normalization_and_importance_clamping():
+    """Verifies that descriptive topic strings ('A. Siyosat', 'Topic E') normalize cleanly and out-of-range importance is clamped."""
+    ai_mock = MagicMock(spec=AIEngine)
+    classifier = DigestClassifier(ai_mock)
+
+    posts = [
+        DigestPost(id=1, chat_id=-1, message_id=1, text="Prezident farmoni qabul qilindi", status="new"),
+        DigestPost(id=2, chat_id=-1, message_id=2, text="Yangi AI algoritmi ishga tushirildi", status="new"),
+    ]
+
+    raw_resp = json.dumps({
+        "items": [
+            {"post_id": 1, "topic": "A. Siyosat va qonunchilik", "importance": 6, "is_advertisement": False},
+            {"post_id": 2, "topic": "E - Sun'iy intellekt", "importance": 0, "is_advertisement": False},
+        ]
+    })
+    ai_mock.generate_json_response = AsyncMock(return_value=raw_resp)
+
+    res = await classifier.classify_posts(posts)
+    # Post 1: topic "A", importance clamped to 5 -> classified
+    assert res["total_classified"] >= 1
+    classified_p1 = [p for p in res["classified_posts"] if p.id == 1]
+    assert len(classified_p1) == 1
+    assert classified_p1[0].topic == "A"
+    assert classified_p1[0].importance == 5
+
+    # Post 2: topic "E", importance clamped to 1 -> discarded because min_importance=2
+    discarded_p2 = [p for p in res["discarded_posts"] if p.id == 2]
+    assert len(discarded_p2) == 1
+    assert discarded_p2[0].topic == "E"
+    assert discarded_p2[0].importance == 1
+

@@ -26,8 +26,8 @@ class CircuitBreaker:
     def __init__(
         self,
         name: str,
-        failure_threshold: int = 3,
-        recovery_timeout: float = 60.0,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 25.0,
     ):
         self.name = name
         self.failure_threshold = failure_threshold
@@ -91,7 +91,7 @@ class CircuitBreakerRegistry:
     Thread-safe singleton registry managing circuit breakers by service/model name.
     """
 
-    def __init__(self, default_threshold: int = 3, default_recovery: float = 60.0):
+    def __init__(self, default_threshold: int = 5, default_recovery: float = 25.0):
         self.default_threshold = default_threshold
         self.default_recovery = default_recovery
         self._breakers: Dict[str, CircuitBreaker] = {}

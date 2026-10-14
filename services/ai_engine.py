@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 # List of models ordered by preference for automatic quota/demand fallback
 FALLBACK_MODELS = [
     "gemini-3.1-flash-lite",
-    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
 ]
+
 
 
 
@@ -194,7 +196,7 @@ class AIEngine:
         prompt: str,
         temperature: float = 0.0,
         response_mime_type: Optional[str] = None,
-        timeout: float = 10.0,
+        timeout: float = 25.0,
     ) -> str:
         """
         Executes a single Gemini content generation call safely off the main event loop
@@ -706,6 +708,7 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
         self,
         prompt: str,
         temperature: float = 0.0,
+        timeout: float = 30.0,
     ) -> Optional[str]:
         """
         Generates strict JSON content using Gemini with automatic multi-model fallback.
@@ -722,6 +725,7 @@ Agar matnda kontakt va ko'rsatma bo'lmasa:
                     prompt=prompt,
                     temperature=temperature,
                     response_mime_type="application/json",
+                    timeout=timeout,
                 )
                 if raw_text:
                     return raw_text.strip()

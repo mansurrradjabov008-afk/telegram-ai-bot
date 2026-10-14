@@ -158,9 +158,16 @@ class DigestSummarizer:
         clean_text = clean_json_text(raw_text)
         try:
             data = json.loads(clean_text)
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                data = data[0]
+            elif isinstance(data, dict):
+                if "title" not in data and "summary" in data and isinstance(data["summary"], dict):
+                    data = data["summary"]
+                elif "items" in data and isinstance(data["items"], list) and len(data["items"]) > 0:
+                    data = data["items"][0]
             return AISummaryResponse.model_validate(data)
         except Exception as e:
-            logger.warning(f"Error parsing AISummaryResponse: {type(e).__name__}")
+            logger.warning(f"Error parsing AISummaryResponse: {type(e).__name__} ({str(e)[:120]})")
             return None
 
     def build_section_d_items(self, posts: List[DigestPost]) -> List[DigestItem]:

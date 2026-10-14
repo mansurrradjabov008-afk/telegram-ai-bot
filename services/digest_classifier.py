@@ -8,6 +8,7 @@ and validates results with retry-once and strict anti-hallucination checks.
 import inspect
 import json
 import logging
+import re
 from typing import List, Dict, Any, Optional, Set
 from services.pydantic_compat import BaseModel, Field
 
@@ -58,7 +59,7 @@ class ClassifiedPostItem(BaseModel):
     """Schema for individual post classification result."""
     post_id: int
     topic: str = Field(description="A, B, C, D, E, F yoki other")
-    importance: int = Field(default=1, ge=1, le=5, description="1 dan 5 gacha muhimlik darajasi")
+    importance: int = Field(default=1, description="1 dan 5 gacha muhimlik darajasi")
     is_advertisement: bool = Field(default=False, description="Tijoriy reklama ekanligi")
     extracted: Optional[Dict[str, Any]] = Field(default=None, description="Topic D yoki Topic F uchun ajratilgan ma'lumotlar")
 
@@ -191,10 +192,24 @@ class DigestClassifier:
             logger.warning(f"Classification JSON parse error: {type(e).__name__}")
             return None
 
+        # Bulletproof schema adapter: handle both list and dict formats seamlessly
+        if isinstance(data, list):
+            data = {"items": data}
+        elif isinstance(data, dict) and "items" not in data:
+            for k in ["posts", "results", "data", "classified_posts", "classified", "output"]:
+                if k in data and isinstance(data[k], list):
+                    data["items"] = data[k]
+                    break
+            else:
+                for v in data.values():
+                    if isinstance(v, list):
+                        data["items"] = v
+                        break
+
         try:
             batch_resp = BatchClassificationResponse.model_validate(data)
         except Exception as e:
-            logger.warning(f"Classification Pydantic validation error: {type(e).__name__}")
+            logger.warning(f"Classification Pydantic validation error: {type(e).__name__} ({str(e)[:150]})")
             return None
 
         validated_items: List[ClassifiedPostItem] = []
@@ -342,13 +357,25 @@ class DigestClassifier:
                     discarded_posts.append(bp)
                     continue
 
-                # Topic validation
-                topic = item.topic.strip() if item.topic else "other"
-                if topic not in self.ALLOWED_TOPICS:
-                    topic = "other"
+                # Topic validation & normalization
+                raw_topic = (item.topic or "other").strip()
+                topic = "other"
+                if raw_topic in self.ALLOWED_TOPICS:
+                    topic = raw_topic
+                else:
+                    m_top = re.search(r"\b([A-F])\b", raw_topic, re.IGNORECASE)
+                    if m_top:
+                        candidate = m_top.group(1).upper()
+                        if candidate in self.ALLOWED_TOPICS:
+                            topic = candidate
+                    elif raw_topic and raw_topic[0].upper() in {"A", "B", "C", "D", "E", "F"}:
+                        topic = raw_topic[0].upper()
 
                 # Importance clamping
-                importance = max(1, min(5, item.importance))
+                try:
+                    importance = max(1, min(5, int(item.importance or 1)))
+                except (ValueError, TypeError):
+                    importance = 1
 
                 # Drop 'other', importance <= 1, or advertisements
                 if topic == "other" or importance < min_importance or item.is_advertisement:

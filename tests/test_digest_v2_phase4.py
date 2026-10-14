@@ -277,3 +277,42 @@ async def test_digest_service_summarization_pipeline(temp_db_crud):
     db_posts = await crud.get_digest_posts(status="included")
     assert len(db_posts) == 1
     assert db_posts[0].id == p_id
+
+
+def test_summarizer_parses_list_and_wrapped_responses():
+    """Verifies that _parse_summary_json handles raw lists and wrapped dict responses gracefully."""
+    ai_mock = MagicMock(spec=AIEngine)
+    summarizer = DigestSummarizer(ai_mock)
+
+    # 1. Top-level list response [ {...} ]
+    list_json = json.dumps([
+        {
+            "title": "Sun'iy intellekt yangiliklari",
+            "summary": "AI yangi marralarni zabt etmoqda.",
+            "post_ids_used": [10],
+            "unverified": False,
+            "has_conflicts": False,
+        }
+    ])
+    item = summarizer._parse_summary_json(list_json)
+    assert item is not None
+    assert item.title == "Sun'iy intellekt yangiliklari"
+    assert item.post_ids_used == [10]
+
+    # 2. Wrapped dict response {"items": [ {...} ]}
+    wrapped_json = json.dumps({
+        "items": [
+            {
+                "title": "Yangi qonun qabul qilindi",
+                "summary": "Parlament yangi qonunni ma'qulladi.",
+                "post_ids_used": [20],
+                "unverified": False,
+                "has_conflicts": False,
+            }
+        ]
+    })
+    item_wrapped = summarizer._parse_summary_json(wrapped_json)
+    assert item_wrapped is not None
+    assert item_wrapped.title == "Yangi qonun qabul qilindi"
+    assert item_wrapped.post_ids_used == [20]
+
