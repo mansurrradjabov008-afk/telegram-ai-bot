@@ -54,8 +54,8 @@ def test_candidate_models_failover_order():
     engine = AIEngine(api_key="", model_name="gemini-3.1-flash-lite")
     candidates = engine._get_candidate_models()
     assert candidates[0] == "gemini-3.1-flash-lite"
-    assert "gemini-3.1-flash-lite-preview" in candidates
-    assert "gemini-3-flash-preview" in candidates
+    assert "gemini-flash-lite-latest" in candidates
+    assert "gemini-3.5-flash-lite" in candidates
 
 
 @pytest.mark.asyncio
@@ -79,5 +79,5 @@ async def test_generate_json_response_multi_model_failover():
     assert res == '{"status": "ok"}'
     assert len(call_history) >= 2
     assert call_history[0] == "gemini-3.1-flash-lite"
-    assert call_history[1] == "gemini-3.1-flash-lite-preview"
+    assert call_history[1] == "gemini-flash-lite-latest"
 

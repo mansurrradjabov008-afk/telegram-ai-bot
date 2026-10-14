@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Google Gemini AI Studio (aistudio.google.com)
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
 
     # Database & System settings
     DATABASE_PATH: str = "data/butler.db"

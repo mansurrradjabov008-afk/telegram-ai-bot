@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 # List of models ordered by preference for automatic quota/demand fallback
 FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
+    "gemini-3.8-flash",
 ]
 
 
