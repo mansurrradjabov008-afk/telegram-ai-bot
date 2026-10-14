@@ -384,6 +384,8 @@ class DatabaseManager:
                 messages = [ConversationMessage(**dict(r)) for r in rows]
                 return list(reversed(messages))
 
+    get_chat_history = get_recent_history
+
     # ------------------ DIGEST / FEEDS ------------------
     async def save_feed_post(self, source_peer_id: int, source_title: str, message_id: int, post_text: str):
         query = """

@@ -531,7 +531,29 @@ class AdminBotService:
                 )
                 return False
 
-        success = await self.db_manager.resolve_draft_atomic(draft_id, "edited_sent", edited_reply=clean_text)
+        contact = await self.db_manager.get_contact_by_id(draft.contact_user_id) if draft.contact_user_id else None
+        target_name = (contact.full_name or contact.username) if contact else (draft.contact_username or "Kontakt")
+        style = getattr(contact, "addressing_style", "siz") if contact else "siz"
+
+        final_text = clean_text
+        try:
+            outreach_res = await self.ai_engine.compose_outreach_message(
+                user_input=clean_text,
+                target_name=target_name,
+                addressing_style=style,
+                contact_profile=contact,
+            )
+            if isinstance(outreach_res, dict):
+                cand = outreach_res.get("message_text")
+                if isinstance(cand, str) and cand.strip():
+                    final_text = cand.strip()
+        except Exception:
+            final_text = clean_text
+
+        if not isinstance(final_text, str) or "Mock" in type(final_text).__name__:
+            final_text = str(clean_text)
+
+        success = await self.db_manager.resolve_draft_atomic(draft_id, "edited_sent", edited_reply=final_text)
         if state:
             await state.clear()
         if not success:
@@ -549,7 +571,7 @@ class AdminBotService:
 
             for peer in peers_to_try:
                 try:
-                    sent_msg = await self._userbot_send_fn(peer, clean_text)
+                    sent_msg = await self._userbot_send_fn(peer, final_text)
                     if sent_msg:
                         send_error = None
                         break
@@ -568,7 +590,7 @@ class AdminBotService:
                             contact_user_id=target_user_id,
                             tg_message_id=getattr(sent_msg, "id", 0),
                             sender="owner_edited",
-                            text=clean_text,
+                            text=final_text,
                             username=draft.contact_username,
                         )
                     except Exception as e:
@@ -577,7 +599,7 @@ class AdminBotService:
         # Update original approval card if identifiers are provided
         if card_chat_id and card_msg_id and self.bot:
             try:
-                safe_reply_prev = html.escape(clean_text)
+                safe_reply_prev = html.escape(final_text)
                 await self.bot.edit_message_text(
                     f"✅ <b>Qoralama #{draft_id} tahrirlanib profilingiz nomidan yuborildi!</b>\n\n"
                     f"💬 <b>Yuborilgan javob:</b> <i>\"{safe_reply_prev}\"</i>",
@@ -1376,8 +1398,11 @@ class AdminBotService:
                 "rejelari qanaqa", "rejalari qanaqa", "rejalari nima", "rejelari nima",
                 "surishtir", "so'rab ber", "sorab ber", "aniqlab ber", "gacha",
                 "surachi", "so'rachi", "sorachi", "surabchi", "so'rabchi", "surab ko'r", "so'rab ko'r",
-                "sura", "so'ra", "sora", "surab", "so'rab", "sorab", "suravor", "so'ravor",
-                "kitob", "kola", "deb so'ra", "deb sura", "deb ayt"
+                "kitob", "kola", "deb so'ra", "deb sura", "deb ayt",
+                "aytib qo'y", "aytib quy", "aytiv quy", "aytiv qoy", "aytib qoy", "aytib ber", "aytvor", "aytvorchi",
+                "aytib qoychi", "aytib quyvor", "aytgin", "ayting", "yetkaz", "yetkazib qo'y", "yetkazib quy", "yetkazvor",
+                "bildir", "bildirib qo'y", "bildirib quy", "tushuntir", "gaplashib ko'r", "aloqaga chiq", "aloqa qil",
+                "xabar yetkaz", "habar yetkaz", "aytiv", "aytib", "aytish"
             ]
             if not any(k in lower_text for k in inquiry_keywords):
                 return False
@@ -1543,11 +1568,12 @@ class AdminBotService:
             if "suratchi" in mission_goal.lower():
                 mission_goal = f"{clean_display_name} bilan bog'lanib, hol-ahvol va yangiliklarni aniqlash"
 
-            # Check if direct action was explicitly commanded ('yozchi', 'yoz', 'jo'natchi', 'so'rachi', 'surachi', etc.)
-            is_direct_action = ai_res.get("is_direct_action") or bool(re.search(
-                r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?|surachi|sorachi)\b",
+            # Check if direct action was explicitly commanded ('yozchi', 'yoz', 'jo'natchi', 'so'rachi', 'surachi', 'aytib qo\'y', etc.)
+            has_direct_command = bool(re.search(
+                r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?|surachi|sorachi|aytib\s*q[u']?y|aytiv\s*q[u']?y|aytvor)\b",
                 lower_text
             ))
+            is_direct_action = bool(ai_res.get("is_direct_action")) or has_direct_command
 
             # IF direct action ordered AND userbot sender available: DISPATCH IMMEDIATELY!
             if is_direct_action and self._userbot_send_fn and suggested:
@@ -2918,7 +2944,27 @@ class AdminBotService:
                 return await safe_reply(message, "So'rov topilmadi.")
 
             peer = item["peer"]
-            custom_text = message.text
+            clean_name = item.get("sender_name", peer)
+            contact = await self.db_manager.find_contact(peer)
+            style = getattr(contact, "addressing_style", "siz") if contact else "siz"
+
+            custom_text = message.text or ""
+            try:
+                outreach_res = await self.ai_engine.compose_outreach_message(
+                    user_input=custom_text,
+                    target_name=clean_name,
+                    addressing_style=style,
+                    contact_profile=contact,
+                )
+                if isinstance(outreach_res, dict):
+                    cand = outreach_res.get("message_text")
+                    if isinstance(cand, str) and cand.strip():
+                        custom_text = cand.strip()
+            except Exception:
+                custom_text = message.text or ""
+
+            if not isinstance(custom_text, str) or "Mock" in type(custom_text).__name__:
+                custom_text = str(message.text or "")
 
             if self._userbot_send_fn:
                 await self._userbot_send_fn(peer, custom_text)
@@ -3134,23 +3180,26 @@ class AdminBotService:
                 except Exception as e:
                     logger.error(f"Error scheduling in process_contact_outreach_message: {type(e).__name__}")
 
-            # Check if this is an AI instruction (e.g. "deb yoz", "deb so'ra", "hol-ahvol so'ra")
-            is_ai_prompt = any(w in raw_text.lower() for w in [
-                "deb yoz", "deb so'ra", "deb jonat", "deb jo'nat", "hol-ahvol", "surab ber",
-                "so'rab ber", "sorab ber", "nima qilyapti", "nima bo'ldi", "surachi", "so'rachi"
-            ])
-
+            # Ultra-smart AI Intent & Outreach Composer (Eliminates raw instruction leak)
+            history = await self.db_manager.get_recent_history(chat_id=target_user_id, limit=10) if target_user_id else []
             prepared_text = raw_text
-            if is_ai_prompt:
-                history = await self.db_manager.get_chat_history(chat_id=target_user_id, limit=10) if target_user_id else []
-                ai_reply = await self.ai_engine.generate_reply(
-                    incoming_text=raw_text,
-                    sender_name=target_name,
+            try:
+                outreach_res = await self.ai_engine.compose_outreach_message(
+                    user_input=raw_text,
+                    target_name=target_name,
+                    addressing_style=addressing_style,
                     contact_profile=contact,
                     history=history,
                 )
-                if ai_reply and len(ai_reply.strip()) > 3:
-                    prepared_text = ai_reply.strip()
+                if isinstance(outreach_res, dict):
+                    cand = outreach_res.get("message_text")
+                    if isinstance(cand, str) and cand.strip():
+                        prepared_text = cand.strip()
+            except Exception:
+                prepared_text = raw_text
+
+            if not isinstance(prepared_text, str) or "Mock" in type(prepared_text).__name__:
+                prepared_text = str(raw_text)
 
             outreach_id = str(uuid.uuid4())[:8]
             self._pending_outreach_drafts[outreach_id] = {

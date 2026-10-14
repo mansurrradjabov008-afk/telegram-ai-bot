@@ -9,7 +9,7 @@ import logging
 import random
 import re
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from services.pydantic_compat import BaseModel, Field
 
 try:
@@ -160,6 +160,74 @@ def sanitize_outreach_constraints(text: str, user_query: str, contact_name: str 
     res = re.sub(r",\s*,+", ",", res)
     res = re.sub(r"\s{2,}", " ", res)
     return res.strip()
+
+
+def clean_colloquial_outreach_instruction(
+    text: str,
+    target_name: str,
+    addressing_style: str = "siz",
+) -> Tuple[bool, str]:
+    """
+    Deterministic phonetic & morphological cleaner for Uzbek colloquial outreach directives.
+    Transforms raw commands (e.g. 'Xozir yoniga boryapman aytib quy mansurga', 'kechagi ish nima bo'ldi deb so'ra')
+    into clean, natural messages directed to the contact ('Hozir yoningizga boryapman.', 'Kechagi ish nima bo'ldi?').
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False, ""
+    lower = raw.lower()
+
+    # Pattern for command suffixes and prefixes in colloquial Uzbek
+    cmd_pattern = r"(?i)\b(?:aytib\s*q[u']?y(?:vor|chi)?|aytiv\s*q[u']?y(?:vor|chi)?|aytib\s*qoy(?:vor|chi)?|aytiv\s*qoy(?:vor|chi)?|aytvor(?:chi)?|aytib\s*ber(?:chi)?|ayt(?:gin|chi|ing)?|deb\s*(?:ayt|yoz|so['`]?ra|sura|sora|jonat|jo'nat|yubor)|yetkaz(?:ib\s*q[u']?y(?:vor)?)?|bildir(?:ib\s*q[u']?y(?:vor)?)?|so['`]?rab\s*ber|sorab\s*ber|surab\s*ber|so['`]?rachi|surachi|sorachi|surishtir|gaplashib\s*ko['`]?r)\b"
+
+    is_inst = bool(re.search(cmd_pattern, lower)) or any(w in lower for w in [
+        "deb ayt", "deb yoz", "deb so'ra", "deb sura", "deb jonat", "deb jo'nat",
+        "aytib quy", "aytiv quy", "aytib qo'y", "aytib qoy", "aytvor", "yetkazib",
+        "uzr so", "so'rachi", "surachi", "sorachi", "aytib ber"
+    ])
+    if not is_inst:
+        return False, raw
+
+    # Strip command phrases
+    cleaned = re.sub(cmd_pattern, "", raw).strip()
+
+    # Strip target name tokens like "mansurga", "mansurjon_07ga", "ali-ga"
+    if target_name:
+        for part in re.split(r"[\s_@]+", target_name):
+            p_clean = re.sub(r"[^a-zA-Z0-9]", "", part).lower()
+            if len(p_clean) >= 3:
+                cleaned = re.sub(rf"(?i)\b{re.escape(p_clean)}(?:ga|da|dan|ni|ning|yga|yda)?\b", "", cleaned).strip()
+
+    # Handle apologetic requests like "uzr so'ra" / "uzr so'rab qo'y"
+    if any(w in lower for w in ["uzr", "kechirim"]):
+        if not re.search(r"(?i)\buzr\b", cleaned):
+            cleaned += ", uzr so'rayman"
+
+    is_siz = addressing_style.lower() == "siz"
+    if is_siz:
+        cleaned = re.sub(r"(?i)\byoniga\b", "yoningizga", cleaned)
+        cleaned = re.sub(r"(?i)\bborayotganimni\b", "borayotgan edim", cleaned)
+        cleaned = re.sub(r"(?i)\bkelayotganimni\b", "kelayotgan edim", cleaned)
+    else:
+        cleaned = re.sub(r"(?i)\byoniga\b", "yoningga", cleaned)
+        cleaned = re.sub(r"(?i)\bborayotganimni\b", "boryapman", cleaned)
+        cleaned = re.sub(r"(?i)\bkelayotganimni\b", "kelyapman", cleaned)
+
+    cleaned = re.sub(r"(?i)\b(xozir)\b", "Hozir", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.-")
+
+    # Punctuation formatting
+    if any(w in lower for w in ["so'ra", "sura", "sora", "nima", "qachon", "qayerda", "bormi", "bormikin", "qanaqa"]):
+        if not cleaned.endswith("?"):
+            cleaned = cleaned.rstrip(".! ") + "?"
+    else:
+        if cleaned and not cleaned.endswith((".", "!", "?")):
+            cleaned += "."
+
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+
+    return True, cleaned
 
 
 class AIEngine:
@@ -801,11 +869,16 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
    - 'summary': Summarize ONLY the historical messages in the chat history.
    - NEVER say 'Xo'jayin Mansur falon narsani buyurdi' or repeat the boss's current prompt in 'summary'! The boss already knows what he just commanded.
 5. DIRECT ACTION DETECTION ('is_direct_action'):
-   - If the boss gave an imperative order to write, send, or ask right now ('yozchi', 'yoz', 'jo'natchi', 'jo'nat', 'yuborchi', 'yubor', 'so'rachi', 'surachi', 'sorachi', 'surishtirchi'):
+   - If the boss gave an imperative order to write, send, or ask right now ('yozchi', 'yoz', 'jo'natchi', 'jo'nat', 'yuborchi', 'yubor', 'so'rachi', 'surachi', 'sorachi', 'surishtirchi', 'aytib qo\'y', 'aytiv quy', 'aytvor', 'yetkaz'):
      Set "is_direct_action" to true!
    - If the boss only asked a passive question or asked to prepare ('nimalar qilyapti ekan', 'tayyorlab ber'):
      Set "is_direct_action" to false.
-6. Never output markdown fences in your response, just valid JSON.
+6. NOTIFICATION & OUTREACH DIRECTIVES:
+   - If the boss commands to tell, inform, or notify the contact (e.g. 'Xozir yoniga boryapman aytib quy', 'aytib qo\'y hozir boryapman', '10 minutda yetib boraman deb ayt'):
+     Set "is_direct_action" to true!
+     "suggested_outreach": Formulate the exact message to the contact ('Assalomu alaykum, hozir yoningizga boryapman.' if 'siz', or 'Hozir yoningga boryapman.' if 'sen').
+     "mission_goal": "{clean_first_name or 'Kontakt'}ga hozir borayotganingizni yetkazish".
+7. Never output markdown fences in your response, just valid JSON.
 """
         for candidate_model in self._get_candidate_models():
             try:
@@ -853,10 +926,10 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
             "shugullanyapti", "shug'ullanyapti", "vaqti bormikin", "vaqti bormi",
             "rejalari", "rejelari", "menga yetkaz", "menga ayt", "menga xabar",
             "bilib ber", "aniqlab ber", "surishtir", "nima qilyapti", "yozchi", "yoz",
-            "surachi", "so'rachi", "sorachi"
+            "surachi", "so'rachi", "sorachi", "aytib", "aytiv", "yetkaz"
         ])
         is_direct_action = bool(re.search(
-            r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?|surachi|sorachi)\b",
+            r"\b(?:yoz(?:chi|gin)?|jo['`’‘]?nat(?:chi|gin)?|yubor(?:chi|gin)?|so['`’‘]ra(?:chi)?|surachi|sorachi|aytib\s*q[u']?y|aytiv\s*q[u']?y|aytvor|yetkaz(?:ib\s*q[u']?y)?)\b",
             lower_query
         ))
 
@@ -870,21 +943,35 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
         else:
             greeting_str = greeting
 
-        if any(w in lower_query for w in ["kitob", "o'qiyapti", "uqiyapti", "kitoblar"]):
+        if any(w in lower_query for w in ["boryapman", "kelayapman", "borayapman", "borayotgan", "kelyapman", "yo'ldaman", "yoldaman", "yetib"]):
+            time_focus = "Hozir yoningizga boryapman." if use_siz else "Hozir yoningga boryapman."
+            fallback_outreach = f"{greeting_str}, {time_focus.lower()}" if use_siz else time_focus
+            goal_label = f"{clean_first_name or 'Kontakt'}ga hozir borayotganingizni yetkazish"
+        elif any(w in lower_query for w in ["kitob", "o'qiyapti", "uqiyapti", "kitoblar"]):
             time_focus = "Hozir qanaqa kitob o'qiyapsiz?" if use_siz else "Hozir qanaqa kitob o'qiyapsan?"
+            fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
+            goal_label = f"{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash"
         elif any(w in lower_query for w in ["kola", "ichimlik", "suv"]):
             time_focus = "Sizga kola kerak emasmi deb so'ramoqchi edim)" if use_siz else "Senga kola kerak emasmi deb so'ramoqchi edim)"
+            fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
+            goal_label = f"{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash"
         elif any(w in lower_query for w in ["loyiha", "proyekt", "dastur"]):
             time_focus = "Loyiha bo'yicha yangiliklar bormi?" if use_siz else "Loyiha bo'yicha nima yangiliklar bor?"
+            fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
+            goal_label = "Loyiha holatini aniqlash"
         elif "ertang" in lower_query:
             time_focus = "Ertangi rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Ertangi rejalaring qanaqa, nimalar bilan bandsan?"
+            fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
+            goal_label = "Ertangi rejalarni aniqlash"
         elif any(w in lower_query for w in ["nima gap", "nima yangilik", "surachi", "so'rachi"]):
             time_focus = "Ishlaringiz qanday ketyapti, nima yangiliklar bor?" if use_siz else "Ishlaring qanday ketyapti, nima gaplar?"
+            fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
+            goal_label = f"{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash"
         else:
             time_focus = "Bugun rejalaringiz qanaqa, nimalar bilan bandsiz?" if use_siz else "Bugun rejalaring qanaqa, nimalar bilan bandsan?"
+            fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
+            goal_label = "Rejalar va holatni aniqlash"
 
-
-        fallback_outreach = f"{greeting_str}, yaxshimisiz? {time_focus}" if use_siz else f"{greeting_str}, qandaysan? {time_focus}"
         fallback_outreach = sanitize_outreach_constraints(fallback_outreach, user_query, clean_first_name)
 
         goal_label = f"{clean_first_name or 'Kontakt'}dan hol-ahvol va yangiliklarni aniqlash" if any(w in lower_query for w in ["nima gap", "surachi", "so'rachi"]) else ("Ertangi rejalarni aniqlash" if "ertang" in lower_query else "Rejalar va holatni aniqlash")
@@ -897,6 +984,103 @@ CRITICAL INSTRUCTION-FOLLOWING RULES:
             "is_delegation_mission": is_delegation,
             "is_direct_action": is_direct_action,
             "mission_goal": goal_label,
+        }
+
+    async def compose_outreach_message(
+        self,
+        user_input: str,
+        target_name: str,
+        addressing_style: str = "siz",
+        contact_profile: Optional[Contact] = None,
+        history: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ultra-smart intent analyzer & composer for outreach messages from Boss to contact.
+        Distinguishes between:
+        1. An AI command / instruction (e.g. 'kechagi ish nima bo'ldi deb so'ra', 'hozir yoniga boryapman aytib quy',
+           'uydamisiz deb surachi', 'bugun bora olmayman deb uzr so'ra').
+           -> Strips meta-commands ('aytib quy', 'mansurga', 'deb so'ra') and transforms perspective (3rd -> 2nd person).
+           -> Formats authentic, natural message aligned with addressing_style ('siz' vs 'sen').
+        2. A direct verbatim message (e.g. 'Assalomu alaykum, yaxshimisiz?', 'Ha, kelishdik').
+           -> Retains as-is.
+        Includes a deterministic local phonetic/regex pre-processor for instant zero-failure fallback.
+        """
+        raw_text = (user_input or "").strip()
+        if not raw_text:
+            return {"is_instruction": False, "message_text": ""}
+
+        is_det_inst, det_cleaned = clean_colloquial_outreach_instruction(
+            raw_text, target_name, addressing_style
+        )
+
+        clean_first_name = extract_clean_human_name(target_name) or extract_clean_first_name(target_name) or target_name
+        is_siz = addressing_style.lower() == "siz"
+        style_desc = "SIZ (Hurmat va sizlash: 'siz', 'yoningizga', 'kelyapsiz', 'yaxshimisiz')" if is_siz else "SEN (Yaqin do'stona sensirash: 'sen', 'yoningga', 'kelyapsan', 'yaxshimisan', 'jigar')"
+
+        if not self._client:
+            return {
+                "is_instruction": is_det_inst,
+                "message_text": det_cleaned if is_det_inst else raw_text,
+            }
+
+        prompt = f"""You are Antigravity (JARVIS), an ultra-smart executive AI assistant for Radjabov Mansur.
+The boss wants to send a Telegram message to contact '{clean_first_name}'.
+Addressing style: {style_desc}.
+
+The boss entered this text in the message composition field:
+<boss_input>
+{raw_text}
+</boss_input>
+
+TASK:
+1. Determine if <boss_input> is an AI INSTRUCTION / DIRECTIVE (e.g. 'Xozir yoniga boryapman aytib quy', 'kechagi loyiha nima bo'ldi deb so'ra', 'uzr so'ra', 'uydamisiz deb surachi', 'salom ayt')
+   OR a DIRECT VERBATIM MESSAGE already intended to be sent as-is (e.g. 'Assalomu alaykum, bugun soat 5 da uchrashamiz', 'Rahmat, ko'rishguncha').
+
+2. If it is an AI INSTRUCTION:
+   - "is_instruction": true
+   - Strip all meta-commands, delivery instructions, and target names ('aytib quy', 'aytiv quy', 'deb so'ra', 'mansurga', 'yetkaz', etc.).
+   - Transform 3rd-person pronouns to 2nd-person (e.g. 'yoniga' -> 'yoningizga' / 'yoningga', 'borayotganimni' -> 'borayotgan edim' / 'boryapman').
+   - Formulate a natural, authentic, human Uzbek message to '{clean_first_name}' adhering strictly to the addressing style ('siz' vs 'sen').
+   - Examples:
+     * 'Xozir yoniga boryapman aytib quy' (siz) -> 'Assalomu alaykum, hozir yoningizga boryapman.'
+     * 'Xozir yoniga borayotganimni aytiv quy mansurga' (siz) -> 'Hozir yoningizga borayotgan edim.'
+     * 'kechagi loyiha nima bo'ldi deb so'ra' (siz) -> 'Assalomu alaykum, kechagi loyiha nima bo'ldi?'
+     * 'bugun kela olmayman uzr so'rab qo'y' (siz) -> 'Bugun bora olmayman, uzr so'rayman.'
+
+3. If it is already a DIRECT VERBATIM MESSAGE:
+   - "is_instruction": false
+   - Keep the text as-is in "message_text".
+
+Return STRICT JSON ONLY:
+{{
+  "is_instruction": true,
+  "message_text": "polite, natural message to contact"
+}}
+"""
+        for candidate_model in self._get_candidate_models():
+            try:
+                raw_json = await self._call_gemini_raw(
+                    model=candidate_model,
+                    prompt=prompt,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                )
+                raw_clean = re.sub(r"^```(?:json)?\s*", "", raw_json.strip())
+                raw_clean = re.sub(r"\s*```$", "", raw_clean)
+                data = json.loads(raw_clean)
+                if "is_instruction" in data and "message_text" in data and data["message_text"].strip():
+                    return {
+                        "is_instruction": bool(data["is_instruction"]),
+                        "message_text": data["message_text"].strip(),
+                    }
+            except Exception as e:
+                logger.warning(f"compose_outreach_message failed on model {candidate_model}: {type(e).__name__}")
+                continue
+
+        # Deterministic fallback
+        return {
+            "is_instruction": is_det_inst,
+            "message_text": det_cleaned if is_det_inst else raw_text,
         }
 
     async def ask_jarvis(
