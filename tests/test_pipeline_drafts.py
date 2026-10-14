@@ -381,3 +381,84 @@ async def test_send_with_floodwait_retries_safely(userbot_service: UserbotServic
     result = await userbot_service._send_with_floodwait(peer=12345, text="Salom", max_retries=3)
     assert result == "success"
     assert attempt == 2
+
+
+# ============================================================================
+# 8. SMART AUTONOMY & OWNER MANUAL HISTORY LOGGING
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_mode_safely_handles_routine_meeting_chitchat(userbot_service: UserbotService, test_db: DatabaseManager):
+    """Verifies that casual meeting inquiries in auto mode auto-reply when intent is SAFE_CHITCHAT."""
+    from services.ai_engine import ClassificationResult
+
+    await test_db.upsert_contact(
+        user_id=77777,
+        username="chitchat_friend",
+        full_name="Friend Contact",
+        mode="auto",
+    )
+
+    # Mock classify_incoming_message to return SAFE_CHITCHAT
+    userbot_service.ai_engine.classify_incoming_message = AsyncMock(return_value=ClassificationResult(
+        category="SAFE_CHITCHAT",
+        reason="Do'stona kundalik hol-ahvol so'rovi",
+        urgency="normal",
+        confidence=0.95,
+    ))
+    userbot_service.ai_engine.generate_reply = AsyncMock(
+        return_value="Salom jigar! Hozir biroz bandroq edim, bo'shashim bilan o'zim yozaman."
+    )
+
+    draft_callback_mock = AsyncMock()
+    userbot_service.set_draft_approval_callback(draft_callback_mock)
+
+    with patch.object(settings, "DEBOUNCE_WINDOW_SECONDS", 0.05), \
+         patch.object(settings, "HUMAN_DELAY_MIN", 0.01), \
+         patch.object(settings, "HUMAN_DELAY_MAX", 0.02):
+
+        event = make_mock_event(
+            sender_id=77777,
+            username="chitchat_friend",
+            raw_text="Bugun uchrashuv qachon bo'ladi?",
+            msg_id=500,
+        )
+        userbot_service.client.get_messages = AsyncMock(return_value=[])
+
+        await userbot_service._handle_private_message(event)
+        task = userbot_service._debounce_tasks.get(77777)
+        if task:
+            await task
+
+    # Auto reply SENT without drafting
+    assert userbot_service.client.send_message.await_count == 1
+    assert draft_callback_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_owner_manual_message_logged_to_conversation_history(userbot_service: UserbotService, test_db: DatabaseManager):
+    """Verifies that when owner sends manual message from phone, it is logged to conversation_messages."""
+    await test_db.upsert_contact(
+        user_id=88888,
+        username="manual_sync_user",
+        full_name="Sync User",
+        mode="auto",
+    )
+
+    # Simulate outgoing owner manual message
+    event = make_mock_event(
+        sender_id=88888,
+        username="manual_sync_user",
+        raw_text="Men hozir ofisdaman, kelaver",
+        msg_id=601,
+        is_self=True,
+    )
+    event.out = True
+
+    await userbot_service._handle_outgoing_message(event)
+
+    # Verify message is in conversation_messages DB
+    history = await test_db.get_recent_history(chat_id=88888, limit=10)
+    assert len(history) >= 1
+    assert any(m.role == "owner" and "ofisdaman" in m.content for m in history)
+

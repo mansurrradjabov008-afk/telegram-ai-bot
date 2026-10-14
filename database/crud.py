@@ -2159,6 +2159,7 @@ class DatabaseManager:
 
     async def purge_old_style_samples(self, retention_days: Optional[int] = None) -> int:
         """Purges samples older than STYLE_SAMPLE_RETENTION_DAYS (D10)."""
+        from config import settings
         days = retention_days or getattr(settings, "STYLE_SAMPLE_RETENTION_DAYS", 365)
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         try:

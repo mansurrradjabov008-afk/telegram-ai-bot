@@ -263,3 +263,60 @@ def test_result_dataclass_and_dict_compatibility():
     d = res.to_dict()
     assert isinstance(d, dict)
     assert d["sensitive"] is True
+    assert "hard_sensitive" in d
+    assert "categories" in d
+
+
+# ============================================================================
+# 8. FALSE POSITIVE ELIMINATION & HARD-SENSITIVE BOUNDARIES (TIER-4 SMART AUTONOMY)
+# ============================================================================
+
+def test_elimination_of_common_chitchat_false_positives():
+    """Verifies that everyday conversational Uzbek phrases do not trigger false sensitive alerts."""
+    from services.sensitive_guard import check_sensitive_keywords_detailed
+
+    chitchat_phrases = [
+        "Aka ming rahmat",
+        "Katta rahmat, ming bor tashakkur!",
+        "Soat qancha bo'ldi?",
+        "Qancha vaqt ketadi bunga?",
+        "Qayerdasan do'stim, tinchlikmi?",
+        "Nima gaplar, qandaysan?",
+        "Siz biz uchun nomer 1 insonsiz",
+        "Raqamingizni saqlab qo'ydim",
+        "Shogird tushmoqchi edim",
+        "Taklif qilaman birga choy ichgani",
+        "Ertaga kelasanmi?",
+        "Borasanmi to'yga?",
+    ]
+    for phrase in chitchat_phrases:
+        detail = check_sensitive_keywords_detailed(phrase)
+        assert detail["hard_sensitive"] is False, f"False positive hard sensitivity on '{phrase}': {detail}"
+        assert len(detail["reasons"]) == 0, f"False positive keyword trigger on '{phrase}': {detail['reasons']}"
+
+
+@pytest.mark.asyncio
+async def test_hard_vs_soft_sensitivity_boundary():
+    """Verifies that soft meeting questions are marked non-hard, while money/credentials are hard."""
+    # 1. Soft meeting question with safe proposed reply
+    soft_incoming = "Bugun uchrashuv qachon bo'ladi?"
+    soft_reply = "Hozir ishlar bilan bandroq edim, bo'shashim bilan o'zim yozaman"
+    res_soft = await check_sensitive(soft_incoming, proposed_reply=soft_reply)
+    assert res_soft.is_sensitive is True
+    assert res_soft.hard_sensitive is False
+    assert "meeting_schedule" in res_soft.categories
+
+    # 2. Hard sensitive: bank card & money
+    hard_incoming = "8600 1234 5678 9012 kartamga 50000 som tashlang"
+    res_hard = await check_sensitive(hard_incoming)
+    assert res_hard.is_sensitive is True
+    assert res_hard.hard_sensitive is True
+    assert "cards" in res_hard.categories or "money_payments" in res_hard.categories
+
+    # 3. Hard sensitive: proposed reply makes an unauthorized commitment
+    clean_incoming = "Loyiha qachon bitadi?"
+    promising_reply = "Ertaga soat 10:00 da 100% bo'ladi va'da beraman"
+    res_reply_hard = await check_sensitive(clean_incoming, proposed_reply=promising_reply)
+    assert res_reply_hard.is_sensitive is True
+    assert res_reply_hard.hard_sensitive is True
+

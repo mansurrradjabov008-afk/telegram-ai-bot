@@ -152,9 +152,6 @@ class UserbotService:
         Captures manual outgoing messages typed by owner in private chats with saved contacts.
         Assigns sender='owner_manual' unless message was sent by the bot (bot_auto, bot_approved, owner_edited).
         """
-        if not self.memory_service:
-            return
-
         chat_id = getattr(event, "chat_id", None)
         if not chat_id:
             return
@@ -192,16 +189,52 @@ class UserbotService:
             else:
                 media_marker = "fayl"
 
-        await self.memory_service.log_message(
-            contact_user_id=chat_id,
-            tg_message_id=event.id,
-            sender="owner_manual",
-            text=raw_text,
-            is_media=is_media,
-            media_type=media_marker,
-            contact_mode=getattr(contact, "mode", "draft"),
-            username=getattr(contact, "username", None),
-        )
+        if raw_text and self.db_manager:
+            try:
+                await self.db_manager.log_message(
+                    chat_id=chat_id,
+                    sender_name="Mansur (Xo'jayin)",
+                    role="owner",
+                    content=raw_text,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log owner manual message to conversation history: {type(e).__name__}")
+
+        if self.memory_service:
+            await self.memory_service.log_message(
+                contact_user_id=chat_id,
+                tg_message_id=event.id,
+                sender="owner_manual",
+                text=raw_text,
+                is_media=is_media,
+                media_type=media_marker,
+                contact_mode=getattr(contact, "mode", "draft"),
+                username=getattr(contact, "username", None),
+            )
+
+        # Live Writing Style Ingestion (learn Mansur's tone and style in real time)
+        if raw_text and getattr(self, "style_service", None) and self.db_manager:
+            try:
+                from services.memory_redactor import redact_text
+                from services.style_sampler import is_hygienic_sample, detect_language_script, detect_register
+                redacted = redact_text(raw_text)
+                hygiene = is_hygienic_sample(text=redacted, sent_at=datetime.now())
+                if hygiene.passed:
+                    lang = detect_language_script(redacted)
+                    register = detect_register(redacted) or getattr(contact, "addressing_style", None)
+                    await self.db_manager.insert_style_sample(
+                        contact_user_id=chat_id,
+                        tg_message_id=event.id,
+                        text_redacted=redacted,
+                        char_len=len(redacted),
+                        token_len=len(redacted.split()),
+                        lang=lang,
+                        register=register,
+                        sent_at=datetime.now().isoformat(),
+                        source="live",
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to record live style sample: {type(e).__name__}")
 
     async def _handle_edited_message(self, event):
         """
@@ -516,7 +549,7 @@ class UserbotService:
         sensitive_reason = guard_result.primary_reason
 
         # Tier 1 Guardrail: AI Intent Classification (SAFE_CHITCHAT vs ESCALATE_TO_BOSS)
-        # Even if keyword guard did not trigger, verify if message requires Boss decision
+        # Distinguish hard critical security boundaries from routine chitchat:
         try:
             intent_result = await self.ai_engine.classify_incoming_message(
                 incoming_text=combined_text,
@@ -530,6 +563,13 @@ class UserbotService:
                     sensitive_reason = intent_result.reason or "Xo'jayin qarori talab etiladi"
                 logger.info(
                     f"🚨 [ESCALATE INTENT] Message from {peer_repr} requires Boss decision: {sensitive_reason}"
+                )
+            elif intent_result.category == "SAFE_CHITCHAT" and not getattr(guard_result, "hard_sensitive", False):
+                # Routine conversational inquiry (e.g. casual "ko'rishamizmi?") with safe, non-binding reply
+                is_sensitive = False
+                sensitive_reason = None
+                logger.info(
+                    f"💬 [SAFE CHITCHAT AUTO] Routine inquiry from {peer_repr} safe to auto-reply (non-hard sensitive)."
                 )
         except Exception as e:
             logger.warning(f"Error during intent classification for {peer_repr}: {type(e).__name__}")

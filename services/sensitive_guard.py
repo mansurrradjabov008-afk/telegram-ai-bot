@@ -38,17 +38,17 @@ SENSITIVE_CATEGORIES: Dict[str, List[str]] = {
         "pul", "to'lov", "to‘lov", "to`lov", "tolov", "so'm", "som", "so’m", "karta", "kartaga",
         "kartangiz", "kartam", "kartamga", "kartangizga", "kartasi", "kartasiga",
         "karta raqam", "karta raqami", "kartangiz raqami", "karta raqamingiz", "kartangiz raqamini",
-        "shot", "hisob", "hisob raqam", "narxi", "narx", "qancha", "qancha bo'ladi",
+        "shot", "hisob raqam", "narxi", "narx", "narxi qancha", "qancha bo'ladi", "qancha to'lash",
         "qarz", "dollor", "dollar", "usd", "summa", "to'ladim", "toladim", "click", "payme",
         "uzum", "uzum bank", "tranzaksiya", "otpravil", "oplata", "daromad", "daromadi", "maosh",
-        "maoshi", "oylik", "oyligi", "ish haqi", "bepul", "pullik", "million", "mln", "ming",
+        "maoshi", "oylik", "oyligi", "ish haqi", "bepul", "pullik", "million", "mln",
         "kurs", "valyuta", "rubl", "yevro", "investitsiya",
         # Uzbek Cyrillic
         "пул", "тўлов", "толов", "сўм", "сом", "карта", "картага", "картангиз", "картам",
         "карта рақам", "карта рақами", "картангиз рақами", "карта рақамингиз",
-        "ҳисоб", "ҳисоб рақам", "нархи", "нарх", "қанча", "қанча бўлади", "қарз", "доллар",
+        "ҳисоб рақам", "нархи", "нарх", "нархи қанча", "қанча бўлади", "қарз", "доллар",
         "сумма", "тўладим", "толадим", "транзакция", "даромад", "даромади", "маош", "ойлик",
-        "иш ҳақи", "бепул", "пуллик", "миллион", "млн", "минг", "курс", "валюта", "рубль",
+        "иш ҳақи", "бепул", "пуллик", "миллион", "млн", "курс", "валюта", "рубль",
         # Russian
         "деньги", "денег", "оплата", "платеж", "перевод", "цена", "стоимость", "сколько стоит",
         "карта", "номер карты", "счет", "транзакция", "доллар", "оплатил", "перевел", "долг",
@@ -59,21 +59,21 @@ SENSITIVE_CATEGORIES: Dict[str, List[str]] = {
     ],
     "personal_data": [
         # Uzbek Latin
-        "parol", "password", "kod", "pin", "sms kod", "tasdiqlash kodi", "pasport",
+        "parol", "password", "pin", "sms kod", "tasdiqlash kodi", "pasport",
         "passport", "pinfl", "jshshir", "seriya", "karta raqam", "cvv", "cvc",
         "kartangiz raqami", "karta raqamingiz", "kartangiz raqamini", "karta raqami",
         "kod keldimi", "kodni ayt", "maxfiy kod", "token", "maxfiy",
-        "telefon raqam", "tel raqam", "raqamiz", "raqamingiz", "nomer", "nomeriz",
-        "nomerini", "raqamizni bering", "kontakt", "kontaktiz", "telefoniz", "telefoningiz",
+        "telefon raqam", "telefon raqami", "telefon raqamingiz", "tel raqam",
+        "raqamizni bering", "nomerizni bering", "telefonizni bering", "telefoningizni bering",
+        "nomer tashlang", "raqam tashlang",
         # Uzbek Cyrillic
-        "парол", "код", "пин", "смс код", "тасдиқлаш коди", "паспорт", "пинфл", "жшшир",
+        "парол", "пин", "смс код", "тасдиқлаш коди", "паспорт", "пинфл", "жшшир",
         "серия", "карта рақам", "махфий код", "токен", "телефон рақам", "тел рақам",
         "карта рақами", "картангиз рақами", "карта рақамингиз",
-        "рақам", "рақамиз", "номер", "номериз", "номерингиз", "контакт",
+        "рақамизни беринг", "номеризни беринг", "телефонингизни беринг",
         # Russian
-        "пароль", "код", "пин", "смс код", "код подтверждения", "паспорт", "номер карты",
+        "пароль", "пин", "смс код", "код подтверждения", "паспорт", "номер карты",
         "свв", "сививи", "секретный код", "токен", "логин", "номер телефона", "твой номер",
-        "номер", "контакты", "телефон",
         # English
         "password", "passcode", "pin", "sms code", "verification code", "otp", "passport",
         "ssn", "card number", "cvv", "cvc", "secret key", "secret token", "credentials",
@@ -83,31 +83,31 @@ SENSITIVE_CATEGORIES: Dict[str, List[str]] = {
         # Uzbek Latin
         "va'da", "vada", "va'da beraman", "so'z beraman", "aniq qilaman", "aniq bitadi",
         "garantiya", "kafolat", "kafolatlayman", "100% bo'ladi", "so'z berdim", "ishonchim komil",
-        "ish bilan ta'minlash", "ishga joylash", "shogird", "hamkorlik", "taklif qilaman",
+        "ish bilan ta'minlash", "ishga joylash",
         # Uzbek Cyrillic
         "ваъда", "вада", "ваъда бераман", "сўз бераман", "аниқ қиламан", "гарантия",
-        "кафолат", "кафолатлайман", "100% бўлади", "сўз бердим", "иш билан таъминлаш", "шогирд",
+        "кафолат", "кафолатлайман", "100% бўлади", "сўз бердим", "иш билан таъминлаш",
         # Russian
         "обещаю", "гарантирую", "точно сделаю", "слово даю", "ручаюсь", "100% будет",
-        "клянусь", "гарантия", "обязуюсь", "трудоустройство", "сотрудничество",
+        "клянусь", "гарантия", "обязуюсь", "трудоустройство",
         # English
         "promise", "guarantee", "swear", "i will definitely", "commit", "warranty",
-        "assure", "100% sure", "i promise", "employment guarantee", "partnership",
+        "assure", "100% sure", "i promise", "employment guarantee",
     ],
     "meeting_schedule": [
         # Uzbek Latin
         "uchrashuv", "uchrashamiz", "ko'rishamiz", "korishamiz", "qayerda uchrashamiz",
-        "soat nechada", "lokatsiya", "joylashuv", "manzil", "manzilingiz", "qayerdasan",
-        "kelasanmi", "borasanmi", "uchrashamizmi", "ko'rishaylik",
+        "soat nechada", "lokatsiya", "joylashuv", "manzil", "manzilingiz",
+        "uchrashamizmi", "ko'rishaylik",
         # Uzbek Cyrillic
         "учрашув", "учрашамиз", "кўришамиз", "коришамиз", "қаерда учрашамиз", "соат нечада",
-        "локация", "манзил", "манзилингиз", "қаердасан", "келасанми", "борасанми", "учрашамизми",
+        "локация", "манзил", "манзилингиз", "учрашамизми",
         # Russian
         "встреча", "встретимся", "где встретимся", "увидимся", "во сколько", "локация",
-        "адрес", "где ты", "приедешь", "подъедешь", "место встречи", "давай встретимся",
+        "адрес", "место встречи", "давай встретимся",
         # English
         "meeting", "meet up", "let's meet", "where to meet", "what time", "location",
-        "address", "where are you", "rendezvous", "see you at",
+        "address", "rendezvous", "see you at",
     ],
     "legal_official": [
         # Uzbek Latin
@@ -152,6 +152,8 @@ class SensitiveCheckResult:
     """
     is_sensitive: bool
     reasons: List[str] = field(default_factory=list)
+    hard_sensitive: bool = False
+    categories: List[str] = field(default_factory=list)
 
     @property
     def sensitive(self) -> bool:
@@ -169,6 +171,8 @@ class SensitiveCheckResult:
             "sensitive": self.is_sensitive,
             "reasons": self.reasons,
             "primary_reason": self.primary_reason,
+            "hard_sensitive": self.hard_sensitive,
+            "categories": self.categories,
         }
 
     def __getitem__(self, item: str) -> Any:
@@ -178,6 +182,10 @@ class SensitiveCheckResult:
             return self.reasons
         elif item == "primary_reason":
             return self.primary_reason
+        elif item == "hard_sensitive":
+            return self.hard_sensitive
+        elif item == "categories":
+            return self.categories
         raise KeyError(item)
 
     def get(self, item: str, default: Any = None) -> Any:
@@ -203,24 +211,30 @@ def _contains_keyword(text_lower: str, keyword: str) -> bool:
     return bool(re.search(pattern, text_lower))
 
 
-def check_sensitive_keywords(text: str) -> List[str]:
+def check_sensitive_keywords_detailed(text: str) -> Dict[str, Any]:
     """
-    Evaluates text against regex patterns (cards, currencies) and multi-lingual keyword dictionaries.
-    Returns list of triggered reason descriptions in Uzbek.
+    Evaluates text against regex patterns and keyword dictionaries.
+    Returns dict with reasons, matched categories, and whether hard critical sensitivity was hit.
     """
     if not text:
-        return []
+        return {"reasons": [], "categories": [], "hard_sensitive": False}
 
     lower_text = text.lower()
     detected_reasons: List[str] = []
+    detected_categories: List[str] = []
+    is_hard = False
 
     # Check 13-19 digit card numbers
     if check_card_number(text):
         detected_reasons.append("Bank karta raqami aniqlandi")
+        detected_categories.append("cards")
+        is_hard = True
 
     # Check currency amounts
     if AMOUNT_PATTERN.search(text):
         detected_reasons.append("Pul/Summa miqdori aniqlandi")
+        detected_categories.append("amounts")
+        is_hard = True
 
     category_labels = {
         "money_payments": "Pul va to'lov mavzusi",
@@ -231,16 +245,40 @@ def check_sensitive_keywords(text: str) -> List[str]:
         "suspicious_instruction": "Shubhali ko'rsatma / Prompt injection",
     }
 
-    # Check keyword categories
+    # Hard categories that must never be auto-handled
+    HARD_CATEGORIES = {
+        "money_payments",
+        "personal_data",
+        "promises_commitments",
+        "legal_official",
+        "suspicious_instruction",
+    }
+
     for category_name, keywords in SENSITIVE_CATEGORIES.items():
         for kw in keywords:
             if _contains_keyword(lower_text, kw):
                 label = category_labels.get(category_name, category_name)
                 if label not in detected_reasons:
                     detected_reasons.append(label)
+                if category_name not in detected_categories:
+                    detected_categories.append(category_name)
+                if category_name in HARD_CATEGORIES:
+                    is_hard = True
                 break
 
-    return detected_reasons
+    return {
+        "reasons": detected_reasons,
+        "categories": detected_categories,
+        "hard_sensitive": is_hard,
+    }
+
+
+def check_sensitive_keywords(text: str) -> List[str]:
+    """
+    Evaluates text against regex patterns (cards, currencies) and multi-lingual keyword dictionaries.
+    Returns list of triggered reason descriptions in Uzbek.
+    """
+    return check_sensitive_keywords_detailed(text)["reasons"]
 
 
 async def check_sensitive(
@@ -254,20 +292,38 @@ async def check_sensitive(
     Layer b: AI Classifier inspection with strict JSON output (temperature 0, fail-closed).
 
     Combined with OR: if either layer triggers, or if AI call fails, result is marked sensitive.
+    Also tracks hard_sensitive to distinguish hard security threats from routine chitchat.
     """
     reasons: List[str] = []
+    categories: List[str] = []
+    hard_sensitive = False
 
     # Layer a: Check incoming text and proposed reply with keyword layer
-    in_reasons = check_sensitive_keywords(incoming_text)
-    out_reasons = check_sensitive_keywords(proposed_reply)
-    reasons.extend(in_reasons)
-    for r in out_reasons:
-        if r not in reasons:
-            reasons.append(f"Javobda: {r}")
+    in_detail = check_sensitive_keywords_detailed(incoming_text)
+    out_detail = check_sensitive_keywords_detailed(proposed_reply)
 
-    # If keyword layer already detected sensitivity, fail-safe early
+    reasons.extend(in_detail["reasons"])
+    categories.extend(in_detail["categories"])
+    if in_detail["hard_sensitive"]:
+        hard_sensitive = True
+
+    # Any sensitive keyword in proposed reply ALWAYS forces hard sensitive
+    if out_detail["reasons"]:
+        hard_sensitive = True
+        for r in out_detail["reasons"]:
+            reasons.append(f"Javobda: {r}")
+        for c in out_detail["categories"]:
+            if c not in categories:
+                categories.append(f"reply_{c}")
+
+    # If keyword layer already detected sensitivity
     if reasons:
-        return SensitiveCheckResult(is_sensitive=True, reasons=reasons)
+        return SensitiveCheckResult(
+            is_sensitive=True,
+            reasons=reasons,
+            hard_sensitive=hard_sensitive,
+            categories=categories,
+        )
 
     # Layer b: AI Classifier layer if AI engine is provided
     if ai_engine and hasattr(ai_engine, "classify_sensitive_topic"):
@@ -276,13 +332,26 @@ async def check_sensitive(
             if isinstance(ai_result, dict) and ai_result.get("sensitive"):
                 ai_reasons = ai_result.get("reasons", ["AI tomonidan nozik mavzu aniqlandi"])
                 reasons.extend(ai_reasons)
-                return SensitiveCheckResult(is_sensitive=True, reasons=reasons)
+                categories.append("ai_classifier")
+                return SensitiveCheckResult(
+                    is_sensitive=True,
+                    reasons=reasons,
+                    hard_sensitive=True,
+                    categories=categories,
+                )
         except Exception as e:
             # FAIL-CLOSED: Any failure, timeout, or invalid output forces sensitive draft
             logger.warning(f"Sensitive guard AI classifier failed ({type(e).__name__}). Enforcing fail-closed sensitive flag.")
             return SensitiveCheckResult(
                 is_sensitive=True,
                 reasons=[f"AI xavfsizlik tekshiruvi xatosi (fail-closed): {type(e).__name__}"],
+                hard_sensitive=True,
+                categories=["fail_closed_error"],
             )
 
-    return SensitiveCheckResult(is_sensitive=bool(reasons), reasons=reasons)
+    return SensitiveCheckResult(
+        is_sensitive=bool(reasons),
+        reasons=reasons,
+        hard_sensitive=hard_sensitive,
+        categories=categories,
+    )

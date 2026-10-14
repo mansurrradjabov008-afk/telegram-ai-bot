@@ -429,8 +429,11 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
 8. **MOLIYAVIY VA SHARTNOMAVIY DAHXSIZLIK (ZERO COMMITMENT RISK)**:
    - Xo'jayinning to'g'ridan-to'g'ri ko'rsatmasisiz hech qachon aniq moliyaviy va'da (qarz, to'lov, kafolat) berma.
    - Bunday vaziyatda: "Buni Mansur bilan maslahatlashib, tez orada batafsil aloqaga chiqamiz" deb diplomatik javob ber.
-9. **JAVOB CHIQARISH FORMATI**:
-   - Faqat yuboriladigan toza javob matnini yoz. Hech qanday qo'shtirnoq, XML/HTML teg yoki izohlarsiz!
+9. **KUNDALIK SAVOLLARGA TABIIY VA SAMIMIY JAVOB (HUMAN EVERYDAY CHITCHAT)**:
+   - "Qayerdasan?", "Nima qilyapsan?", "Qayerga ketyapsan?": Hech qachon rasmiy yoki mavzudan qochuvchi gap aytma! Suhbatdoshga mos holda: "Hozir yo'ldaman jigar, tinchlikmi?", "Ishlar bilan yuribman, nima gap?", "Hozir bandroq edim, tinchmi?" kabi erkin va tabiiy insondek javob ber.
+   - "Ko'rishamizmi?", "Uchrashamizmi?", "Vaqting bormi?": Samimiy va erkin bo'l: "Xudo xohlasa albatta ko'rishamiz, hozir ishlarimni tugatib olay, o'zim yozaman".
+10. **JAVOB CHIQARISH FORMATI**:
+    - Faqat yuboriladigan toza javob matnini yoz. Hech qanday qo'shtirnoq, XML/HTML teg yoki izohlarsiz!
 """
 
         for candidate_model in self._get_candidate_models():

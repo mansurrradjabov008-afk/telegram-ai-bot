@@ -654,18 +654,24 @@ class AdminBotService:
             )
 
             builder = InlineKeyboardBuilder()
-            builder.button(text="📊 Tizim Holati", callback_data="menu:status")
-            builder.button(text="🧠 Xotira & Bilimlar", callback_data="menu:memory")
+            # Row 1: High frequency daily operations
             builder.button(text=f"👥 VIP Kontaktlar ({total_contacts})", callback_data="menu:contacts")
+            builder.button(text="✍️ Kontaktga xabar yozish", callback_data="crm:outreach_menu")
+            # Row 2: Approvals and Intelligence
             builder.button(text=f"📝 Qoralamalar ({pending_drafts})", callback_data="menu:drafts")
+            builder.button(text="🧠 Xotira & Bilimlar", callback_data="menu:memory")
+            # Row 3: Insights and Monitoring
             builder.button(text="📰 Smart Dayjest", callback_data="menu:digest")
+            builder.button(text="📊 Tizim Holati", callback_data="menu:status")
+            # Row 4: Personal Style Management
             if is_style_on:
                 builder.button(text="✍️ Uslub: ⏸ O'chirish", callback_data="style:toggle_quick")
             else:
                 builder.button(text="✍️ Uslub: 🟢 Yoqish", callback_data="style:toggle_quick")
             builder.button(text="🎛️ Uslub Paneli", callback_data="style:panel")
+            # Row 5: Refresh
             builder.button(text="🔄 Yangilash", callback_data="menu:main")
-            builder.adjust(2, 2, 2, 2)
+            builder.adjust(2, 2, 2, 2, 1)
 
             if is_callback:
                 await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -4741,6 +4747,97 @@ class AdminBotService:
             await state.update_data(prompt_msg_id=prompt_msg.message_id)
             await callback.answer()
 
+        @dp.callback_query(F.data.startswith("draft_direct_outreach:"))
+        async def handle_draft_direct_outreach(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            draft_id = int(callback.data.split(":")[1])
+            draft = await self.db_manager.get_draft_by_id(draft_id)
+            if not draft:
+                return await callback.answer("Qoralama topilmadi.", show_alert=True)
+
+            contact = None
+            if draft.contact_user_id:
+                contact = await self.db_manager.get_contact_by_id(draft.contact_user_id)
+            if not contact and draft.contact_username:
+                contact = await self.db_manager.find_contact(draft.contact_username)
+
+            target_user_id = contact.user_id if contact else (draft.contact_user_id or 0)
+            target_peer = f"@{draft.contact_username}" if draft.contact_username else (
+                f"@{contact.username}" if contact and contact.username else str(target_user_id)
+            )
+            clean_name = (contact.full_name if contact else None) or draft.contact_username or target_peer
+            style = getattr(contact, "addressing_style", "siz") if contact else "siz"
+
+            await self.db_manager.resolve_draft_atomic(draft_id, "superseded")
+            await callback.answer()
+
+            await state.set_state(ReplyState.waiting_for_contact_message)
+            await state.update_data(
+                target_user_id=target_user_id,
+                target_peer=target_peer,
+                target_name=clean_name,
+                target_username=draft.contact_username or (contact.username if contact else ""),
+                addressing_style=style,
+                msg_chat_id=callback.message.chat.id,
+                msg_message_id=callback.message.message_id,
+            )
+
+            prompt_text = (
+                f"✍️ <b>TO'G'RIDAN-TO'G'RI XABAR YOZISH: {html.escape(clean_name)} ({html.escape(target_peer)})</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📩 <b>Uning oxirgi xabari:</b> <i>\"{html.escape(draft.incoming_text)}\"</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Yubormoqchi bo'lgan xabaringizni yozing:\n\n"
+                f"💡 <b>2 xil usulda yozishingiz mumkin:</b>\n"
+                f"1️⃣ <b>To'g'ridan-to'g'ri matn:</b> Xabarni qanday yozsangiz, shunday yuboriladi.\n"
+                f"2️⃣ <b>AI buyrug'i:</b> <i>\"kechagi loyiha nima bo'ldi deb so'ra\"</i> desangiz, AI xuddi sizdek samimiy matn tuzib beradi!\n\n"
+                f"<i>Bekor qilish uchun pastdagi tugmani bosing yoki /cancel yozing.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Bekor qilish", callback_data="crm_outreach_cancel")
+            await safe_edit(callback.message, prompt_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.callback_query(F.data.startswith("esc_direct_outreach:"))
+        async def handle_esc_direct_outreach(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            esc_id = callback.data.split(":")[1]
+            esc_data = self._pending_escalations.get(esc_id)
+            if not esc_data:
+                return await callback.answer("Xabar topilmadi yoki muddati o'tgan.", show_alert=True)
+
+            peer = esc_data["peer"]
+            clean_name = esc_data.get("sender_name", peer)
+            contact = await self.db_manager.find_contact(peer)
+            target_user_id = contact.user_id if contact else 0
+            style = getattr(contact, "addressing_style", "siz") if contact else "siz"
+
+            await callback.answer()
+            await state.set_state(ReplyState.waiting_for_contact_message)
+            await state.update_data(
+                target_user_id=target_user_id,
+                target_peer=peer,
+                target_name=clean_name,
+                target_username=esc_data.get("username", ""),
+                addressing_style=style,
+                msg_chat_id=callback.message.chat.id,
+                msg_message_id=callback.message.message_id,
+            )
+
+            prompt_text = (
+                f"✍️ <b>TO'G'RIDAN-TO'G'RI XABAR YOZISH: {html.escape(clean_name)} ({html.escape(peer)})</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📩 <b>Kelgan xabar:</b> <i>\"{html.escape(esc_data['incoming_message'])}\"</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Yubormoqchi bo'lgan xabaringizni yozing:\n\n"
+                f"💡 <i>To'g'ridan-to'g'ri matn yoki AI buyrug'i (masalan: 'salom deb yoz') yozishingiz mumkin.</i>\n\n"
+                f"<i>Bekor qilish uchun pastdagi tugmani bosing yoki /cancel yozing.</i>"
+            )
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Bekor qilish", callback_data="crm_outreach_cancel")
+            await safe_edit(callback.message, prompt_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
         # ------------------ WRITING STYLE MANAGEMENT (D1 - D11) ------------------
         async def _render_style_panel(target_msg: types.Message, is_callback: bool = False):
             """Renders the Writing Style management control panel with live metrics and toggles."""
@@ -5162,7 +5259,8 @@ class AdminBotService:
         builder.button(text="✅ Yuborish", callback_data=f"draft_send:{draft.id}")
         builder.button(text="✍️ Tahrirlash", callback_data=f"draft_edit:{draft.id}")
         builder.button(text="❌ Rad etish", callback_data=f"draft_reject:{draft.id}")
-        builder.adjust(3)
+        builder.button(text="💬 Kontaktga to'g'ridan-to'g'ri yozish", callback_data=f"draft_direct_outreach:{draft.id}")
+        builder.adjust(3, 1)
 
         await safe_send(
             bot=self.bot,
@@ -5223,6 +5321,7 @@ class AdminBotService:
         else:
             builder.button(text="✅ Shu javobni yuborish", callback_data=f"escalate_send:{esc_id}")
             builder.button(text="✍️ O'zgartirib yozish", callback_data=f"escalate_custom:{esc_id}")
+            builder.button(text="💬 Kontaktga to'g'ridan-to'g'ri yozish", callback_data=f"esc_direct_outreach:{esc_id}")
             builder.button(text="🛑 O'zim yozaman", callback_data=f"escalate_ignore:{esc_id}")
             builder.adjust(1)
 
