@@ -380,3 +380,80 @@ async def test_quick_add_contact_callback(tmp_path):
     assert saved_contact.mode == "auto"
     fake_cb.answer.assert_awaited()
     fake_cb.message.edit_text.assert_awaited()
+
+
+# ============================================================================
+# 8. UZBEK "SUNG" TEMPORAL KEYWORDS, DECLENSION STRIPPING & INDIRECT SPEECH
+# ============================================================================
+
+class MockContactTest:
+    def __init__(self, uid, username, full_name):
+        self.user_id = uid
+        self.username = username
+        self.full_name = full_name
+
+
+@pytest.mark.asyncio
+async def test_uzbek_sung_schedule_deterministic():
+    from services.schedule_parser import parse_deterministic_schedule
+    contacts = [
+        MockContactTest(8036556250, "mansurjon_07", "Mansur"),
+        MockContactTest(6152742837, "umid_namozov", "Umid jura"),
+    ]
+
+    p1 = "mansur yaxshimisan deb 2 minutdan sung yoz"
+    res = parse_deterministic_schedule(p1, contacts=contacts)
+
+    assert res is not None
+    assert res.target_peer == "@mansurjon_07"
+    assert "2 daqiqadan so'ng" in res.human_time
+    assert res.message_text.lower() == "yaxshimisan"
+
+
+@pytest.mark.asyncio
+async def test_uzbek_indirect_speech_and_case_declension():
+    from services.schedule_parser import parse_deterministic_schedule
+    contacts = [
+        MockContactTest(8036556250, "mansurjon_07", "Mansur"),
+    ]
+
+    p2 = "mansurga 1 minutdan sung yozib quy  men borayotganimni uni yoniga"
+    res = parse_deterministic_schedule(p2, contacts=contacts)
+
+    assert res is not None
+    assert res.target_peer == "@mansurjon_07"
+    assert "1 daqiqadan so'ng" in res.human_time
+    assert res.message_text == "Yoningga boryapman"
+
+
+@pytest.mark.asyncio
+async def test_unresolved_declined_contact_prevents_fake_username():
+    from services.schedule_parser import resolve_target_peer
+    contacts = [
+        MockContactTest(8036556250, "mansurjon_07", "Mansur"),
+    ]
+
+    # "akromga" has Uzbek case suffix -ga, but is NOT in contacts and has no @
+    # Should resolve to None so clarification prompt is triggered, NOT fake handle "@akromga"
+    resolved = resolve_target_peer("akromga", contacts=contacts, raw_query="akromga 2 minutdan sung yoz")
+    assert resolved is None
+
+    # But "mansurga" should cleanly resolve to @mansurjon_07
+    resolved_mansur = resolve_target_peer("mansurga", contacts=contacts, raw_query="mansurga 2 minutdan sung yoz")
+    assert resolved_mansur == "@mansurjon_07"
+
+
+@pytest.mark.asyncio
+async def test_cyrillic_sung_schedule():
+    from services.schedule_parser import parse_deterministic_schedule
+    contacts = [
+        MockContactTest(8036556250, "mansurjon_07", "Mansur"),
+    ]
+
+    query = "mansurga 5 минутдан сунг yoz salom deb"
+    res = parse_deterministic_schedule(query, contacts=contacts)
+
+    assert res is not None
+    assert res.target_peer == "@mansurjon_07"
+    assert "5 daqiqadan so'ng" in res.human_time
+    assert res.message_text.lower() == "salom"

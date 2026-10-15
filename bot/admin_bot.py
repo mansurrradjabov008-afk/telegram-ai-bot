@@ -42,6 +42,8 @@ from services.schedule_parser import (
     clean_message_text,
     generate_contact_aliases,
     ScheduleParseResult,
+    resolve_target_peer,
+    is_valid_peer,
 )
 from services.memory_categories import normalize_category, CANONICAL_CATEGORIES, CATEGORY_SYNONYMS
 from services.memory_injection import is_forbidden_topic
@@ -368,6 +370,10 @@ class ScheduleWizardState(StatesGroup):
     waiting_for_peer = State()
     waiting_for_time = State()
     waiting_for_text = State()
+
+
+class ScheduleClarificationState(StatesGroup):
+    waiting_for_peer = State()
 
 
 class AdminBotService:
@@ -1415,7 +1421,7 @@ class AdminBotService:
             # If user message contains a scheduling time directive, do not intercept as immediate inquiry.
             # Let _schedule_and_respond handle it.
             rel_schedule_match = re.search(
-                r"\b(\d+)\s*(?:daqiqa|minut|минут|daq|min|soat|соат|час|hour|minute)[\w]*\s*(?:keyin|so['`’‘]?ng|song|o['`’‘]?tib|otib)\b",
+                r"\b(\d+)\s*(?:daqiqa|minut|минут|daq|min|soat|соат|час|hour|minute)[\w]*\s*(?:keyin|so['`’‘]?ng|song|sung|сунг|сўнг|o['`’‘]?tib|otib|utib|o‘tib|ichida|ichra|кеин|кейин)\b",
                 raw_text,
                 re.IGNORECASE,
             )
@@ -2246,7 +2252,7 @@ class AdminBotService:
             )
 
 
-        async def _schedule_and_respond(msg_obj: types.Message, raw_text: str) -> bool:
+        async def _schedule_and_respond(msg_obj: types.Message, raw_text: str, state: Optional[FSMContext] = None) -> bool:
             """Parses schedule request via hybrid parser and creates scheduled task."""
             tz = pytz.timezone(settings.TIMEZONE)
             contacts = await self.db_manager.list_contacts()
@@ -2264,7 +2270,45 @@ class AdminBotService:
             target_peer = parsed.target_peer
             run_at = parsed.run_at
             msg_text = parsed.message_text
+            human_time = parsed.human_time
 
+            # 1. Resolve peer against contacts or explicit @ handle
+            resolved_peer = resolve_target_peer(target_peer, contacts=contacts, raw_query=raw_text)
+            if not resolved_peer and is_valid_peer(target_peer):
+                resolved_peer = target_peer
+
+            # 2. If target_peer is missing or unresolved, prompt user to clarify!
+            if not resolved_peer:
+                if state:
+                    await state.set_state(ScheduleClarificationState.waiting_for_peer)
+                    await state.update_data(
+                        run_at_iso=run_at.isoformat(),
+                        human_time=human_time,
+                        message_text=msg_text,
+                    )
+                builder = InlineKeyboardBuilder()
+                for c in contacts[:4]:
+                    lbl = f"👤 {c.full_name[:15]}"
+                    if c.username:
+                        lbl += f" (@{c.username})"
+                    builder.button(text=lbl, callback_data=f"sched_clarify:{c.user_id}")
+                builder.button(text="❌ Bekor qilish", callback_data="sched_clarify:cancel")
+                builder.adjust(1)
+
+                safe_msg = html.escape(msg_text)
+                clarification_text = (
+                    "❓ <b>QABUL QILUVCHINI OYDINLASHTIRISH:</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏰ <b>Vaqti:</b> <code>{html.escape(human_time)}</code>\n"
+                    f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Lekin xabarni aynan <b>kimga</b> yuborishni aniqlay olmadim.\n"
+                    "Iltimos, kontaktni tanlang yoki qabul qiluvchining <code>@username</code>ini yozing:"
+                )
+                await safe_reply(msg_obj, clarification_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+                return True
+
+            target_peer = resolved_peer
             try:
                 task = await self.scheduler_service.schedule_message(
                     target_peer=target_peer,
@@ -2353,7 +2397,7 @@ class AdminBotService:
                     parse_mode="HTML",
                 )
 
-            handled = await _schedule_and_respond(message, text_after_cmd)
+            handled = await _schedule_and_respond(message, text_after_cmd, state=state)
             if not handled:
                 # Check if user provided peer + message, but omitted time!
                 partial = extract_peer_and_text_without_time(text_after_cmd)
@@ -2430,6 +2474,118 @@ class AdminBotService:
             await callback.message.edit_text(
                 "🚫 <b>Vazifa rejalashtirish bekor qilindi.</b>",
                 reply_markup=builder.as_markup(),
+                parse_mode="HTML",
+            )
+
+        @dp.callback_query(F.data.startswith("sched_clarify:"))
+        async def handle_sched_clarify_cb(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            action = callback.data.split(":", 1)[1]
+            if action == "cancel":
+                await state.clear()
+                await callback.answer("Bekor qilindi")
+                return await callback.message.edit_text("🚫 <b>Vazifa rejalashtirish bekor qilindi.</b>", reply_markup=None, parse_mode="HTML")
+
+            try:
+                target_user_id = int(action)
+                contact = await self.db_manager.get_contact_by_id(target_user_id)
+                if not contact:
+                    await callback.answer("Kontakt topilmadi", show_alert=True)
+                    return
+
+                target_peer = f"@{contact.username}" if contact.username else str(contact.user_id)
+                data = await state.get_data()
+                await state.clear()
+
+                run_at_iso = data.get("run_at_iso")
+                msg_text = data.get("message_text", "Salom!")
+                if not run_at_iso:
+                    await callback.answer("Vaqt ma'lumoti topilmadi", show_alert=True)
+                    return
+
+                tz = pytz.timezone(settings.TIMEZONE)
+                run_at = datetime.fromisoformat(run_at_iso)
+                if run_at.tzinfo is None:
+                    run_at = tz.localize(run_at)
+
+                task = await self.scheduler_service.schedule_message(
+                    target_peer=target_peer,
+                    message_text=msg_text,
+                    run_at=run_at,
+                )
+                formatted_time = format_task_time_human(run_at.isoformat(), tz)
+                safe_target = html.escape(target_peer)
+                safe_msg = html.escape(msg_text)
+                await callback.answer("Vazifa rejalashtirildi!")
+                await callback.message.edit_text(
+                    f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
+                    f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
+                    f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
+                    f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
+                    f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🗑 <i>Bekor qilish uchun:</i> <code>bekor #{task.id}</code> deb yozing.",
+                    reply_markup=None,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"Error in sched_clarify callback: {type(e).__name__}")
+                await callback.answer(f"Xatolik: {type(e).__name__}", show_alert=True)
+
+        @dp.message(ScheduleClarificationState.waiting_for_peer)
+        async def process_clarification_peer(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+            raw_text = (message.text or "").strip()
+            if raw_text.lower() in ["/cancel", "bekor", "bekor qilish"]:
+                await state.clear()
+                return await safe_reply(message, "🚫 <b>Vazifa rejalashtirish bekor qilindi.</b>", parse_mode="HTML")
+
+            contacts = await self.db_manager.list_contacts()
+            resolved = resolve_target_peer(raw_text, contacts=contacts, raw_query=raw_text)
+            if not resolved and is_valid_peer(clean_target_peer(raw_text)):
+                resolved = clean_target_peer(raw_text)
+
+            if not resolved:
+                return await safe_reply(
+                    message,
+                    "⚠️ <b>Qabul qiluvchi aniqlanmadi.</b>\n"
+                    "Iltimos, kontakt nomini, <code>@username</code> yoki telefon raqamini kiriting (masalan: <code>@ali</code>):\n"
+                    "<i>Bekor qilish uchun 'bekor' deb yozing.</i>",
+                    parse_mode="HTML",
+                )
+
+            data = await state.get_data()
+            await state.clear()
+            run_at_iso = data.get("run_at_iso")
+            msg_text = data.get("message_text", "Salom!")
+            if not run_at_iso:
+                return await safe_reply(message, "❌ Rejalashtirish parametrlari eskirgan. Qaytadan urinib ko'ring.")
+
+            tz = pytz.timezone(settings.TIMEZONE)
+            run_at = datetime.fromisoformat(run_at_iso)
+            if run_at.tzinfo is None:
+                run_at = tz.localize(run_at)
+
+            task = await self.scheduler_service.schedule_message(
+                target_peer=resolved,
+                message_text=msg_text,
+                run_at=run_at,
+            )
+            formatted_time = format_task_time_human(run_at.isoformat(), tz)
+            safe_target = html.escape(resolved)
+            safe_msg = html.escape(msg_text)
+            await safe_reply(
+                message,
+                f"⏰ <b>VAZIFA MUVAFFAQIYATLI REJALASHTIRILDI! (ID #{task.id})</b>\n\n"
+                f"👤 <b>Kimga:</b> <code>{safe_target}</code>\n"
+                f"🕒 <b>Vaqti:</b> <code>{formatted_time}</code>\n"
+                f"💬 <b>Xabar matni:</b>\n<i>\"{safe_msg}\"</i>\n\n"
+                f"🧠 <i>Belgilangan vaqtda bot profilingiz nomidan xabarni avtomatik yuboradi.</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🗑 <i>Bekor qilish uchun:</i> <code>bekor #{task.id}</code> deb yozing.",
+                reply_markup=None,
                 parse_mode="HTML",
             )
 
@@ -2720,7 +2876,7 @@ class AdminBotService:
             await _render_contacts_list(message, is_callback=False)
 
         @dp.message(StateFilter(None), F.text & ~F.text.startswith("/") & F.text.regexp(r"(?i)(?:^|.*?)@([a-zA-Z0-9_]{3,32})\s+(.+)"))
-        async def handle_natural_crm_or_schedule(message: types.Message):
+        async def handle_natural_crm_or_schedule(message: types.Message, state: Optional[FSMContext] = None):
             if not self._is_admin(message.from_user.id):
                 return
 
@@ -2755,7 +2911,7 @@ class AdminBotService:
                         )
 
             # 1. Check if this is a scheduling request
-            handled = await _schedule_and_respond(message, message.text)
+            handled = await _schedule_and_respond(message, message.text, state=state)
             if handled:
                 return
 
@@ -3151,8 +3307,9 @@ class AdminBotService:
 
             # Check if user typed a scheduling directive (e.g. "... 5 minutdan keyin yoz", "ertaga soat 10:00 da yubor")
             contacts = await self.db_manager.list_contacts()
-            sched = parse_deterministic_schedule(
+            sched = await parse_schedule_intent_hybrid(
                 raw_text,
+                self.ai_engine,
                 tz_name=settings.TIMEZONE,
                 contacts=contacts,
                 default_peer=target_peer,
@@ -3492,7 +3649,7 @@ class AdminBotService:
             if handled_inquiry:
                 return
 
-            handled = await _schedule_and_respond(message, message.text)
+            handled = await _schedule_and_respond(message, message.text, state=state)
             if handled:
                 return
 

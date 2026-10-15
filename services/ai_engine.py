@@ -718,6 +718,7 @@ Postlar ro'yxati:
         user_prompt: str,
         current_time: datetime,
         timezone_str: str,
+        contacts: Optional[List[Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Parses natural language scheduling requests in Uzbek into structured parameters.
@@ -726,6 +727,18 @@ Postlar ro'yxati:
         if not self._client or not user_prompt:
             return None
 
+        contacts_context = ""
+        if contacts:
+            c_lines = []
+            for c in contacts:
+                name = getattr(c, "full_name", "") or ""
+                uname = getattr(c, "username", "") or ""
+                uid = getattr(c, "user_id", "") or ""
+                h = f"@{uname}" if uname else f"ID:{uid}"
+                c_lines.append(f"- {name} ({h})")
+            if c_lines:
+                contacts_context = "MAVJUD KONTAKTLAR RO'YXATI (CRM):\n" + "\n".join(c_lines) + "\n\n"
+
         prompt = f"""
 Siz — Telegram shaxsiy yordamchisi (AI Butler) uchun tabiiy tilni tushunuvchi professional parsersiz.
 Xo'jayin (Mansur) kimgadir ma'lum bir vaqtda xabar yuborishni rejalashtirmoqchi.
@@ -733,19 +746,29 @@ Xo'jayin (Mansur) kimgadir ma'lum bir vaqtda xabar yuborishni rejalashtirmoqchi.
 Hozirgi sana va vaqt: {current_time.strftime("%Y-%m-%d %H:%M:%S")}
 Vaqt mintaqasi: {timezone_str}
 
-Foydalanuvchi yozgan matn:
+{contacts_context}Foydalanuvchi yozgan matn:
 "{user_prompt}"
 
 VAZIFA:
 Agar foydalanuvchi kimgadir xabar rejalashtirish yoki yuborishni so'ragan bo'lsa (masalan: "ertaga 10 da @ali ga yoz", "15 daqiqadan keyin xabar jo'nat", "/schedule ..."), quyidagi ma'lumotlarni aniqlang:
-1. `target_peer`: Qabul qiluvchining @username'i yoki telefon raqami. Agar matnda @username bo'lsa, uni @ bilan oling.
+1. `target_peer`: Qabul qiluvchining aniq Telegram @username'i yoki telefon raqami / ID raqami.
+   - DIQQAT: Agar foydalanuvchi ismni kelishik bilan aytgan bo'lsa (masalan: "mansurga", "mansurdan", "umidga", "aliga"), aslo `@mansurga` deb o'ylab topmang! Yuqoridagi MAVJUD KONTAKTLAR RO'YXATIDAN qidiring va o'sha kontaktning haqiqiy @username'ini (masalan: `@mansurjon_07`) yoki ID raqamini oling.
+   - Agar kontaktlar ro'yxatida bo'lmasa va matnda aniq `@` bilan username ko'rsatilmagan bo'lsa, kelishik qo'shimchasisiz toza ismni yozing.
 2. `scheduled_iso`: Rejalashtirilgan vaqtning ISO 8601 formati ({timezone_str} mintaqasida, masalan: 2026-10-09T10:00:00+05:00).
    - "ertaga" -> ertangi kun
-   - "30 daqiqadan keyin" / "1 soatdan keyin" -> hozirgi vaqtga qo'shiladi
+   - "30 daqiqadan keyin", "1 minutdan so'ng", "2 minutdan sung" -> hozirgi vaqtga qo'shiladi
    - "bugun soat 20:00 da" -> bugungi 20:00
    - Agar vaqt o'tib ketgan bo'lsa (masalan, hozir 11:30, lekin "soat 10:00 da" desa), ertangi 10:00 ga o'tkazing.
 3. `message_text`: Yuborilishi kerak bo'lgan haqiqiy xabar matni (qo'shtirnoqsiz, toza shaklda).
-4. `human_time`: O'zbek tilida inson tushunadigan chiroyli vaqt tavsifi (masalan: "Ertaga soat 10:00 da", "Bugun 18:30 da", "15 daqiqadan so'ng").
+   - BILVOSITA NUTQNI (INDIRECT SPEECH) TO'G'RIDAN-TO'G'RI NUTQQA AYLANTIRISH QOIDASI:
+     Agar foydalanuvchi o'z harakatini bilvosita uchinchi shaxsga yetkazish shaklida aytgan bo'lsa (masalan: "men borayotganimni uni yoniga", "kechikayotganimni ayt", "yetib kelganimni bildir", "borishimni ayt", "kola olib kelishini so'ra"), uni suhbatdoshga to'g'ridan-to'g'ri birinchi shaxs nomidan aytiladigan tabiiy va samimiy gapga aylantiring!
+     Misollar:
+     • "men borayotganimni uni yoniga" -> "Yoningga boryapman" (yoki "Men sening yoningga boryapman")
+     • "kechikayotganimni ayt" -> "Biroz kechikaman"
+     • "yetib kelganimni ayt" -> "Yetib keldim"
+     • "kola olib kelishini so'ra" -> "Kola olib kelasanmi?"
+     • "yaxshimisan deb yoz" -> "Yaxshimisiz?" yoki "Yaxshimisan?"
+4. `human_time`: O'zbek tilida inson tushunadigan chiroyli vaqt tavsifi (masalan: "Ertaga soat 10:00 da", "Bugun 18:30 da", "15 daqiqadan so'ng", "1 daqiqadan so'ng").
 
 Javobni FAQAT quyidagi JSON formatida qaytaring:
 {{

@@ -43,6 +43,70 @@ def clean_target_peer(peer_str: str) -> str:
     return peer
 
 
+def is_valid_peer(peer_str: Optional[str]) -> bool:
+    """Checks if a string is a valid Telegram peer (not an unresolved Uzbek inflected word)."""
+    if not peer_str:
+        return False
+    p = peer_str.strip()
+    if p.startswith("+") and p[1:].isdigit() and len(p) >= 8:
+        return True
+    if p.isdigit() and len(p) >= 5:
+        return True
+    if p.startswith("@") and re.match(r"^@[A-Za-z][A-Za-z0-9_]{3,31}$", p):
+        # Disallow synthetic handles made from Uzbek inflected nouns (e.g. @mansurga)
+        raw_token = p[1:].lower()
+        if re.search(r"(?:ga|ka|qa|da|dan|ni|ning|yga|yda|ydan)$", raw_token):
+            return False
+        return True
+    return False
+
+
+def resolve_target_peer(
+    peer_str: Optional[str],
+    contacts: Optional[List[Any]] = None,
+    raw_query: str = "",
+) -> Optional[str]:
+    """
+    Resolves a peer string to normalized @username, phone, or Telegram ID.
+    Strips Uzbek case suffixes (-ga, -ka, -da, -dan, -ni, etc.) and matches CRM contacts.
+    If peer cannot be resolved and had no explicit '@' in raw_query, returns None (ambiguous).
+    """
+    if not peer_str:
+        return None
+    raw = peer_str.strip()
+    clean_handle = raw.lstrip("@").lower()
+
+    if contacts:
+        # 1. Exact username or ID match
+        for c in contacts:
+            c_u = (getattr(c, "username", "") or "").lower().lstrip("@")
+            if c_u and c_u == clean_handle:
+                return f"@{c.username}"
+            if str(getattr(c, "user_id", "")) == raw:
+                return str(c.user_id)
+
+        # 2. Suffix stripping + contact match
+        stem = re.sub(r"(?:ga|ka|qa|da|dan|ni|ning|yga|yda|ydan)$", "", clean_handle, flags=re.IGNORECASE)
+        for c in contacts:
+            aliases = generate_contact_aliases(getattr(c, "username", None), getattr(c, "full_name", None))
+            for a in aliases:
+                if stem == a.lower() or clean_handle == a.lower():
+                    return f"@{c.username}" if c.username else str(c.user_id)
+
+    # 3. Explicit @ in user prompt or explicit @ handle
+    had_explicit_at = f"@{clean_handle}" in raw_query or (
+        raw.startswith("@") and not re.search(r"(?:ga|ka|qa|da|dan|ni|ning|yga|yda|ydan)$", clean_handle)
+    )
+    if had_explicit_at and re.match(r"^[A-Za-z0-9_]{3,32}$", clean_handle):
+        return f"@{clean_handle}"
+
+    # 4. Numeric Telegram ID or Phone number
+    if (raw.startswith("+") and raw[1:].isdigit() and len(raw) >= 8) or (raw.isdigit() and len(raw) >= 5):
+        return raw
+
+    return None
+
+
 ALIAS_STOPWORDS = {
     "deb", "aka", "oka", "opa", "jon", "bek", "jura", "jo'ra", "siz", "sen",
     "yoz", "ayt", "sura", "so'ra", "bormi", "qil", "ber", "edi", "bilan",
@@ -151,6 +215,39 @@ def clean_message_text(text: str) -> str:
     return cleaned.strip()
 
 
+def transform_indirect_to_direct_uzbek(text: str) -> str:
+    """
+    Transforms indirect reported speech into natural direct first-person speech in Uzbek.
+    Examples:
+    - 'men borayotganimni uni yoniga' -> 'Yoningga boryapman'
+    - 'borayotganimni uni yoniga' -> 'Yoningga boryapman'
+    - 'kechikayotganimni ayt' -> 'Biroz kechikaman'
+    - 'yetib kelganimni' -> 'Yetib keldim'
+    """
+    if not text:
+        return text
+    orig = text.strip()
+    s = orig
+    # Specific common full clauses
+    s = re.sub(r"(?i)\b(?:men\s+)?borayotganimni\s+(?:uni\s+|uning\s+)?yoniga\b", "yoningga boryapman", s)
+    s = re.sub(r"(?i)\b(?:uni\s+|uning\s+)?yoniga\s+(?:men\s+)?borayotganimni\b", "yoningga boryapman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?borishimni\s+(?:uni\s+|uning\s+)?yoniga\b", "yoningga boraman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?borayotganimni\b", "boryapman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?borishimni\b", "boraman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?kelayotganimni\b", "kelyapman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?kelishimni\b", "kelaman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?kechikayotganimni\b", "kechikayapman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?kechikishimni\b", "kechikaman", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?yetib\s+borganimni\b", "yetib bordim", s)
+    s = re.sub(r"(?i)\b(?:men\s+)?yetib\s+kelganimni\b", "yetib keldim", s)
+    s = re.sub(r"(?i)\b(?:uni\s+|uning\s+)?yoniga\b", "yoningga", s)
+
+    s = re.sub(r"\s+", " ", s).strip()
+    if s != orig and s:
+        s = s[0].upper() + s[1:]
+    return s
+
+
 def extract_peer_and_text_without_time(text: str) -> Optional[Tuple[str, str]]:
     """
     Extracts target peer and message text when user provides recipient and text but forgets the time.
@@ -230,6 +327,9 @@ def parse_deterministic_schedule(
     now = datetime.now(tz)
     trimmed = text.strip()
 
+    TIME_RELATIVE_UNITS = r"(?:daqiqa|minut|минут|daq|min|soat|соат|час|hour|minute)[\w]*"
+    TIME_RELATIVE_POSTFIXES = r"(?:keyin|so['`’‘]?ng|song|sung|сунг|сўнг|o['`’‘]?tib|otib|utib|o‘tib|ichida|ichra|кеин|кейин)"
+
     # -------------------------------------------------------------
     # Pattern 0: Flexible Sentence-Wide Relative Time & Contact Matching
     # Handles:
@@ -237,9 +337,11 @@ def parse_deterministic_schedule(
     # "@mansurjon_07 ga kola kerakmi deb so'ra 5 minutdan keyin"
     # "5 minutdan keyin mansur akaga kola kerakmi deb sura"
     # "mansur akaga 10 daqiqadan so'ng yoz"
+    # "mansur yaxshimisan deb 2 minutdan sung yoz"
+    # "mansurga 1 minutdan sung yozib quy  men borayotganimni uni yoniga"
     # -------------------------------------------------------------
     rel_anywhere = re.search(
-        r"\b(\d+)\s*(daqiqad?a?n?|minutd?a?n?|минутd?a?n?|daqd?a?n?|mind?a?n?|soatd?a?n?|соатd?a?n?|час[а-я]*|hour[s]?|minute[s]?)\s*(?:keyin|so['`’‘]?ng|song|o['`’‘]?tib|otib)\b",
+        rf"\b(\d+)\s*({TIME_RELATIVE_UNITS})\s*{TIME_RELATIVE_POSTFIXES}\b",
         trimmed,
         re.IGNORECASE,
     )
@@ -262,7 +364,7 @@ def parse_deterministic_schedule(
             for c in contacts:
                 candidates = generate_contact_aliases(getattr(c, "username", None), getattr(c, "full_name", None))
                 for cand in candidates:
-                    cand_pat = rf"\b{re.escape(cand)}(?:ga|da|dan|ni|ning|yga|yda)?\b"
+                    cand_pat = rf"\b{re.escape(cand)}(?:ga|ka|qa|da|dan|ni|ning|yga|yda)?\b"
                     m_cand = re.search(cand_pat, rem, re.IGNORECASE)
                     if m_cand:
                         matched_peer = f"@{c.username}" if c.username else str(c.user_id)
@@ -275,11 +377,24 @@ def parse_deterministic_schedule(
             matched_peer = default_peer
 
         if matched_peer:
+            # 1. Strip leading dispatch phrases: 'yozib quy', 'yoz', 'aytib quy', 'ayt', etc.
+            rem = re.sub(
+                r"^(?:deb\s+)?(?:xabar\s+)?"
+                r"(?:yoz(?:ib\s+(?:qo['`’‘]?y|quy|qoy|tashla|yubor))?|yoz(?:ing)?|"
+                r"jo['`’‘]nat(?:ib\s+(?:yubor|qo['`’‘]?y|quy))?|jo['`’‘]nat(?:ing)?|"
+                r"yubor(?:ib\s+(?:qo['`’‘]?y|quy))?|yubor(?:ing)?|"
+                r"ayt(?:ib\s+(?:qo['`’‘]?y|quy|qoy|tashla|yubor))?|ayt(?:ing)?)\s+",
+                "",
+                rem.strip(),
+                flags=re.IGNORECASE,
+            )
+            # 2. Strip trailing dispatch phrases
             rem = re.sub(
                 r"\s+(?:deb\s+)?(?:xabar\s+)?"
                 r"(?:yoz(?:ib\s+(?:qo['`’‘]?y|quy|qoy|tashla|yubor))?|yoz(?:ing)?|"
                 r"jo['`’‘]nat(?:ib\s+(?:yubor|qo['`’‘]?y|quy))?|jo['`’‘]nat(?:ing)?|"
-                r"yubor(?:ib\s+(?:qo['`’‘]?y|quy))?|yubor(?:ing)?)\.?$",
+                r"yubor(?:ib\s+(?:qo['`’‘]?y|quy))?|yubor(?:ing)?|"
+                r"ayt(?:ib\s+(?:qo['`’‘]?y|quy|qoy|tashla|yubor))?|ayt(?:ing)?)\.?$",
                 "",
                 rem.strip(),
                 flags=re.IGNORECASE,
@@ -291,10 +406,13 @@ def parse_deterministic_schedule(
             rem = re.sub(r"\buiyapsiz\b", "o'qiyapsiz", rem, flags=re.IGNORECASE)
             rem = re.sub(r"\buqiyapti\b", "o'qiyapti", rem, flags=re.IGNORECASE)
             clean_msg = clean_message_text(rem)
+            clean_msg = transform_indirect_to_direct_uzbek(clean_msg)
             if not clean_msg:
                 clean_msg = "Salom, yaxshimisiz?"
+
+            resolved_p = resolve_target_peer(matched_peer, contacts=contacts, raw_query=trimmed) or clean_target_peer(matched_peer)
             return ScheduleParseResult(
-                target_peer=clean_target_peer(matched_peer),
+                target_peer=resolved_p,
                 run_at=run_at,
                 message_text=clean_msg,
                 human_time=human,
@@ -314,7 +432,7 @@ def parse_deterministic_schedule(
     # -------------------------------------------------------------
     # 1a: peer N daqiqa/minutdan keyin [text]
     m = re.match(
-        r"^(@?[a-zA-Z][a-zA-Z0-9_]{3,31}|\+?\d{7,15})\s+(?:ga\s+)?(\d+)\s+(?:daqiqa|minut|минут|daq|min|soat|соат|час|hour|minute)[\w]*\s+keyin\s+(.+)$",
+        rf"^(@?[a-zA-Z][a-zA-Z0-9_]{{3,31}}|\+?\d{{7,15}})\s+(?:ga\s+)?(\d+)\s+{TIME_RELATIVE_UNITS}\s+{TIME_RELATIVE_POSTFIXES}\s+(.+)$",
         s,
         re.IGNORECASE,
     )
@@ -322,7 +440,7 @@ def parse_deterministic_schedule(
     if not m:
         # 1b: N daqiqa/minutdan keyin peer [ga] [text]
         m2 = re.match(
-            r"^(\d+)\s+(?:daqiqa|minut|минут|daq|min|soat|соат|час|hour|minute)[\w]*\s+keyin\s+(@?[a-zA-Z][a-zA-Z0-9_]{3,31}|\+?\d{7,15})(?:\s+ga)?\s+(.+)$",
+            rf"^(\d+)\s+{TIME_RELATIVE_UNITS}\s+{TIME_RELATIVE_POSTFIXES}\s+(@?[a-zA-Z][a-zA-Z0-9_]{{3,31}}|\+?\d{{7,15}})(?:\s+ga)?\s+(.+)$",
             s,
             re.IGNORECASE,
         )
@@ -334,10 +452,13 @@ def parse_deterministic_schedule(
             delta = timedelta(hours=num) if any(u in unit_str.split()[1] for u in ["soat", "соат", "час", "hour"]) else timedelta(minutes=num)
             run_at = now + delta
             human = f"{num} daqiqadan so'ng" if delta.seconds < 3600 else f"{num} soatdan so'ng"
+            resolved_p = resolve_target_peer(peer, contacts=contacts, raw_query=trimmed) or clean_target_peer(peer)
+            clean_msg = clean_message_text(msg)
+            clean_msg = transform_indirect_to_direct_uzbek(clean_msg)
             return ScheduleParseResult(
-                target_peer=clean_target_peer(peer),
+                target_peer=resolved_p,
                 run_at=run_at,
-                message_text=clean_message_text(msg),
+                message_text=clean_msg,
                 human_time=human,
             )
 
@@ -349,10 +470,13 @@ def parse_deterministic_schedule(
         delta = timedelta(hours=num) if any(u in unit_str for u in ["soat", "соат", "час", "hour"]) else timedelta(minutes=num)
         run_at = now + delta
         human = f"{num} daqiqadan so'ng" if delta.seconds < 3600 else f"{num} soatdan so'ng"
+        resolved_p = resolve_target_peer(peer, contacts=contacts, raw_query=trimmed) or clean_target_peer(peer)
+        clean_msg = clean_message_text(msg)
+        clean_msg = transform_indirect_to_direct_uzbek(clean_msg)
         return ScheduleParseResult(
-            target_peer=clean_target_peer(peer),
+            target_peer=resolved_p,
             run_at=run_at,
-            message_text=clean_message_text(msg),
+            message_text=clean_msg,
             human_time=human,
         )
 
@@ -506,16 +630,25 @@ async def parse_schedule_intent_hybrid(
         try:
             tz = pytz.timezone(tz_name)
             now = datetime.now(tz)
-            ai_data = await ai_engine.parse_schedule_intent(raw_text, now, tz_name)
-            if ai_data and ai_data.get("is_schedule") and ai_data.get("target_peer") and ai_data.get("scheduled_iso"):
+            ai_data = await ai_engine.parse_schedule_intent(raw_text, now, tz_name, contacts=contacts)
+            if ai_data and ai_data.get("is_schedule") and ai_data.get("scheduled_iso"):
                 run_at = datetime.fromisoformat(ai_data["scheduled_iso"])
                 if run_at.tzinfo is None:
                     run_at = tz.localize(run_at)
 
+                raw_target = ai_data.get("target_peer", "")
+                resolved = resolve_target_peer(raw_target, contacts=contacts, raw_query=raw_text)
+                if not resolved and default_peer:
+                    resolved = default_peer
+
+                raw_msg = ai_data.get("message_text", "Salom!")
+                clean_msg = clean_message_text(raw_msg)
+                clean_msg = transform_indirect_to_direct_uzbek(clean_msg)
+
                 return ScheduleParseResult(
-                    target_peer=clean_target_peer(ai_data["target_peer"]),
+                    target_peer=resolved or raw_target,
                     run_at=run_at,
-                    message_text=clean_message_text(ai_data.get("message_text", "Salom!")),
+                    message_text=clean_msg,
                     human_time=ai_data.get("human_time", run_at.strftime("%Y-%m-%d %H:%M")),
                 )
         except Exception as e:
