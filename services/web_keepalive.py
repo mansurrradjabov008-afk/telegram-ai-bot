@@ -73,8 +73,16 @@ async def handle_metrics(request: web.Request) -> web.Response:
 
 
 async def handle_health(request: web.Request) -> web.Response:
-    """Lightweight health probe endpoint."""
-    return web.Response(text="OK", status=200)
+    """Enterprise health probe checking internal subsystem liveness."""
+    try:
+        from database.connection import get_db
+        async with get_db() as db:
+            cur = await db.execute("SELECT 1;")
+            await cur.fetchone()
+        return web.Response(text="OK", status=200)
+    except Exception as e:
+        logger.warning(f"Health probe check failed: {type(e).__name__}: {e}")
+        return web.Response(text=f"ERROR: {type(e).__name__}", status=503)
 
 
 def create_keepalive_app() -> web.Application:
@@ -90,10 +98,11 @@ async def start_keepalive_server(host: str = "0.0.0.0", default_port: int = 7860
     """
     Start the keep-alive web server.
     Port is read from environment variable PORT (standard in Hugging Face / Render).
+    access_log=None silences repetitive 15s health-probe access logs to protect phone storage.
     """
     port = int(os.getenv("PORT", str(default_port)))
     app = create_keepalive_app()
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()

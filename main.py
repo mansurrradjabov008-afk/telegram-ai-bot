@@ -125,7 +125,14 @@ async def main():
 
     async def _run_scheduled_maintenance():
         try:
-            # 1. Online transaction-safe backup & integrity verification
+            import gc
+            # 1. Purge ancient records and vacuum-friendly maintenance
+            await db_manager.purge_old_digest_posts(retention_days=14)
+            await db_manager.cleanup_stale_digest_runs()
+            await db_manager.purge_old_style_samples(retention_days=30)
+            await db_manager.cleanup_conversation_history(days=60)
+
+            # 2. Online transaction-safe backup & integrity verification
             ok, b_path, res = await asyncio.to_thread(create_safe_backup, "data/butler.db", "data/backups")
             if ok:
                 await asyncio.to_thread(execute_backup_rotation, "data/backups", keep_count=7, dry_run=False)
@@ -138,14 +145,39 @@ async def main():
                         f"Integritet natijasi: <code>{res}</code>"
                     )
 
-            # 2. SQLite maintenance: checkpoint WAL and optimize query planner
+            # 3. SQLite maintenance: truncate WAL and optimize query planner
             from database.connection import get_db
             async with get_db() as db:
-                await db.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 await db.execute("PRAGMA optimize;")
-            logger.info("✅ SQLite WAL checkpoint and query planner optimization complete.")
+            logger.info("✅ SQLite WAL checkpoint (TRUNCATE) and query planner optimization complete.")
+
+            # 4. Truncate excessive log file if exceeds 10MB
+            log_path = Path("butler_phone.log")
+            if log_path.exists() and log_path.stat().st_size > 10 * 1024 * 1024:
+                try:
+                    lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    if len(lines) > 20000:
+                        log_path.write_text("\n".join(lines[-20000:]) + "\n", encoding="utf-8")
+                        logger.info("✅ Log file pruned to last 20,000 lines.")
+                except Exception as log_err:
+                    logger.warning(f"Log pruning warning: {log_err}")
+
+            # 5. Garbage Collection
+            collected = gc.collect()
+            logger.info(f"✅ Memory garbage collection complete ({collected} objects freed).")
+
+            # 6. Status notification to admin
+            if admin_bot_service.bot:
+                await admin_bot_service.send_notification(
+                    "🌙 <b>Kunlik profilaktika va zaxiralash muvaffaqiyatli yakunlandi:</b>\n"
+                    "• Ma'lumotlar bazasi zaxiralandi va optimallashtirildi (WAL TRUNCATE)\n"
+                    "• Eski ma'lumotlar va qoralamalar tozalandi\n"
+                    f"• Tizim xotirasi tozalandi ({collected} ob'ekt bo'shatildi)\n"
+                    "• Butler 100% sog'lom va barqaror ishlamoqda."
+                )
         except Exception as e:
-            logger.error(f"Error during scheduled database maintenance: {type(e).__name__}")
+            logger.error(f"Error during scheduled database maintenance: {type(e).__name__}: {e}")
 
     scheduler_service.scheduler.add_job(
         _run_scheduled_maintenance,

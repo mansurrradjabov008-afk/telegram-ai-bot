@@ -44,6 +44,20 @@ def check_liveness_probe() -> bool:
         return False
 
 
+def get_process_rss_mb(pid: int) -> float:
+    """Read Resident Set Size in MB from /proc/<pid>/status on Linux/Android."""
+    try:
+        status_file = Path(f"/proc/{pid}/status")
+        if status_file.exists():
+            for line in status_file.read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return float(parts[1]) / 1024.0
+    except Exception:
+        pass
+    return 0.0
+
+
 def run_supervisor():
     """Main supervisor loop."""
     logger.info("👑 Antigravity Tier-4 Watchdog Supervisor started.")
@@ -81,6 +95,20 @@ def run_supervisor():
             poll_res = proc.poll()
             if poll_res is not None:
                 logger.warning(f"⚠️ Butler process (PID {proc.pid}) exited unexpectedly with code {poll_res}.")
+                break
+
+            # Check RSS memory limit (e.g. 350 MB max) to prevent Android Low Memory Killer
+            rss_mb = get_process_rss_mb(proc.pid)
+            if rss_mb > 350.0:
+                logger.warning(
+                    f"⚠️ High memory threshold reached: PID {proc.pid} using {rss_mb:.1f} MB (> 350 MB). "
+                    "Initiating graceful memory recycling..."
+                )
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=10.0)
+                except Exception:
+                    proc.kill()
                 break
 
             # Run active liveness probe
