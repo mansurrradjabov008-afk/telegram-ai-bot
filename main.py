@@ -83,6 +83,7 @@ async def main():
     userbot_service.set_escalation_callback(admin_bot_service.notify_boss_escalation)
     userbot_service.set_draft_approval_callback(admin_bot_service.send_draft_for_approval)
     userbot_service.set_notification_callback(admin_bot_service.send_notification)
+    admin_bot_service.set_userbot(userbot_service)
     admin_bot_service.set_userbot_sender(userbot_service.send_direct_message)
     admin_bot_service.set_manual_reply_checker(userbot_service.check_owner_manually_replied)
     scheduler_service.register_callbacks(

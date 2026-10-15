@@ -356,15 +356,30 @@ class UserbotService:
                 self._unknown_sender_notified[sender_id] = now_ts
                 if self._notification_callback:
                     try:
-                        preview_text = incoming_text[:120] if incoming_text else "[Fayl / Ovozli xabar / Media]"
-                        user_ref = f"@{username}" if username else f"ID: {sender_id}"
+                        safe_first = html.escape(first_name)
+                        safe_preview = html.escape(incoming_text[:120]) if incoming_text else "[Fayl / Ovozli xabar / Media]"
+                        user_ref = f"@{username} | ID: {sender_id}" if username else f"ID: {sender_id}"
                         alert_msg = (
-                            f"🔔 Yangi inson yozdi:\n"
-                            f"👤 {first_name} ({user_ref})\n"
-                            f"💬 Xabar: \"{preview_text}\"\n"
-                            f"💡 Ro'yxatga qo'shish uchun: /add_contact {sender_id}"
+                            f"🔔 <b>Yangi inson yozdi:</b>\n"
+                            f"👤 <b>{safe_first}</b> ({user_ref})\n"
+                            f"💬 <i>\"{safe_preview}\"</i>\n\n"
+                            f"💡 <i>Quyidagi tugmalar orqali 1 bosishda bazaga qo'shishingiz mumkin:</i>"
                         )
-                        asyncio.create_task(self._notification_callback(alert_msg))
+                        from aiogram.utils.keyboard import InlineKeyboardBuilder
+                        builder = InlineKeyboardBuilder()
+                        builder.button(text="⚡ Auto qo'shish", callback_data=f"quick_add:{sender_id}:auto")
+                        builder.button(text="📝 Draft qilish", callback_data=f"quick_add:{sender_id}:draft")
+                        builder.button(text="🔇 Mute", callback_data=f"quick_add:{sender_id}:mute")
+                        builder.adjust(3)
+                        markup = builder.as_markup()
+
+                        async def _send_notif():
+                            try:
+                                await self._notification_callback(alert_msg, reply_markup=markup)
+                            except TypeError:
+                                await self._notification_callback(alert_msg)
+
+                        asyncio.create_task(_send_notif())
                     except Exception as e_notif:
                         logger.warning(f"Failed to send unknown sender notification: {type(e_notif).__name__}")
             return

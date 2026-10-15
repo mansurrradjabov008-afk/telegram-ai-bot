@@ -393,6 +393,7 @@ class AdminBotService:
 
         self.bot = Bot(token=self.token) if self.token and not self.token.startswith("1234567890:") else None
         self.dp = Dispatcher(storage=MemoryStorage())
+        self.userbot: Optional[Any] = None
         self._userbot_send_fn: Optional[Callable] = None
         self._manual_reply_check_fn: Optional[Callable] = None
         self._pending_escalations: Dict[str, Dict[str, Any]] = {}
@@ -438,6 +439,10 @@ class AdminBotService:
     def set_style_service(self, style_service: Any):
         """Sets Writing Style service instance."""
         self.style_service = style_service
+
+    def set_userbot(self, userbot: Any):
+        """Sets active userbot service reference for entity resolution."""
+        self.userbot = userbot
 
     def set_userbot_sender(self, fn: Callable):
         self._userbot_send_fn = fn
@@ -4166,6 +4171,60 @@ class AdminBotService:
             await callback.answer("Rejimlar yangilandi")
             await _render_mode_panel(callback.message, is_callback=True)
 
+        @dp.callback_query(F.data.startswith("quick_add:"))
+        async def handle_quick_add(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            if len(parts) < 3:
+                return await callback.answer("Noto'g'ri buyruq.")
+            user_id = int(parts[1])
+            new_mode = parts[2]
+
+            existing = await self.db_manager.get_contact_by_id(user_id)
+            if existing:
+                await self.db_manager.update_contact_mode(user_id, new_mode)
+                display_name = f"@{existing.username}" if existing.username else existing.full_name
+            else:
+                username = None
+                full_name = f"Kontakt {user_id}"
+                if self.userbot and hasattr(self.userbot, "get_client") and self.userbot.get_client():
+                    try:
+                        tg_user = await self.userbot.get_client().get_entity(user_id)
+                        if tg_user:
+                            username = getattr(tg_user, "username", None)
+                            first = getattr(tg_user, "first_name", None) or ""
+                            last = getattr(tg_user, "last_name", None) or ""
+                            full_name = f"{first} {last}".strip() or username or full_name
+                    except Exception as e_ent:
+                        logger.warning(f"Could not resolve entity for quick_add {user_id}: {type(e_ent).__name__}")
+
+                await self.db_manager.upsert_contact(
+                    user_id=user_id,
+                    username=username,
+                    full_name=full_name,
+                    relationship_type="general",
+                    addressing_style="siz",
+                    custom_instructions="Samimiy muloqot",
+                    mode=new_mode,
+                )
+                display_name = f"@{username}" if username else full_name
+
+            mode_labels = {
+                "auto": "⚡ Auto (Avtomatik)",
+                "draft": "📝 Draft (Tasdiqlash bilan)",
+                "mute": "🔇 Mute (Ovozsiz)",
+            }
+            lbl = mode_labels.get(new_mode, new_mode)
+            await callback.answer(f"✅ {display_name} bazaga qo'shildi! Rejim: {lbl}", show_alert=True)
+            if callback.message:
+                curr_text = callback.message.text or ""
+                new_text = f"{curr_text}\n\n✅ <b>Bazaga qo'shildi!</b> Tanlangan rejim: <b>{lbl}</b>"
+                try:
+                    await callback.message.edit_text(new_text, reply_markup=None, parse_mode="HTML")
+                except Exception:
+                    pass
+
         # ------------------ CONTACT MEMORY MANAGEMENT (PHASE 6) ------------------
         async def _resolve_target_contact(target_str: str) -> Optional[Any]:
             target_str = target_str.strip()
@@ -5404,9 +5463,9 @@ class AdminBotService:
             parse_mode="HTML",
         )
 
-    async def send_notification(self, text: str):
-        """Sends notification to Boss safely."""
+    async def send_notification(self, text: str, reply_markup: Any = None):
+        """Sends notification to Boss safely with optional inline buttons."""
         if not self.bot or not self.admin_id:
             logger.info(f"Notification to Boss (chars={len(text)})")
             return
-        await safe_send(bot=self.bot, chat_id=self.admin_id, text=text, parse_mode="HTML")
+        await safe_send(bot=self.bot, chat_id=self.admin_id, text=text, reply_markup=reply_markup, parse_mode="HTML")

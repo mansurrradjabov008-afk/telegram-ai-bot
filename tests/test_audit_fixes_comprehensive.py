@@ -330,3 +330,53 @@ async def test_addressing_style_respects_explicit_owner_instruction_for_siz():
     assert len(captured_prompts) > 0
     prompt_used = captured_prompts[0]
     assert 'MUROJAAT SHAKLI: "SIZ"' in prompt_used
+
+
+# ============================================================================
+# 7. 1-TAP CRM INLINE BUTTON QUICK ADD CALLBACK
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_quick_add_contact_callback(tmp_path):
+    from bot.admin_bot import AdminBotService
+    from database.connection import init_db
+    from database.crud import DatabaseManager
+
+    db_file = tmp_path / "test_quick_add.db"
+    await init_db(db_file)
+    db_manager = DatabaseManager(db_path=db_file)
+
+    service = AdminBotService(
+        db_manager=db_manager,
+        ai_engine=MagicMock(),
+        scheduler_service=MagicMock(),
+        token="123456:mock_token",
+        admin_id=7992504344,
+    )
+
+    quick_add_handler = None
+    for h in service.dp.callback_query.handlers:
+        name = getattr(h.callback, "__name__", "")
+        if name == "handle_quick_add":
+            quick_add_handler = h.callback
+            break
+
+    assert quick_add_handler is not None, "handle_quick_add callback handler not found"
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = 7992504344
+    fake_cb.data = "quick_add:99887766:auto"
+    fake_cb.message = MagicMock()
+    fake_cb.message.text = "Yangi inson yozdi"
+    fake_cb.message.edit_text = AsyncMock()
+    fake_cb.answer = AsyncMock()
+
+    # Trigger quick add
+    await quick_add_handler(fake_cb)
+
+    # Verify contact was saved into DB with auto mode
+    saved_contact = await db_manager.get_contact_by_id(99887766)
+    assert saved_contact is not None
+    assert saved_contact.mode == "auto"
+    fake_cb.answer.assert_awaited()
+    fake_cb.message.edit_text.assert_awaited()
