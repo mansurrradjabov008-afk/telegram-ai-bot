@@ -400,16 +400,23 @@ Return JSON strictly matching this schema:
         detected_reg = detect_register(incoming_text)
 
         addressing = getattr(contact_profile, "addressing_style", None) if contact_profile else None
+        inst = (getattr(contact_profile, "custom_instructions", "") or "").lower()
+        rel_type = (getattr(contact_profile, "relationship_type", "") or "").lower()
+        mem_lower = (memory_context or "").lower()
+        has_strict_siz = any(w in inst for w in ["qat'iy siz", "faqat siz", "rasmiy", "sizlash shart", "doim siz"])
 
-        # If incoming text clearly uses informal "sen" register (imperatives, slang, -san verbs):
-        # We adapt dynamically to "sen" unless custom instructions explicitly demand formal "siz"
-        if detected_reg == "sen":
-            inst = (getattr(contact_profile, "custom_instructions", "") or "").lower()
-            if not any(w in inst for w in ["qat'iy siz", "faqat siz", "rasmiy", "sizlash shart"]):
-                addressing = "sen"
+        # Check if background memory facts or custom instructions explicitly indicate kinship/informality
+        # (e.g. peer calls owner 'uka', 'bro', 'jigar', or relationship is close friend/brother)
+        informal_clues = any(w in mem_lower for w in ["'uka'", "'bro'", "'jigar'", "uka deb", "bro deb", "jigar deb", "og'ayni deb"])
+        informal_rel = any(w in rel_type for w in ["bro", "dost", "do'st", "jigar", "dustim", "qadrdon"])
+
+        # If informal relationship or memory facts establish friendly closeness,
+        # adapt to "sen" unless formal "siz" is strictly mandated by owner instructions:
+        if not has_strict_siz and (informal_clues or detected_reg == "sen"):
+            addressing = "sen"
         elif not addressing:
             lower_in = incoming_text.lower()
-            if any(w in lower_in for w in ["bro", "jigar", "og'ayni", "ogayni", "qalesan", "nima qvosan"]):
+            if any(w in lower_in for w in ["bro", "jigar", "og'ayni", "ogayni", "qalesan", "nima qvosan"]) or (not has_strict_siz and informal_rel):
                 addressing = "sen"
             else:
                 addressing = detected_reg or "siz"

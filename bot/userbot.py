@@ -9,6 +9,7 @@ import asyncio
 import html
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any
 from telethon import TelegramClient, events
@@ -52,6 +53,9 @@ class UserbotService:
         # Debounce state: buffers per sender_id and background timer tasks
         self._debounce_buffers: Dict[int, List[Dict[str, Any]]] = {}
         self._debounce_tasks: Dict[int, asyncio.Task] = {}
+
+        # Throttled notification timestamps for unlisted/unknown senders
+        self._unknown_sender_notified: Dict[int, float] = {}
 
         self._is_running = False
 
@@ -266,6 +270,7 @@ class UserbotService:
         """
         Sends message to peer with Telethon FloodWaitError safety.
         Safely waits out the flood restriction and retries, never crashing.
+        Falls back to plain text (parse_mode=None) on markdown formatting/parse errors.
         """
         if not self.client:
             logger.error("Client not initialized; cannot send message.")
@@ -282,8 +287,19 @@ class UserbotService:
                 )
                 await asyncio.sleep(wait_time + 1)
             except Exception as e:
-                logger.error(f"Error sending message to {peer}: {type(e).__name__}")
-                return None
+                logger.warning(
+                    f"Send error with markdown for {peer}: {type(e).__name__}. "
+                    f"Falling back to plain text (parse_mode=None)..."
+                )
+                try:
+                    return await self.client.send_message(peer, text, parse_mode=None)
+                except FloodWaitError as fwe:
+                    wait_time = int(getattr(fwe, "seconds", 1))
+                    await asyncio.sleep(wait_time + 1)
+                    return await self.client.send_message(peer, text, parse_mode=None)
+                except Exception as e_plain:
+                    logger.error(f"Error sending plain text message to {peer}: {type(e_plain).__name__}")
+                    return None
         return None
 
     async def _handle_private_message(self, event):
@@ -333,6 +349,24 @@ class UserbotService:
             logger.info(
                 f"🛡 [FILTER] Sender {peer_repr} ({first_name}) is not in /contacts. Pipeline ignored."
             )
+            # Notify owner via cockpit notification callback (throttled to 1 alert per sender per hour)
+            now_ts = time.time()
+            last_alert = self._unknown_sender_notified.get(sender_id, 0)
+            if now_ts - last_alert > 3600:
+                self._unknown_sender_notified[sender_id] = now_ts
+                if self._notification_callback:
+                    try:
+                        preview_text = incoming_text[:120] if incoming_text else "[Fayl / Ovozli xabar / Media]"
+                        user_ref = f"@{username}" if username else f"ID: {sender_id}"
+                        alert_msg = (
+                            f"🔔 Yangi inson yozdi:\n"
+                            f"👤 {first_name} ({user_ref})\n"
+                            f"💬 Xabar: \"{preview_text}\"\n"
+                            f"💡 Ro'yxatga qo'shish uchun: /add_contact {sender_id}"
+                        )
+                        asyncio.create_task(self._notification_callback(alert_msg))
+                    except Exception as e_notif:
+                        logger.warning(f"Failed to send unknown sender notification: {type(e_notif).__name__}")
             return
 
         # Step 2: Mode lookup
@@ -553,8 +587,27 @@ class UserbotService:
         )
 
         if not reply_text:
-            logger.warning(f"Empty AI reply generated for {peer_repr}; skipping.")
-            return
+            if hasattr(self.ai_engine, "_dynamic_smart_fallback"):
+                reply_text = self.ai_engine._dynamic_smart_fallback(
+                    combined_text,
+                    addressing=getattr(contact, "addressing_style", "siz")
+                )
+            if not reply_text:
+                logger.warning(f"Empty AI reply generated for {peer_repr}; notifying owner.")
+                if self._notification_callback:
+                    try:
+                        preview = combined_text[:150]
+                        asyncio.create_task(
+                            self._notification_callback(
+                                f"⚠️ [OGOHLANTIRISH] AI javob yarata olmadi.\n"
+                                f"👤 Suhbatdosh: {peer_repr} ({first_name})\n"
+                                f"💬 Xabar: \"{preview}\"\n"
+                                f"Iltimos, o'zingiz qo'lda yozing."
+                            )
+                        )
+                    except Exception as e_n:
+                        logger.warning(f"Failed to notify owner about empty AI reply: {type(e_n).__name__}")
+                return
 
         # Step 6: Sensitive Guard check
         guard_result = await check_sensitive(
@@ -608,14 +661,19 @@ class UserbotService:
                     sensitive_reason = None
 
         # Writing Style Honesty Guard (Phase 5, Rule D6)
-        # If incoming message asks whether AI/bot or owner, route to draft with "Muhim - tasdiq kerak"
+        # If incoming message asks whether AI/bot or owner:
+        # In draft mode -> route to draft with "Muhim - tasdiq kerak"
+        # In auto mode -> let Rule 11 of AI Engine naturally answer with human wit ("E qanaqa bot jigar...")
         if getattr(self, "style_service", None) and contact and getattr(contact, "user_id", None):
             try:
                 is_style_active = await self.style_service.is_style_enabled_for_contact(contact.user_id)
                 if is_style_active and self.style_service.check_honesty_question(combined_text):
-                    is_sensitive = True
-                    sensitive_reason = "Muhim - tasdiq kerak"
-                    logger.info(f"Honesty check triggered for {peer_repr}. Routing to draft.")
+                    if mode != "auto":
+                        is_sensitive = True
+                        sensitive_reason = "Muhim - tasdiq kerak"
+                        logger.info(f"Honesty check triggered for {peer_repr} in draft mode. Routing to draft.")
+                    else:
+                        logger.info(f"Honesty question detected for {peer_repr} in auto mode. Allowing AI Rule 11 natural human comeback.")
             except Exception as e:
                 logger.warning(f"Error during style honesty check for {peer_repr}: {type(e).__name__}")
 
