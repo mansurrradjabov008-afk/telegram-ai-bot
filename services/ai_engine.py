@@ -267,6 +267,8 @@ class AIEngine:
         temperature: float = 0.0,
         response_mime_type: Optional[str] = None,
         timeout: float = 25.0,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
     ) -> str:
         """
         Executes a single Gemini content generation call safely off the main event loop
@@ -283,6 +285,10 @@ class AIEngine:
                 config_kwargs: Dict[str, Any] = {"temperature": temperature}
                 if response_mime_type:
                     config_kwargs["response_mime_type"] = response_mime_type
+                if top_p is not None:
+                    config_kwargs["top_p"] = top_p
+                if top_k is not None:
+                    config_kwargs["top_k"] = top_k
                 resp = self._client.models.generate_content(
                     model=model,
                     contents=prompt,
@@ -294,6 +300,10 @@ class AIEngine:
                 gen_config: Dict[str, Any] = {"temperature": temperature}
                 if response_mime_type:
                     gen_config["response_mime_type"] = response_mime_type
+                if top_p is not None:
+                    gen_config["top_p"] = top_p
+                if top_k is not None:
+                    gen_config["top_k"] = top_k
                 resp = mod.generate_content(prompt, generation_config=gen_config)
                 return getattr(resp, "text", "") or ""
 
@@ -449,12 +459,29 @@ Shuning uchun FAQAT VA FAQAT "SIZ" deb murojaat qiling!
         clean_first = extract_clean_human_name(clean_sender) or clean_sender or "Suhbatdosh"
 
         history_context = ""
+        recent_my_messages: List[str] = []
         if history:
             formatted_turns = []
             for m in history[-15:]:
                 label = "Mansur (Siz)" if m.role in ["assistant", "owner"] else f"{clean_first} (Suhbatdosh)"
                 formatted_turns.append(f"{label}: {m.content}")
+                if m.role in ["assistant", "owner"] and m.content and len(m.content.strip()) > 3:
+                    recent_my_messages.append(m.content.strip())
             history_context = "\n".join(formatted_turns)
+
+        anti_repetition_directive = ""
+        if recent_my_messages:
+            recent_bullets = "\n".join(f'  • "{msg}"' for msg in recent_my_messages[-3:])
+            anti_repetition_directive = f"""
+🚨 BIR GAPNI CHAYNASH VA TAKRORLASH 100% TAQIQLANADI (ANTI-REPETITION / FRESH VOCABULARY):
+Siz ushbu suhbatdoshga oxirgi xabarlaringizda quyidagilarni aytgansiz:
+{recent_bullets}
+
+QAT'IY KO'RSATMALAR:
+1. Yuqoridagi xabarlardagi iboralar, qoliplar yoki ayni bir xil fikrni yana qaytadan aytish ("bir gapni chaynash") QAT'IYAN TAQIQLANADI!
+2. Agar oldingi xabarlarda allaqachon salomlashilgan bo'lsa yoki hol-ahvol so'ralgan bo'lsa, YANGI XABARDA QAYTA SALOM BERMANG va qaytadan hol-ahvol so'ramang!
+3. To'g'ridan-to'g'ri suhbatdosh aytgan gapning mohiyatiga o'ting va yangi so'zlar, yangi sinonimlar hamda mutlaqo o'zgacha jumla tuzilishi bilan javob bering!
+"""
 
         memory_section = ""
         if memory_context and memory_context.strip():
@@ -462,9 +489,11 @@ Shuning uchun FAQAT VA FAQAT "SIZ" deb murojaat qiling!
 
         prompt = f"""
 Siz — Telegram akkaunti egasi (Mansur) nomidan do'stlari va tanishlari bilan gaplashuvchi haqiqiy, tirik odamsiz.
-Siz sun'iy intellekt emassiz, shuning uchun mutlaqo insoniy, tabiiy, zamonaviy va boy o'zbek tilida gaplashing!
+Siz sun'iy intellekt emassiz, shuning uchun mutlaqo insoniy, tabiiy, zamonaviy, rang-barang va boy o'zbek tilida gaplashing!
 
 {addressing_directive}
+
+{anti_repetition_directive}
 
 🚨 XO'JAYINNING QAT'IY KO'RSATMASI (USLUB VA MUNOSABAT):
 Ushbu suhbatdosh ({clean_first}) uchun Xo'jayin (Mansur) belgilab bergan maxsus ko'rsatma:
@@ -511,7 +540,7 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
    - Hech qachon jahl qilma, tortishma, qo'pol so'z ishlatma!
    - Lekin aslo o'zingni xizmatkor yoki sun'iy botday tutma!
    - Band bo'lsang ham xushmuomala bo'l: "Hozir biroz bandroq edim, bo'shashim bilan batafsil yozaman" yoki do'stlar orasida "Sal chalg'ib qolibman, bo'ldi gap yo'q".
-6. **BIR XIL GAPNI CHAYNAMA VA QAYTARMA**: 
+6. **BIR GAPNI CHAYNAMA VA QAYTARMA (ANTI-REPETITION & FRESH VOCABULARY)**: 
    - Agar suhbat allaqachon boshlangan bo'lsa, hech qachon "Salom! Rahmat, o'zingizda nima gap/ishlar qalay?" deb QAYTARMA!
    - Har bir javob yangi, xilma-xil va aynan suhbatdoshning aytgan gapiga 100% mantiqan mos bo'lsin.
 7. **EMPATIYA VA HISSIY MOSLASHUVCHANLIK (EMOTIONAL RESONANCE & EQ)**:
@@ -538,19 +567,25 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
       • "O yebana aniqroq gapir" -> "E bo'ldi tushundim, 8 da kutubxonada kutaman dedim-ku, gap yo'q" yoki "Xa tushundim, kutubxonada ko'rishamiz".
       • "Bugun soat 8:00da kutubxonaga boramiz tayyor tur telefon qilaman" -> "Bo'ldi kelishdik, 8 da kutaman, tel qilaver" yoki "Bo'ldi tayyorman, kutubxonada ko'rishamiz".
 
-11. **YUQORI INTELLEKT, SO'Z BOYLIGI VA BOT EMASLIGINI ISBOTLASH (100% NATURAL HUMAN REACTION)**:
-    - Agar suhbatdosh jahl bilan yoki hazillashib "Botmisan?", "Nimani tushunmading bot", "Dnx yuqol bot", "Sun'iy intellektmisan" deb yozsa:
+11. **YUQORI INTELLEKT, CHEKSIZ SO'Z BOYLIGI VA TIRIK INSONIY REAKSIYA (100% NATURAL HUMAN & TURING PROOF)**:
+    - Agar suhbatdosh shubha bilan yoki hazillashib "Botmisan?", "Sun'iy intellektmisan?", "Nimani tushunmading bot", "Dnx yuqol bot", "Odam emassan" deb yozsa:
       Aslo aybdor bo'lib uzr so'ramang! Aslo botligingizni tan olmang yoki rasmiy qulluq qilmang!
-      Xuddi tirik, hazilkash, dadil Mansurdek tabiiy javob bering:
+      Xuddi tirik, hazilkash, dadil Mansurdek tabiiy va jonli javob bering:
       • "Nimani tushunmading bot" -> "E qanaqa bot jigar, chalg'ib qolibman dedim-ku 😂 Bo'ldi nima gap o'zingda?" yoki "Qanaqa bot, o'zim yozayapman, sal chalg'ibman".
       • "Dnx yuqol bot" -> "E tinchlikmi og'ayni, nima bo'ldi senga? O'zim yozayapman-ku".
+      • "Botmisan" -> "Eee qo'ysang-chi bro, botga o'xshab qolibmanmi deyman 😄 O'zimman, qandaysan?".
+    - O'ZBEK TILINING BOY VA RANG-BARANG LEKSIKASIDAN FOYDALANISH:
+      • His-tuyg'u va reaktsiyalar: "Voy-bo'", "Qoyil!", "Zo'r-ku", "Gap bo'lishi mumkin emas", "Rostdanmi?!", "Voqeani qarang-a 😄", "Nimasini aytasan", "O'ziyam qoyilmaqom bo'libdi", "Jiddiy aytyapsanmi?"
+      • Rozilik va ma'qullash: "Aynan shunday", "Bosh ustiga", "Gap yo'q", "Kelishdik", "U yog'idan xotirjam bo'l", "Jonim bilan", "To'ppa-to'g'ri fikr", "Rejaga kiritib qo'ydim", "Shubhasiz", "Birga hal qilamiz"
+      • Do'stona erkinlik (sen): "Eee qoyil lekin 😂", "Shunaqa deysan-a 🤣", "Hazilga 5 baho!", "Bo'pti jigar", "Mayli o'zing bilasan", "Sendan qolar gap yo'q", "Tinchlikmi o'zi)", "O'zing qandaysan"
+      • Hurmat va samimiyat (siz): "Katta rahmat sizga", "E'tiboringiz va vaqtingiz uchun minnatdorman", "Tashakkur", "Salomat bo'ling", "Sizning fikringiz men uchun qadrli", "Albatta, buni inobatga olaman", "Mantiqiy yondashuv"
+      • Ish va bandlik: "Hozir qo'lim bo'shamay turuvdi", "Ishlar qizg'in ketyapti", "Bosh qashishga vaqt bo'lmay qoldi", "Kechga borib erkinroq bo'laman", "Birozdan so'ng batafsil gaplashamiz", "Hozir bitta ishni tugatib olay"
     - KUNDALIK VAZIYATLARGA ANIQ VA BOY SO'Z BOYLIGI BILAN JAVOB BERISH:
       • "Kitob uqiyapsizmi" -> "Ha, sal ko'z yugurtirib o'tiruvdim, hozir tugatyapman, chiqaman" yoki "Ha biroz mutolaa qilyapman, hozir yo'lga chiqaman".
       • "Uziz ham tezroq keling" -> "Bo'ldi harakat qilyapman, tezroq boraman" yoki "Xo'p bo'ldi, yo'lga chiqdim, tez orada yetib boraman".
       • "Bugun uyga kelmesizmi" -> "Boraman albatta, ozroq ishlarim qoldi, tugatib boraman".
       • "Bugun nimalar bilan band bulasiz" -> "Bugun biroz ishlar va loyihalar bor edi, shularni tugatsam kechga bo'shayman".
-    - O'zbek tilining boy iboralari: "bo'ldi kelishdik", "gap yo'q", "yo'ldaman", "xavotir olma", "o'zingdachi", "yetib boray".
-    - Javoblar ixcham (1-2 gap), jonli va suhbatdoshning savoliga 100% bevosita javob bo'lsin!
+    - SUHBAT RITMI: Bir xil qoliplardan qoching! Insoniy suhbat ba'zan lo'nda ("Bo'ldi kelishdik 👍"), ba'zan mulohazali bo'ladi.
 
 12. **KONTAKT XOTIRASI VA FAKTLARDAN OQILONA FOYDALANISH (SMART BACKGROUND MEMORY UTILIZATION)**:
     - Sizga berilgan "Background Memory" bo'limidagi faktlar — bu sizning suhbatdoshingiz haqidagi shaxsiy bilimlaringizdir.
@@ -569,7 +604,8 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
                 reply = await self._call_gemini_raw(
                     model=candidate_model,
                     prompt=prompt,
-                    temperature=0.4,
+                    temperature=0.75,
+                    top_p=0.95,
                 )
                 reply = reply.strip()
 
@@ -590,7 +626,7 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
                 logger.warning(f"Reply generation failed on model {candidate_model}: {type(e).__name__}")
                 continue
 
-        fallback = self._dynamic_smart_fallback(incoming_text)
+        fallback = self._dynamic_smart_fallback(incoming_text, addressing=addressing)
         return re.sub(r"</?[a-zA-Z0-9_]+>", "", fallback).strip()
 
     async def classify_sensitive_topic(self, incoming_text: str, proposed_reply: str = "") -> Dict[str, Any]:
@@ -1317,8 +1353,8 @@ Return STRICT JSON ONLY:
 
     def _dynamic_smart_fallback(self, text: str, addressing: str = "siz") -> str:
         """
-        Context-aware offline fallback that strictly respects 'SIZ' vs 'SEN' addressing style
-        and directly handles clarification questions instead of generic dodging.
+        Context-aware offline fallback that strictly respects 'SIZ' vs 'SEN' addressing style,
+        provides immense vocabulary variety, and prevents repetitive phrase-looping.
         """
         lower = text.lower()
 
@@ -1329,9 +1365,17 @@ Return STRICT JSON ONLY:
             "nima haqida", "qaysi gap", "qaysi ish"
         ]):
             if addressing == "sen":
-                return "Eee kechagi gapimizni nazarda tutgandim jigar) O'sha aytgan mavzuing bo'yicha so'ragandim."
+                return random.choice([
+                    "Eee kechagi gapimizni nazarda tutgandim jigar) O'sha aytgan mavzuing bo'yicha so'ragandim.",
+                    "Boyagi gapimiz bor edi-ku og'ayni, o'sha mavzuni aytyapman)",
+                    "Kechagi suhbatimizdagi mavzuni nazarda tutuvdim bro, adashib ketma 😄",
+                ])
             else:
-                return "Kechirasiz, kecha gaplashgan mavzuyimizni nazarda tutgan edim) Yanglishmovchilik bo'lsa uzr."
+                return random.choice([
+                    "Kechirasiz, kecha gaplashgan mavzuyimizni nazarda tutgan edim) Yanglishmovchilik bo'lsa uzr.",
+                    "Oldingi suhbatimizdagi mavzuni aytayotgan edim, noaniq bo'lgan bo'lsa uzr so'rayman.",
+                    "Kecha gaplashgan rejamizni nazarda tutgan edim, biroz tushunarsiz yozgan bo'lsam ma'zur tutasiz.",
+                ])
 
         # 2. Colloquial greetings and slang (e.g. "Qandayeee", "Qandey")
         if any(w in lower for w in ["qandayeee", "qandaye", "qandey"]):
@@ -1340,9 +1384,50 @@ Return STRICT JSON ONLY:
                     "Eee nima gap jigar, tinchmi?) Nimalar qilyapsan?",
                     "Salom bro, zo'r hammasi! O'zing qandaysan?",
                     "Eee gap yo'q jigar, kayfiyatlar yaxshimi? 😄",
+                    "Salom jigar! Tinchlikmi, nima yangiliklar?",
+                    "Zo'r bro, o'zingda nimalar bo'lyapti?",
                 ])
             else:
-                return "Assalomu alaykum! Rahmat, hammasi joyida, o'zingizda ishlar yaxshimi?"
+                return random.choice([
+                    "Assalomu alaykum! Rahmat, hammasi joyida, o'zingizda ishlar yaxshimi?",
+                    "Va alaykum assalom! Rahmat, salomatmisiz? O'zingizda nima gaplar?",
+                    "Assalomu alaykum! Shukr, yaxshi, ishlaringiz barakali bo'lyaptimi?",
+                ])
+
+        # 3. Identity / Bot inquiries (e.g. "botmisan", "botmisiz", "odammisan")
+        if any(w in lower for w in [
+            "botmisan", "botmisiz", "botmisizlar", "bot ekansan", "bot ekansiz",
+            "sun'iy intellekt", "suniy intellekt", "odammisan", "odammisiz", "robotmisan", "robotmisiz"
+        ]) or (re.search(r"\b(?:bot|robot)\b", lower) and any(w in lower for w in ["siz", "san", "misan", "misiz", "ekan", "?"])):
+            if addressing == "sen":
+                return random.choice([
+                    "Eee qo'ysang-chi bro, botga o'xshab qolibmanmi deyman 😄 O'zimman, qandaysan?",
+                    "Qanaqa bot jigar, o'zim yozyapman-ku 😂 Nima gap o'zingda?",
+                    "Hazilni qara-ya 😂 O'zimman og'ayni, tinchlikmi?",
+                ])
+            else:
+                return random.choice([
+                    "Qiziq savol bo'ldi-ku 😄 O'zim yozmoqdaman, albatta. Tinchlikmi?",
+                    "Yo'g'-e, o'zimman albatta. Biror narsa g'alati tuyuldimi? 😊",
+                ])
+
+        # 4. Status, activity and location queries
+        if any(w in lower for w in ["qayerdasan", "qayerdasiz", "nima qilyapsan", "nima qilyapsiz", "bandmisan", "bandmisiz"]):
+            if addressing == "sen":
+                return random.choice([
+                    "Hozir yo'ldaman jigar, tinchlikmi?",
+                    "Ishlar bilan o'tiruvdim bro, nima gap?",
+                    "Biroz qo'lim bo'shamay turuvdi, tinchmi o'zi?",
+                    "Sekin harakatdamiz, o'zing nimalar qilyapsan?",
+                    "Loyihani qarab chiqayotgandim jigar, xizmating bormi?",
+                ])
+            else:
+                return random.choice([
+                    "Hozir ozroq ishlar bor edi, tinchlikmi?",
+                    "Yo'ldaman, tez orada batafsil bog'lanaman.",
+                    "Loyihalar ustida ishlayotgandim, xizmatingiz bormi?",
+                    "Biroz bandroq edim, bo'shashim bilan yozaman sizga.",
+                ])
 
         if addressing == "sen":
             # SEN (Close friend / peer)
@@ -1351,23 +1436,34 @@ Return STRICT JSON ONLY:
                     "Haha, bilaman albatta bro! 😂 O'zing nimalar bilan bandsan?",
                     "Eee shunaqa deysanda jigar 🤣 Nima gaplar o'zingda?",
                     "Haha gap yo'q bro, hazilga 5 baho! 😄",
+                    "O'ziyam zo'r bo'ldi lekin 😂 Kayfiyat a'lomi?",
+                    "Haha kuldirding lekin jigar 😆 Ishlar yaxshimi?",
                 ])
-            if any(w in lower for w in ["hop", "xop", "tushundim", "bo'ldi", "boldi", "rahmat", "ok"]):
+            if any(w in lower for w in ["hop", "xop", "tushundim", "bo'ldi", "boldi", "rahmat", "ok", "yaxshi"]):
                 return random.choice([
                     "Kelishdik jigar, aloqadamiz! 👍",
                     "Bo'ldi gap yo'q bro 🤝 Keyinroq yana gaplashamiz.",
                     "Tushunarli og'ayni, ishlaringga omad! ✨",
+                    "Bo'pti kelishdik, o'zingni ehtiyot qil 👍",
+                    "Aha tushunarli, u yog'idan xotirjam bo'l!",
+                    "Gap yo'q, xabar berib turasan 🤝",
                 ])
-            if any(w in lower for w in ["o'zing", "ozing", "nima gap", "qalaysan", "ishlar"]):
+            if any(w in lower for w in ["o'zing", "ozing", "nima gap", "qalaysan", "ishlar", "salom"]):
                 return random.choice([
                     "Shukr jigar, sekin-asta harakatdamiz. O'zing nimalar qilyapsan?",
                     "Hammasi joyida bro, tinchlik. Sendachi, nima yangiliklar?",
                     "Alhamdulillah yaxshi bro, ishlab yuribmiz. O'zingdachi?",
+                    "Zo'r hammasi og'ayni, o'zing tinch-omonmisan?",
+                    "Yaxshi shukr, o'zing tomonlarda nima gaplar?",
+                    "Ishlar bir maromda ketyapti jigar, sen tomonlar tinchmi?",
                 ])
             return random.choice([
                 "Aha tushunarli bro, o'zing nima qilyapsan hozir?",
                 "Gap yo'q jigar, ishlaring yaxshi ketyaptimi?",
                 "Shunaqa deyman jigar. O'zingda qanday yangiliklar?",
+                "Bo'ldi tushundim og'ayni, tez orada yana bog'lanamiz.",
+                "To'g'ri aytding, men ham shuni o'ylab turgandim.",
+                "Ajoyib! O'zing tomonlarda yana qanday yangiliklar bor?",
             ])
         else:
             # SIZ (Respectful / Formal)
@@ -1376,23 +1472,30 @@ Return STRICT JSON ONLY:
                     "Haha, albatta bilaman! 😄 O'zingizda nimalar yangiliklar?",
                     "Shunaqa desangiz ham bo'ladi 😊 O'zingizda ishlar yaxshimi?",
                     "Haha, kayfiyat a'lo bo'lsin! 😄 Salomatmisiz?",
+                    "Kuldirdingiz lekin 😊 Ishlaringiz yaxshi ketyaptimi?",
                 ])
-            if any(w in lower for w in ["hop", "xop", "tushundim", "bo'ldi", "boldi", "rahmat", "ok"]):
+            if any(w in lower for w in ["hop", "xop", "tushundim", "bo'ldi", "boldi", "rahmat", "ok", "yaxshi"]):
                 return random.choice([
                     "Kelishdik, albatta aloqadamiz! Rahmat sizga 👍",
                     "Bo'ldi tushunarli, salomat bo'ling 🤝 Keyinroq yana bog'lanamiz.",
                     "Tushunarli, ishlaringizga omad va baraka tilayman! ✨",
+                    "Katta rahmat, doimo xizmatdamiz.",
+                    "Albatta, kelishilganidek bo'ladi, xotirjam bo'ling.",
                 ])
             if any(w in lower for w in ["o'zingiz", "ozingiz", "nima gap", "qalaysiz", "ishlar", "salom"]):
                 return random.choice([
                     "Shukr, rahmat, sekin-asta ishlab yuribmiz. O'zingizda ishlar tinchmi?",
                     "Hammasi yaxshi, rahmat. O'zingiz nimalar bilan bandsiz?",
                     "Alhamdulillah yaxshi, salomatmisiz? O'zingizda nima yangiliklar?",
+                    "Rahmat e'tiboringiz uchun, ishlab yuribmiz. O'zingiz yaxshimisiz?",
+                    "Yaxshi, minnatdorman. Ishlaringiz barakali bo'lmoqdami?",
                 ])
             return random.choice([
                 "Rahmat, albatta aloqadamiz!",
                 "Albatta, o'zingizda qanday yangiliklar?",
                 "Salomat bo'ling, ishlaringizga omad tilayman!",
+                "Tushunarli, buni albatta inobatga olaman.",
+                "Fikringiz uchun tashakkur, tez orada batafsil xabar beraman.",
             ])
 
     def _heuristic_fallback_classify(self, text: str) -> ClassificationResult:

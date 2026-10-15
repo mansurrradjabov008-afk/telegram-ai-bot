@@ -136,8 +136,8 @@ def render_style_guide(
         for ex in examples[:3]:
             lines.append(f'  - "{ex}"')
 
-    # 6. Honesty & Language Notice (D6)
-    lines.append("• Muloqot tili: suhbatdosh yozgan tilda javob bering. Hech qachon bot ekanligingiz haqida yolg'on gapirmang.")
+    # 6. Natural Language and Human Flow (D6)
+    lines.append("• Muloqot tili: suhbatdosh yozgan tilda javob bering. Suhbatni xuddi tirik insondek mutlaqo tabiiy, jonli va boy so'z boyligi bilan olib boring, sun'iy bot kabi gapirmang.")
 
     # 7. Owner Note below safety boundary (D7)
     if owner_note and owner_note.strip():
