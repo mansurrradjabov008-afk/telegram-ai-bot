@@ -569,10 +569,21 @@ class UserbotService:
             f"Processing debounced batch ({len(batch)} messages) for {peer_repr} (chars={len(combined_text)})"
         )
 
-        # Dynamic Register & Addressing Adaptation (Street Uzbek / Sen detection)
+        # Dynamic Register & Addressing Adaptation
+        from services.ai_engine import is_respect_demanded
         from services.style_sampler import detect_register
+
+        respect_demanded = is_respect_demanded(combined_text)
         detected_reg = detect_register(combined_text)
-        if detected_reg == "sen" and contact and contact.addressing_style == "siz":
+
+        if respect_demanded and contact:
+            logger.info(f"Respect demanded by {peer_repr} ('sansirama'/'aka'/'sizla'). Updating addressing style to 'siz'.")
+            contact.addressing_style = "siz"
+            try:
+                await self.db_manager.update_addressing_style(user_id=contact.user_id, addressing_style="siz")
+            except Exception as e:
+                logger.warning(f"Failed to persist addressing style 'siz' for {peer_repr}: {type(e).__name__}")
+        elif detected_reg == "sen" and contact and contact.addressing_style == "siz":
             inst = (contact.custom_instructions or "").lower()
             if not any(w in inst for w in ["qat'iy siz", "faqat siz", "rasmiy", "sizlash shart"]):
                 logger.info(f"Dynamic register detected 'sen' for {peer_repr}. Updating contact addressing style.")

@@ -108,6 +108,34 @@ def extract_clean_first_name(full_name: str) -> str:
     return parts[0] if parts else full_name.split()[0]
 
 
+def is_respect_demanded(text: str) -> bool:
+    """
+    Detects if incoming message explicitly demands to be addressed as 'siz' or 'aka',
+    or complains about being addressed informally ('sansirama', 'sandan kattaman', etc.).
+    """
+    if not text:
+        return False
+    t = text.lower()
+    patterns = [
+        r"san(?:si)?ram[aei]",           # sansirama, sansirami, sansrama, sensirama
+        r"sen(?:si)?ram[aei]",           # sensirama, sensirami, sensrama
+        r"s[ae]ndan\s+kattaman",         # sandan kattaman, sendan kattaman
+        r"yoshim\s+katta",               # yoshim katta
+        r"yoshing\s+kichik",             # yoshing kichik
+        r"aka\s+deb",                    # aka deb, aka deb murojat qil
+        r"aka\s+deng",                   # aka deng, aka de
+        r"\baka\s+de\b",
+        r"akamiz",                       # akamiz
+        r"akam\s+bo'?lasan",             # akam bo'lasan
+        r"\bsizla\b",                    # sizla
+        r"sizlang",                      # sizlang
+        r"siz\s+deb",                    # siz deb gapir, siz deb murojaat qil
+        r"siz\s+deng",                   # siz deng
+        r"dada\s+deb",                   # dada deb chaqir
+    ]
+    return any(re.search(p, t) for p in patterns)
+
+
 def sanitize_outreach_constraints(text: str, user_query: str, contact_name: str = "") -> str:
     """
     Deterministically enforces negative constraints and cleans styling.
@@ -353,6 +381,7 @@ ESCALATE TO BOSS (category: 'ESCALATE_TO_BOSS') ONLY IF:
 2. Direct demands for confidential secrets, passwords, passport, private home address.
 3. Explicit demands to speak strictly with Mansur in person ("Mansurga ber telefonni", "faqat Mansur bilan gaplashaman", "shaxsan o'zi kerak").
 4. Real legal, police, court threats or critical business agreements.
+5. Severe profanity, vulgar insults, aggressive harassment, or angry escalations ("kot", "jalab", "naxuy", "bich", "zaybal", sexual/familial abuse). AI must NEVER argue or bicker; escalate to Boss immediately.
 
 SAFE CHITCHAT & ROUTINE CONVERSATION (category: 'SAFE_CHITCHAT') FOR ALL NORMAL COMMUNICATIONS (AUTO-HANDLE):
 1. Clarifications and questions about recent messages: "Qaysi loyiha?", "Nima u?", "Qachon aytdingiz?", "Qaysi xabar?", "Tushunmadim?" -> SAFE_CHITCHAT! The AI must explain directly from conversation history, NEVER escalate!
@@ -408,6 +437,7 @@ Return JSON strictly matching this schema:
         # Smart dynamic register detection
         from services.style_sampler import detect_register
         detected_reg = detect_register(incoming_text)
+        respect_demanded = is_respect_demanded(incoming_text)
 
         addressing = getattr(contact_profile, "addressing_style", None) if contact_profile else None
         inst = (getattr(contact_profile, "custom_instructions", "") or "").lower()
@@ -420,9 +450,10 @@ Return JSON strictly matching this schema:
         informal_clues = any(w in mem_lower for w in ["'uka'", "'bro'", "'jigar'", "uka deb", "bro deb", "jigar deb", "og'ayni deb"])
         informal_rel = any(w in rel_type for w in ["bro", "dost", "do'st", "jigar", "dustim", "qadrdon"])
 
-        # If informal relationship or memory facts establish friendly closeness,
-        # adapt to "sen" unless formal "siz" is strictly mandated by owner instructions:
-        if not has_strict_siz and (informal_clues or informal_rel or detected_reg == "sen"):
+        # If user explicitly demanded respect ("sansirama", "aka deb", "sizla"), override unconditionally to "siz"
+        if respect_demanded:
+            addressing = "siz"
+        elif not has_strict_siz and (informal_clues or informal_rel or detected_reg == "sen"):
             addressing = "sen"
         elif not addressing:
             lower_in = incoming_text.lower()
@@ -437,7 +468,17 @@ Return JSON strictly matching this schema:
         relationship = contact_profile.relationship_type if contact_profile else "general"
         custom_instructions = contact_profile.custom_instructions if contact_profile else "Samimiy, do'stona muloqot"
 
-        if addressing == "sen":
+        if respect_demanded:
+            addressing_directive = """
+🚨 FAVQULODDA MUHIM QOIDA — SUHBATDOSH O'ZIGA "SIZ" VA "AKA" DEB MUROJAAT QILISHNI TALAB QILDI:
+Suhbatdosh sensiramaslikni, o'zining yoshi kattaligini yoki o'ziga "aka" / "siz" deb murojaat qilishni qat'iy talab qildi!
+• QAT'IY TALAB: Darhol va so'zsiz "SIZ" va "AKA" deb o'ta muloyim, odobli, vazmin javob bering (Masalan: "Kechirasiz aka, tushundim...", "Uzr aka, to'g'ri aytdingiz, siz deb murojaat qilaman...").
+• QAT'IYAN TAQIQLANADI:
+  - Aslo "jigar", "bro", "do'stmiz-ku", "yoshga nima aloqasi bor" deb gap qaytarmang, tortishmang va bahslashmang!
+  - Aslo sensiramang ("sen", "qilyapsan", "o'zing")!
+  - Suhbatdoshning talabiga qarshi chiqish yoki o'zini oqlash 100% TAQIQLANADI!
+"""
+        elif addressing == "sen":
             addressing_directive = """
 🚨 ENG QAT'IY QOIDA #1 — MUROJAAT SHAKLI: "SEN" (SENSIRASH / DO'STONA YAQINLIK):
 Ushbu suhbatdosh — Mansurning yaqin do'sti, tengdoshi yoki qadrdon jigari!
@@ -536,8 +577,11 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
 4. **SHAXSIY MA'LUMOTLARNI ASLO TO'QIMA (ZERO HALLUCINATION)**:
    - Telefon raqam, bank karta, pasport, shaxsiy manzil kabi ma'lumotlarni HECH QACHON o'zingdan to'qib chiqarma!
    - Agar telefon raqam yoki shaxsiy ma'lumot so'ralsa, soxta raqam yozma! "Hozir o'zim telefon qilaman" yoki "Birozdan so'ng batafsil aloqaga chiqaman" deb javob ber.
-5. **DOIM VAZMIN, ILIQ VA TABIIY BO'L (ZERO ARROGANCE & ZERO ROBOTIC SUBMISSION)**:
+5. **DOIM VAZMIN, ILIQ VA TABIIY BO'L (ZERO ARROGANCE, ZERO ARGUING & ZERO ROBOTIC SUBMISSION)**:
    - Hech qachon jahl qilma, tortishma, qo'pol so'z ishlatma!
+   - BAHSLASHISH VA AQL O'RGATISH MUTLAQO TAQIQLANADI:
+     "Yoshga nima aloqasi bor", "o'zingni bosib ol", "nega buncha jerkillayapsan", "nega bunaqa gapiryapsan" deb qarshilik ko'rsatish, tortishish, tanbeh berish yoki aql o'rgatish 100% TAQIQLANADI!
+     Suhbatdosh e'tiroz bildirsa, xafa bo'lsa yoki norozi bo'lsa, har doim vazmin, muloyim va vaziyatni darhol yumshatuvchi (de-eskalatsiya) bo'ling ("Kechirasiz aka, asabiylashmang...", "To'g'ri aytdingiz, tushundim...", "Hozir band edim, bo'shagach batafsil gaplashamiz").
    - Lekin aslo o'zingni xizmatkor yoki sun'iy botday tutma!
    - Band bo'lsang ham xushmuomala bo'l: "Hozir biroz bandroq edim, bo'shashim bilan batafsil yozaman" yoki do'stlar orasida "Sal chalg'ib qolibman, bo'ldi gap yo'q".
 6. **BIR GAPNI CHAYNAMA VA QAYTARMA (ANTI-REPETITION & FRESH VOCABULARY)**: 
@@ -616,9 +660,17 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
                 # Strip control markers or prompt leaking tags
                 reply = re.sub(r"</?[a-zA-Z0-9_]+>", "", reply).strip()
 
-                # Cap reply length
-                if len(reply) > 1000:
-                    reply = reply[:997] + "..."
+                # Post-processing Anti-repetition: if reply repeats the exact opening of recent messages
+                if recent_my_messages and reply:
+                    last_msg_lower = recent_my_messages[-1].lower().strip()
+                    reply_lower = reply.lower().strip()
+                    last_prefix = " ".join(last_msg_lower.split()[:4])
+                    curr_prefix = " ".join(reply_lower.split()[:4])
+                    if last_prefix and curr_prefix and last_prefix == curr_prefix and len(last_prefix.split()) >= 3:
+                        logger.warning(f"Repetitive opening '{curr_prefix}' detected; diversifying reply.")
+                        stripped = reply_lower[len(curr_prefix):].lstrip(" ,.:;!?")
+                        if stripped and len(stripped) > 5:
+                            reply = stripped[0].upper() + stripped[1:]
 
                 if reply:
                     return reply
@@ -1516,7 +1568,18 @@ Return STRICT JSON ONLY:
                 confidence=0.90,
             )
 
-        # 2. Financial, confidential, formal meeting and legal escalations
+        # 2. Profanity, insult, and harassment escalations
+        from services.sensitive_guard import PROFANITY_PATTERN
+        if PROFANITY_PATTERN.search(lower):
+            return ClassificationResult(
+                category="ESCALATE_TO_BOSS",
+                reason="Xabarda o'ta qo'pol haqorat, so'kinish yoki ziddiyat aniqlandi.",
+                urgency="high",
+                suggested_reply="Kechirasiz, asabiylashmang. Hozir band edim, bo'shagach batafsil gaplashamiz.",
+                confidence=0.95,
+            )
+
+        # 3. Financial, confidential, formal meeting and legal escalations
         urgent_keywords = [
             "to'lov", "tulov", "dollar", "$", "pul", "qarz", "summa", "so'm", "som",
             "uchrashuv", "shartnoma", "karta raqam", "shot raqam", "karta", "karta raqami",

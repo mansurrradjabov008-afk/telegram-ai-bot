@@ -29,6 +29,12 @@ AMOUNT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 3. Severe aggressive profanity and harassment pattern
+PROFANITY_PATTERN = re.compile(
+    r"\b(?:naxuy+[a-z]*|нахуй[а-я]*|jalab+[a-z]*|жалаб[а-я]*|kot|ko['`’‘]t|кўт|bich|zaybal+[a-z]*|зайбал[а-я]*|dalbayob+[a-z]*|далбаёб[а-я]*|chumo|чумо|padar|itvachcha|onangni|oneni|qanjiq|sikish|sikey|sikay|пидор[а-я]*|пидарас[а-я]*|гандон[а-я]*|хуй[а-я]*|хуйн[а-я]*|fuck[a-z]*)\b",
+    re.IGNORECASE,
+)
+
 # ------------------ CATEGORIZED KEYWORD DICTIONARIES ------------------
 # Multi-lingual coverage: Uzbek Latin, Uzbek Cyrillic, Russian, English
 
@@ -234,6 +240,12 @@ def check_sensitive_keywords_detailed(text: str) -> Dict[str, Any]:
     if AMOUNT_PATTERN.search(text):
         detected_reasons.append("Pul/Summa miqdori aniqlandi")
         detected_categories.append("amounts")
+        is_hard = True
+
+    # Check severe aggressive profanity and harassment
+    if PROFANITY_PATTERN.search(lower_text):
+        detected_reasons.append("Haqorat / Tajovuzkor so'kinish / Ziddiyat")
+        detected_categories.append("profanity_conflict")
         is_hard = True
 
     category_labels = {

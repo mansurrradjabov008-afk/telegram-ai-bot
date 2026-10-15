@@ -3879,10 +3879,12 @@ class AdminBotService:
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 ]
                 for d in drafts:
-                    contact = await self.db_manager.get_contact_by_id(d.user_id)
-                    c_name = contact.full_name or contact.username if contact else str(d.user_id)
+                    cid = getattr(d, "contact_user_id", None) or getattr(d, "user_id", None)
+                    contact = await self.db_manager.get_contact_by_id(cid) if cid else None
+                    c_name = contact.full_name or contact.username if contact else (getattr(d, "contact_username", None) or str(cid or "Noma'lum"))
+                    draft_msg = getattr(d, "proposed_reply", "") or getattr(d, "draft_text", "")
                     lines.append(f"• <b>#{d.id}</b> | 👤 <b>{html.escape(c_name)}</b>")
-                    lines.append(f"  💬 <i>\"{html.escape(d.draft_text[:90])}\"</i>\n")
+                    lines.append(f"  💬 <i>\"{html.escape(draft_msg[:90])}\"</i>\n")
                 lines.append("💡 <i>Yuborish uchun: '#ID ni yubor' yoki 'hammasini tasdiqla'</i>")
                 return await safe_reply(message, "\n".join(lines), parse_mode="HTML", reply_markup=None)
 
@@ -3924,8 +3926,10 @@ class AdminBotService:
 
             drafts_summary = []
             for d in pending_drafts[:5]:
-                c_name = contacts_map.get(d.user_id, f"ID:{d.user_id}")
-                drafts_summary.append(f"Draft #{d.id} ({c_name}): \"{d.draft_text[:100]}\"")
+                cid = getattr(d, "contact_user_id", None) or getattr(d, "user_id", None)
+                c_name = contacts_map.get(cid, getattr(d, "contact_username", None) or f"ID:{cid}")
+                draft_msg = getattr(d, "proposed_reply", "") or getattr(d, "draft_text", "")
+                drafts_summary.append(f"Draft #{d.id} ({c_name}): \"{draft_msg[:100]}\"")
 
             tasks_summary = []
             for t in pending_tasks[:5]:

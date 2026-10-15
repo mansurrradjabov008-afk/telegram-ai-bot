@@ -40,6 +40,14 @@ class Draft:
     def is_pending(self) -> bool:
         return self.status == "pending"
 
+    @property
+    def user_id(self) -> Optional[int]:
+        return self.contact_user_id
+
+    @property
+    def draft_text(self) -> str:
+        return self.proposed_reply
+
 
 @dataclass
 class SchemaVersion:
