@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     DIGEST_TOPIC_LIMIT_DEFAULT: int = 5
     DIGEST_TOPIC_LIMIT_AI: int = 8
 
+    # Group Radar settings (Shaxsiy Guruh Kuzatuvchisi)
+    RADAR_ENABLED: bool = True
+    RADAR_DEBOUNCE_SECONDS: int = 90
+    RADAR_KEYWORDS: List[str] = ["mansur", "radjabov"]
+
     # Contact Memory settings
     MEMORY_ENABLED: bool = True
     MEMORY_LOG_MUTED: bool = False

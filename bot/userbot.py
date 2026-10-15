@@ -36,6 +36,7 @@ class UserbotService:
         digest_service: DigestService,
         memory_service: Optional[Any] = None,
         style_service: Optional[Any] = None,
+        group_radar_service: Optional[Any] = None,
     ):
         self.db_manager = db_manager
         self.ai_engine = ai_engine
@@ -43,6 +44,7 @@ class UserbotService:
         self.digest_service = digest_service
         self.memory_service = memory_service
         self.style_service = style_service
+        self.group_radar_service = group_radar_service
 
         self.session_path = Path("data") / settings.TELEGRAM_SESSION_NAME
         self.client: Optional[TelegramClient] = None
@@ -66,6 +68,10 @@ class UserbotService:
     def set_style_service(self, style_service: Any):
         """Sets the Writing Style service instance."""
         self.style_service = style_service
+
+    def set_group_radar_service(self, group_radar_service: Any):
+        """Sets the Group Radar service instance."""
+        self.group_radar_service = group_radar_service
 
     def set_escalation_callback(self, callback: Callable):
         """Callback to notify Admin Bot Cockpit when an escalation happens."""
@@ -129,6 +135,11 @@ class UserbotService:
         @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_channel or e.is_group))
         async def on_feed_message(event):
             try:
+                if getattr(event, "is_group", False) and self.group_radar_service:
+                    try:
+                        await self.group_radar_service.handle_group_message(event, self.client)
+                    except Exception as re:
+                        logger.error(f"Error handling group radar message: {type(re).__name__}")
                 await self._handle_feed_message(event)
             except Exception as e:
                 logger.error(f"Error handling feed message: {type(e).__name__}")
@@ -266,7 +277,7 @@ class UserbotService:
             new_text=new_text,
         )
 
-    async def _send_with_floodwait(self, peer: Any, text: str, max_retries: int = 3) -> Optional[Any]:
+    async def _send_with_floodwait(self, peer: Any, text: str, max_retries: int = 3, reply_to: Optional[int] = None) -> Optional[Any]:
         """
         Sends message to peer with Telethon FloodWaitError safety.
         Safely waits out the flood restriction and retries, never crashing.
@@ -276,9 +287,13 @@ class UserbotService:
             logger.error("Client not initialized; cannot send message.")
             return None
 
+        kwargs = {}
+        if reply_to is not None:
+            kwargs["reply_to"] = reply_to
+
         for attempt in range(max_retries):
             try:
-                return await self.client.send_message(peer, text)
+                return await self.client.send_message(peer, text, **kwargs)
             except FloodWaitError as e:
                 wait_time = int(getattr(e, "seconds", 1))
                 logger.warning(
@@ -292,11 +307,11 @@ class UserbotService:
                     f"Falling back to plain text (parse_mode=None)..."
                 )
                 try:
-                    return await self.client.send_message(peer, text, parse_mode=None)
+                    return await self.client.send_message(peer, text, parse_mode=None, **kwargs)
                 except FloodWaitError as fwe:
                     wait_time = int(getattr(fwe, "seconds", 1))
                     await asyncio.sleep(wait_time + 1)
-                    return await self.client.send_message(peer, text, parse_mode=None)
+                    return await self.client.send_message(peer, text, parse_mode=None, **kwargs)
                 except Exception as e_plain:
                     logger.error(f"Error sending plain text message to {peer}: {type(e_plain).__name__}")
                     return None
@@ -836,6 +851,39 @@ class UserbotService:
             role="assistant",
             content=message_text,
         )
+        return sent_msg
+
+    async def reply_to_group_message(
+        self,
+        group_id: int,
+        message_id: int,
+        reply_text: str,
+    ) -> Optional[Any]:
+        """
+        Sends reply to a specific message in a group with human-like typing simulation.
+        Safely handles FloodWait and retries.
+        """
+        if not self.client:
+            raise RuntimeError("Userbot client is not initialized.")
+
+        logger.info(f"Userbot replying to group {group_id} msg {message_id} (chars={len(reply_text)})")
+        try:
+            entity = await self.client.get_entity(group_id)
+        except Exception:
+            entity = await self.client.get_input_entity(group_id)
+
+        typing_duration = self.rate_limiter.calculate_typing_duration(reply_text)
+        try:
+            async with self.client.action(entity, "typing"):
+                await asyncio.sleep(typing_duration)
+        except Exception as e:
+            logger.warning(f"Typing simulation failed for group {group_id}: {type(e).__name__}")
+            await asyncio.sleep(typing_duration)
+
+        sent_msg = await self._send_with_floodwait(entity, reply_text, reply_to=message_id)
+        if not sent_msg:
+            raise RuntimeError(f"Guruhga ({group_id}) xabar yetkazilmadi (FloodWait yoki tarmoq xatosi).")
+
         return sent_msg
 
     async def start(self):

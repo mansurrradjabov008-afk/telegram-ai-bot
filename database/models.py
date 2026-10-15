@@ -207,3 +207,17 @@ class MemEmbedding:
     vector: bytes
     created_at: Optional[str] = None
 
+
+@dataclass
+class RadarMention:
+    id: Optional[int]
+    group_id: int
+    group_title: str
+    message_id: int
+    sender_id: int
+    sender_name: str
+    sender_username: Optional[str]
+    message_text: str
+    trigger_type: str  # 'mention', 'reply', 'name_keyword', 'custom_keyword'
+    detected_at: Optional[str] = None
+

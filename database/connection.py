@@ -281,6 +281,35 @@ CREATE TRIGGER IF NOT EXISTS trg_mem_facts_au AFTER UPDATE ON mem_facts BEGIN
     INSERT INTO mem_facts_fts(mem_facts_fts, rowid, text) VALUES('delete', old.id, old.text);
     INSERT INTO mem_facts_fts(rowid, text) VALUES (new.id, new.text);
 END;
+
+-- Group Radar Tables (Schema v11)
+CREATE TABLE IF NOT EXISTS radar_muted_groups (
+    group_id INTEGER PRIMARY KEY,
+    title TEXT,
+    muted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS radar_mentions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL,
+    group_title TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    sender_id INTEGER NOT NULL,
+    sender_name TEXT NOT NULL,
+    sender_username TEXT,
+    message_text TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_radar_mentions_group ON radar_mentions(group_id);
+CREATE INDEX IF NOT EXISTS idx_radar_mentions_time ON radar_mentions(detected_at);
+
+CREATE TABLE IF NOT EXISTS radar_keywords (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

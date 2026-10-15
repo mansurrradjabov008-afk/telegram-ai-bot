@@ -376,6 +376,10 @@ class ScheduleClarificationState(StatesGroup):
     waiting_for_peer = State()
 
 
+class RadarReplyState(StatesGroup):
+    waiting_for_reply = State()
+
+
 class AdminBotService:
     def __init__(
         self,
@@ -385,6 +389,7 @@ class AdminBotService:
         digest_service: Optional[DigestService] = None,
         memory_service: Optional[Any] = None,
         style_service: Optional[Any] = None,
+        group_radar_service: Optional[Any] = None,
         token: Optional[str] = None,
         admin_id: Optional[int] = None,
     ):
@@ -394,6 +399,7 @@ class AdminBotService:
         self.digest_service = digest_service
         self.memory_service = memory_service
         self.style_service = style_service
+        self.group_radar_service = group_radar_service
         self.token = token or settings.ADMIN_BOT_TOKEN
         self.admin_id = admin_id if admin_id is not None else settings.owner_id_effective
 
@@ -408,6 +414,11 @@ class AdminBotService:
         self._last_active_contact: Optional[Dict[str, Any]] = None
 
         self._setup_handlers()
+
+    def set_group_radar_service(self, service: Any):
+        """Sets the Group Radar service instance."""
+        self.group_radar_service = service
+
 
     def _get_contextual_peer(self) -> Optional[str]:
         """
@@ -663,6 +674,8 @@ class AdminBotService:
                 style_glob = None
             is_style_on = (style_glob == "on" or getattr(settings, "STYLE_ENABLED", False)) and (style_glob != "off")
             style_status_str = "🟢 Faol" if is_style_on else "⏸ O'chiq"
+            radar_enabled = getattr(settings, "RADAR_ENABLED", True)
+            radar_status_str = "🟢 Faol" if radar_enabled else "⏸ O'chiq"
 
             model_display = getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
             text = (
@@ -675,6 +688,7 @@ class AdminBotService:
                 f"├ 📝 Kutilayotgan qoralamalar: <b>{pending_drafts} ta</b>\n"
                 f"├ ⏰ Rejalashtirilgan vazifalar: <b>{pending_tasks} ta</b>\n"
                 f"├ ✍️ Shaxsiy ovoz va uslub: <b>{style_status_str}</b>\n"
+                f"├ 🎯 Guruhlar radari: <b>{radar_status_str}</b>\n"
                 f"└ 🧠 Faol xotira faktlari: <b>{facts_count} ta</b> ({contacts_enabled} kontakt)\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🤖 <b>Tabiiy suhbat orqali to'liq boshqaruv:</b>\n"
@@ -702,9 +716,10 @@ class AdminBotService:
             else:
                 builder.button(text="✍️ Uslub: 🟢 Yoqish", callback_data="style:toggle_quick")
             builder.button(text="🎛️ Uslub Paneli", callback_data="style:panel")
-            # Row 5: Refresh
+            # Row 5: Group Radar & Refresh
+            builder.button(text="🎯 Guruhlar Radari", callback_data="radar:status")
             builder.button(text="🔄 Yangilash", callback_data="menu:main")
-            builder.adjust(2, 2, 2, 2, 1)
+            builder.adjust(2, 2, 2, 2, 2)
 
             if is_callback:
                 await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -5502,6 +5517,246 @@ class AdminBotService:
             res = await self.db_manager.delete_all_style_data()
             await callback.answer(f"🔥 Barcha uslub ma'lumotlari tozalandi ({res.get('samples', 0)} ta namuna)!", show_alert=True)
             await _render_style_panel(callback.message, is_callback=True)
+
+        # ------------------ GROUP RADAR (SHAXSIY GURUH KUZATUVCHISI) ------------------
+        async def _render_radar_panel(target_msg: types.Message, is_callback: bool = False):
+            """Renders the Group Radar status and control panel."""
+            status_text = "🟢 Faol" if getattr(settings, "RADAR_ENABLED", True) else "🔴 O'chirilgan"
+            debounce_sec = getattr(settings, "RADAR_DEBOUNCE_SECONDS", 90)
+
+            # Keywords
+            db_kws = await self.db_manager.list_radar_keywords()
+            cfg_kws = getattr(settings, "RADAR_KEYWORDS", [])
+            all_kws = list(set([k for k in cfg_kws + db_kws if k]))
+            kws_str = ", ".join([f"<code>{html.escape(k)}</code>" for k in all_kws]) if all_kws else "<i>standart (Mansur, Radjabov)</i>"
+
+            # Muted groups
+            muted = await self.db_manager.list_radar_muted_groups()
+            muted_str = ""
+            if muted:
+                muted_str = "\n".join([f"• <b>{html.escape(g.get('title') or str(g['group_id']))}</b> (ID: <code>{g['group_id']}</code>)" for g in muted[:10]])
+            else:
+                muted_str = "<i>O'chirilgan guruhlar yo'q</i>"
+
+            # Recent mentions
+            mentions = await self.db_manager.get_recent_radar_mentions(limit=5)
+            mentions_str = ""
+            if mentions:
+                mentions_str = "\n".join([
+                    f"• [{m.detected_at[:16] if m.detected_at else ''}] <b>{html.escape(m.group_title)}</b>: "
+                    f"<i>{html.escape(m.sender_name)}</i> ({html.escape(m.trigger_type)})"
+                    for m in mentions
+                ])
+            else:
+                mentions_str = "<i>Hozircha eslatmalar qayd etilmadi</i>"
+
+            text = (
+                f"🎯 <b>GURUHLAR RADARI (SHAXSIY KUZATUVCHI)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📡 <b>Holati:</b> {status_text}\n"
+                f"⏱ <b>Anti-spam (debounce):</b> {debounce_sec} soniya\n"
+                f"🔍 <b>Kuzatilayotgan kalit so'zlar:</b>\n{kws_str}\n\n"
+                f"🔕 <b>O'chirilgan guruhlar ({len(muted)} ta):</b>\n{muted_str}\n\n"
+                f"🕒 <b>Oxirgi eslatmalar:</b>\n{mentions_str}"
+            )
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔄 Yangilash", callback_data="radar:status")
+            builder.button(text="🔙 Bosh Menyu", callback_data="menu:main")
+            builder.adjust(2)
+
+            if is_callback:
+                await safe_edit(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            else:
+                await safe_reply(target_msg, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+        @dp.message(Command("radar"))
+        async def cmd_radar(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                return
+            await _render_radar_panel(message, is_callback=False)
+
+        @dp.callback_query(F.data == "radar:status")
+        async def cb_radar_status(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer()
+            await _render_radar_panel(callback.message, is_callback=True)
+
+        @dp.callback_query(F.data.startswith("radar_reply:"))
+        async def on_radar_reply(callback: types.CallbackQuery, state: FSMContext):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer()
+            parts = callback.data.split(":")
+            if len(parts) >= 3:
+                try:
+                    group_id = int(parts[1])
+                    msg_id = int(parts[2])
+                    await state.set_state(RadarReplyState.waiting_for_reply)
+                    await state.update_data(radar_group_id=group_id, radar_msg_id=msg_id)
+                    await safe_reply(
+                        callback.message,
+                        "✍️ <b>Guruhga javob yozish:</b>\n\n"
+                        "Guruhdagi xabarga nima deb javob qaytarmoqchisiz? Matnni kiriting:\n"
+                        "<i>(Bekor qilish uchun /cancel bosing)</i>",
+                        parse_mode="HTML",
+                    )
+                except ValueError:
+                    pass
+
+        @dp.message(StateFilter(RadarReplyState.waiting_for_reply))
+        async def on_radar_reply_text(message: types.Message, state: FSMContext):
+            if not self._is_admin(message.from_user.id):
+                return
+            text = (message.text or "").strip()
+            if text.lower() in ("/cancel", "cancel", "bekor"):
+                await state.clear()
+                await safe_reply(message, "❌ Guruhga javob yozish bekor qilindi.")
+                return
+
+            data = await state.get_data()
+            group_id = data.get("radar_group_id")
+            msg_id = data.get("radar_msg_id")
+
+            if not group_id or not msg_id:
+                await state.clear()
+                await safe_reply(message, "⚠️ Guruh ma'lumotlari topilmadi.")
+                return
+
+            if not self.userbot or not hasattr(self.userbot, "reply_to_group_message"):
+                await state.clear()
+                await safe_reply(message, "❌ Userbot xizmati ulanmagan.")
+                return
+
+            try:
+                await self.userbot.reply_to_group_message(group_id, msg_id, text)
+                await state.clear()
+                await safe_reply(
+                    message,
+                    f"✅ <b>Guruhga javob muvaffaqiyatli yuborildi!</b>\n\n💬 <i>\"{html.escape(text)}\"</i>",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await state.clear()
+                await safe_reply(message, f"❌ Guruhga javob yuborishda xatolik: {html.escape(str(e))}")
+
+        @dp.callback_query(F.data.startswith("radar_mute:"))
+        async def on_radar_mute(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer("Guruh radardan o'chirildi")
+            parts = callback.data.split(":")
+            if len(parts) >= 2:
+                try:
+                    group_id = int(parts[1])
+                    if self.group_radar_service:
+                        await self.group_radar_service.mute_group(group_id)
+                    kb = InlineKeyboardBuilder()
+                    kb.row(
+                        types.InlineKeyboardButton(
+                            text="🔔 Radarni qayta yoqish",
+                            callback_data=f"radar_unmute:{group_id}"
+                        )
+                    )
+                    base_text = callback.message.html_text or callback.message.text or ""
+                    await callback.message.edit_text(
+                        f"{base_text}\n\n🔕 <i>Bu guruh radardan o'chirildi.</i>",
+                        reply_markup=kb.as_markup(),
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.warning(f"Error muting radar group: {type(e).__name__}")
+
+        @dp.callback_query(F.data.startswith("radar_unmute:"))
+        async def on_radar_unmute(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            await callback.answer("Radar qayta yoqildi")
+            parts = callback.data.split(":")
+            if len(parts) >= 2:
+                try:
+                    group_id = int(parts[1])
+                    if self.group_radar_service:
+                        await self.group_radar_service.unmute_group(group_id)
+                    kb = InlineKeyboardBuilder()
+                    kb.row(
+                        types.InlineKeyboardButton(
+                            text="🔕 Radardan o'chirish",
+                            callback_data=f"radar_mute:{group_id}"
+                        )
+                    )
+                    base_text = callback.message.html_text or callback.message.text or ""
+                    await callback.message.edit_text(
+                        f"{base_text}\n\n🔔 <i>Bu guruh uchun radar qayta yoqildi.</i>",
+                        reply_markup=kb.as_markup(),
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    logger.warning(f"Error unmuting radar group: {type(e).__name__}")
+
+    async def send_radar_alert(self, detected: Dict[str, Any], existing_alert_msg_id: Optional[int] = None) -> Optional[int]:
+        """
+        Sends or updates a Group Radar alert in the Admin Bot Cockpit.
+        Returns the Telegram message ID of the sent/updated message.
+        """
+        if not self.bot or not self.admin_id:
+            return None
+
+        group_id = detected["group_id"]
+        group_title = html.escape(detected.get("group_title", "Guruh"))
+        message_id = detected["message_id"]
+        sender_name = html.escape(detected.get("sender_name", "Foydalanuvchi"))
+        sender_username = detected.get("sender_username")
+        user_repr = f"@{sender_username}" if sender_username else sender_name
+        message_text = html.escape(detected.get("message_text", ""))
+        trigger_label = html.escape(detected.get("trigger_label", "Guruhda eslatma"))
+        jump_link = detected.get("jump_link", "")
+        mentions_count = detected.get("mentions_count", 1)
+
+        kb = InlineKeyboardBuilder()
+        if jump_link:
+            kb.row(types.InlineKeyboardButton(text="🔗 Guruhga o'tish", url=jump_link))
+        kb.row(
+            types.InlineKeyboardButton(
+                text="✍️ Guruhga javob yozish",
+                callback_data=f"radar_reply:{group_id}:{message_id}"
+            ),
+            types.InlineKeyboardButton(
+                text="🔕 Radardan o'chirish",
+                callback_data=f"radar_mute:{group_id}"
+            ),
+        )
+
+        if existing_alert_msg_id and mentions_count > 1:
+            text = (
+                f"🎯 <b>Guruhda siz haqingizda yana gaplashildi ({mentions_count} ta xabar)!</b>\n\n"
+                f"👥 <b>Guruh:</b> {group_title}\n"
+                f"👤 <b>Oxirgi kim:</b> {user_repr}\n"
+                f"🔍 <b>Sabab:</b> {trigger_label}\n"
+                f"💬 <b>Oxirgi xabar:</b> <i>\"{message_text}\"</i>"
+            )
+            try:
+                msg = await self.bot.edit_message_text(
+                    chat_id=self.admin_id,
+                    message_id=existing_alert_msg_id,
+                    text=text,
+                    reply_markup=kb.as_markup(),
+                    parse_mode="HTML",
+                )
+                return msg.message_id if hasattr(msg, "message_id") else existing_alert_msg_id
+            except Exception as e:
+                logger.debug(f"Could not edit debounced radar alert, sending new: {type(e).__name__}")
+
+        text = (
+            f"🎯 <b>Guruhda siz haqingizda gaplashildi!</b>\n\n"
+            f"👥 <b>Guruh:</b> {group_title}\n"
+            f"👤 <b>Kim:</b> {user_repr}\n"
+            f"🔍 <b>Sabab:</b> {trigger_label}\n"
+            f"💬 <b>Xabar:</b> <i>\"{message_text}\"</i>"
+        )
+        msg = await safe_send(self.bot, self.admin_id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
+        return msg.message_id if msg else None
 
     async def send_draft_for_approval(self, draft: Draft):
         """Sends interactive draft approval request to Boss with inline action buttons."""

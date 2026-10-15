@@ -25,6 +25,7 @@ from services.digest_service import DigestService
 from services.scheduler_service import SchedulerService
 from services.memory_service import MemoryService
 from services.style_service import StyleService
+from services.group_radar import GroupRadarService
 from bot.admin_bot import AdminBotService
 from bot.userbot import UserbotService
 
@@ -60,6 +61,7 @@ async def main():
     await memory_service.purge_retention()
     style_service = StyleService(db_manager)
     await style_service.purge_retention()
+    group_radar_service = GroupRadarService(db_manager=db_manager, ai_engine=ai_engine)
 
     # 3. Initialize Bot Services
     admin_bot_service = AdminBotService(
@@ -69,6 +71,7 @@ async def main():
         digest_service=digest_service,
         memory_service=memory_service,
         style_service=style_service,
+        group_radar_service=group_radar_service,
     )
     userbot_service = UserbotService(
         db_manager=db_manager,
@@ -77,15 +80,19 @@ async def main():
         digest_service=digest_service,
         memory_service=memory_service,
         style_service=style_service,
+        group_radar_service=group_radar_service,
     )
 
     # 4. Wire cross-service callbacks
     userbot_service.set_escalation_callback(admin_bot_service.notify_boss_escalation)
     userbot_service.set_draft_approval_callback(admin_bot_service.send_draft_for_approval)
     userbot_service.set_notification_callback(admin_bot_service.send_notification)
+    userbot_service.set_group_radar_service(group_radar_service)
+    group_radar_service.set_alert_callback(admin_bot_service.send_radar_alert)
     admin_bot_service.set_userbot(userbot_service)
     admin_bot_service.set_userbot_sender(userbot_service.send_direct_message)
     admin_bot_service.set_manual_reply_checker(userbot_service.check_owner_manually_replied)
+    admin_bot_service.set_group_radar_service(group_radar_service)
     scheduler_service.register_callbacks(
         send_callback=userbot_service.send_direct_message,
         notify_boss_callback=admin_bot_service.send_notification,

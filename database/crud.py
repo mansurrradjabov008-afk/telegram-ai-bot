@@ -27,6 +27,7 @@ from .models import (
     MemOpenItem,
     MemSummary,
     MemEmbedding,
+    RadarMention,
 )
 from services.memory_redactor import redact_text
 from services.memory_categories import normalize_category
@@ -2272,6 +2273,140 @@ class DatabaseManager:
             async with db.execute("SELECT * FROM style_profiles ORDER BY scope, lang") as cur:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
+
+    # ------------------ GROUP RADAR (SHAXSIY GURUH KUZATUVCHISI) ------------------
+    async def mute_radar_group(self, group_id: int, title: str = "") -> bool:
+        """Mutes a group so radar notifications won't trigger for it."""
+        query = """
+        INSERT INTO radar_muted_groups (group_id, title, muted_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(group_id) DO UPDATE SET
+            title = excluded.title,
+            muted_at = CURRENT_TIMESTAMP
+        """
+        try:
+            async with self.serialized_transaction() as db:
+                await db.execute(query, (group_id, title))
+            return True
+        except Exception:
+            return False
+
+    async def unmute_radar_group(self, group_id: int) -> bool:
+        """Unmutes a previously muted group in radar."""
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute("DELETE FROM radar_muted_groups WHERE group_id = ?", (group_id,))
+                return cur.rowcount > 0
+        except Exception:
+            return False
+
+    async def is_radar_group_muted(self, group_id: int) -> bool:
+        """Checks if a group is muted in radar."""
+        try:
+            async with get_db(self.db_path) as db:
+                async with db.execute("SELECT 1 FROM radar_muted_groups WHERE group_id = ?", (group_id,)) as cur:
+                    row = await cur.fetchone()
+                    return row is not None
+        except Exception:
+            return False
+
+    async def list_radar_muted_groups(self) -> List[Dict[str, Any]]:
+        """Returns all muted groups in radar."""
+        try:
+            async with get_db(self.db_path) as db:
+                async with db.execute("SELECT group_id, title, muted_at FROM radar_muted_groups ORDER BY muted_at DESC") as cur:
+                    rows = await cur.fetchall()
+                    return [{"group_id": r[0], "title": r[1], "muted_at": r[2]} for r in rows]
+        except Exception:
+            return []
+
+    async def log_radar_mention(
+        self,
+        group_id: int,
+        group_title: str,
+        message_id: int,
+        sender_id: int,
+        sender_name: str,
+        sender_username: Optional[str],
+        message_text: str,
+        trigger_type: str,
+    ) -> int:
+        """Logs a detected radar mention and returns the new row ID."""
+        query = """
+        INSERT INTO radar_mentions (
+            group_id, group_title, message_id, sender_id, sender_name, sender_username, message_text, trigger_type, detected_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """
+        async with self.serialized_transaction() as db:
+            cur = await db.execute(
+                query,
+                (group_id, group_title, message_id, sender_id, sender_name, sender_username, message_text, trigger_type),
+            )
+            return cur.lastrowid or 0
+
+    async def get_recent_radar_mentions(self, limit: int = 20) -> List[RadarMention]:
+        """Fetches recent radar mentions."""
+        query = """
+        SELECT id, group_id, group_title, message_id, sender_id, sender_name, sender_username, message_text, trigger_type, detected_at
+        FROM radar_mentions
+        ORDER BY id DESC
+        LIMIT ?
+        """
+        try:
+            async with get_db(self.db_path) as db:
+                async with db.execute(query, (limit,)) as cur:
+                    rows = await cur.fetchall()
+                    return [
+                        RadarMention(
+                            id=r[0],
+                            group_id=r[1],
+                            group_title=r[2],
+                            message_id=r[3],
+                            sender_id=r[4],
+                            sender_name=r[5],
+                            sender_username=r[6],
+                            message_text=r[7],
+                            trigger_type=r[8],
+                            detected_at=r[9],
+                        )
+                        for r in rows
+                    ]
+        except Exception:
+            return []
+
+    async def add_radar_keyword(self, keyword: str) -> bool:
+        """Adds a custom radar keyword."""
+        kw = keyword.strip().lower()
+        if not kw:
+            return False
+        query = "INSERT OR IGNORE INTO radar_keywords (keyword, created_at) VALUES (?, CURRENT_TIMESTAMP)"
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute(query, (kw,))
+                return cur.rowcount > 0
+        except Exception:
+            return False
+
+    async def remove_radar_keyword(self, keyword: str) -> bool:
+        """Removes a custom radar keyword."""
+        kw = keyword.strip().lower()
+        query = "DELETE FROM radar_keywords WHERE keyword = ?"
+        try:
+            async with self.serialized_transaction() as db:
+                cur = await db.execute(query, (kw,))
+                return cur.rowcount > 0
+        except Exception:
+            return False
+
+    async def list_radar_keywords(self) -> List[str]:
+        """Lists all custom radar keywords."""
+        try:
+            async with get_db(self.db_path) as db:
+                async with db.execute("SELECT keyword FROM radar_keywords ORDER BY keyword ASC") as cur:
+                    rows = await cur.fetchall()
+                    return [r[0] for r in rows]
+        except Exception:
+            return []
 
 
 
