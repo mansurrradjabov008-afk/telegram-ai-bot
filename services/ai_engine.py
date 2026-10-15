@@ -412,11 +412,11 @@ Return JSON strictly matching this schema:
 
         # If informal relationship or memory facts establish friendly closeness,
         # adapt to "sen" unless formal "siz" is strictly mandated by owner instructions:
-        if not has_strict_siz and (informal_clues or detected_reg == "sen"):
+        if not has_strict_siz and (informal_clues or informal_rel or detected_reg == "sen"):
             addressing = "sen"
         elif not addressing:
             lower_in = incoming_text.lower()
-            if any(w in lower_in for w in ["bro", "jigar", "og'ayni", "ogayni", "qalesan", "nima qvosan"]) or (not has_strict_siz and informal_rel):
+            if any(w in lower_in for w in ["bro", "jigar", "og'ayni", "ogayni", "qalesan", "nima qvosan"]):
                 addressing = "sen"
             else:
                 addressing = detected_reg or "siz"
