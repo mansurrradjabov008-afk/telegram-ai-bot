@@ -627,7 +627,7 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
                 continue
 
         fallback = self._dynamic_smart_fallback(incoming_text, addressing=addressing)
-        return re.sub(r"</?[a-zA-Z0-9_]+>", "", fallback).strip()
+        return re.sub(r"</?[a-zA-Z0-9_]+>", "", fallback or "").strip()
 
     async def classify_sensitive_topic(self, incoming_text: str, proposed_reply: str = "") -> Dict[str, Any]:
         """
@@ -1419,7 +1419,7 @@ Return STRICT JSON ONLY:
                     "Ishlar bilan o'tiruvdim bro, nima gap?",
                     "Biroz qo'lim bo'shamay turuvdi, tinchmi o'zi?",
                     "Sekin harakatdamiz, o'zing nimalar qilyapsan?",
-                    "Loyihani qarab chiqayotgandim jigar, xizmating bormi?",
+                    "Loyihalar va ishlar bilan o'tiruvdim jigar, xizmating bormi?",
                 ])
             else:
                 return random.choice([

@@ -136,7 +136,7 @@ async def test_dynamic_smart_fallback_variety_and_intent():
 
     # 3. Status/activity in SEN mode
     reply_act_sen = engine._dynamic_smart_fallback("Nima qilyapsan qayerdasan?", addressing="sen")
-    assert any(w in reply_act_sen.lower() for w in ["yo'ldaman", "ishlar", "bo'shamay", "harakatdamiz"])
+    assert any(w in reply_act_sen.lower() for w in ["yo'ldaman", "ishlar", "bo'shamay", "harakatdamiz", "loyiha"])
     assert "siz" not in reply_act_sen.lower()
 
     # 4. Status/activity in SIZ mode

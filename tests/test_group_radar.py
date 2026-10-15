@@ -518,3 +518,63 @@ async def test_radar_natural_language_commands():
     await admin_bot.dp.feed_update(mock_bot, up4)
     assert getattr(settings, "RADAR_ENABLED") is True
 
+
+# ------------------ TEST 11: Idempotency & Cache Eviction ------------------
+@pytest.mark.asyncio
+async def test_radar_quick_reply_idempotency_and_cache_eviction():
+    from bot.admin_bot import AdminBotService
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    admin_bot = AdminBotService(
+        db_manager=mock_db,
+        ai_engine=MagicMock(),
+        scheduler_service=MagicMock(),
+        admin_id=12345,
+    )
+
+    mock_userbot = MagicMock()
+    mock_userbot.reply_to_group_message = AsyncMock(return_value=True)
+    admin_bot.set_userbot(mock_userbot)
+
+    admin_bot._pending_radar_quick_replies["-100999:11"] = "Salom, hozir ko'rib chiqyapman!"
+
+    radar_send_handler = None
+    for h in admin_bot.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "on_radar_quick_send":
+            radar_send_handler = h.callback
+            break
+    assert radar_send_handler is not None
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = 12345
+    fake_cb.data = "radar_quick:-100999:11"
+    fake_cb.answer = AsyncMock()
+    fake_cb.message = MagicMock()
+    fake_cb.message.html_text = "Test radar alert"
+    fake_cb.message.edit_text = AsyncMock()
+
+    # 1. First click: dispatches successfully and clears cache
+    await radar_send_handler(fake_cb)
+    mock_userbot.reply_to_group_message.assert_called_with(-100999, 11, "Salom, hozir ko'rib chiqyapman!")
+    assert "-100999:11" not in admin_bot._pending_radar_quick_replies
+
+    # 2. Second rapid click (double-click simulation): blocked safely without duplicate dispatch
+    mock_userbot.reply_to_group_message.reset_mock()
+    await radar_send_handler(fake_cb)
+    mock_userbot.reply_to_group_message.assert_not_called()
+    assert "allaqachon yuborilgan" in fake_cb.answer.call_args[0][0]
+
+    # 3. Test LRU/FIFO eviction cap at 200 items in send_radar_alert
+    admin_bot.bot = AsyncMock()
+    for i in range(205):
+        await admin_bot.send_radar_alert({
+            "group_id": -1000 - i,
+            "message_id": 100 + i,
+            "group_title": f"Group {i}",
+            "sender_name": "User",
+            "message_text": "Hello",
+            "suggested_reply": f"Reply {i}",
+        })
+    assert len(admin_bot._pending_radar_quick_replies) == 200
+
+

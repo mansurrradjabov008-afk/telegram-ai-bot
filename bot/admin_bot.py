@@ -5782,17 +5782,22 @@ class AdminBotService:
                     group_id = int(parts[1])
                     msg_id = int(parts[2])
                     reply_key = f"{group_id}:{msg_id}"
-                    quick_text = self._pending_radar_quick_replies.get(reply_key)
+                    quick_text = self._pending_radar_quick_replies.pop(reply_key, None)
                     if not quick_text:
-                        await callback.answer("⚠️ Tavsiya etilgan javob muddati o'tgan.", show_alert=True)
+                        await callback.answer("⚠️ Tavsiya etilgan javob allaqachon yuborilgan yoki muddati o'tgan.", show_alert=True)
                         return
 
                     if not self.userbot or not hasattr(self.userbot, "reply_to_group_message"):
+                        self._pending_radar_quick_replies[reply_key] = quick_text
                         await callback.answer("❌ Userbot xizmati ulanmagan.", show_alert=True)
                         return
 
                     await callback.answer("Guruhga javob yuborilmoqda...")
-                    await self.userbot.reply_to_group_message(group_id, msg_id, quick_text)
+                    try:
+                        await self.userbot.reply_to_group_message(group_id, msg_id, quick_text)
+                    except Exception as send_err:
+                        self._pending_radar_quick_replies[reply_key] = quick_text
+                        raise send_err
 
                     base_text = callback.message.html_text or callback.message.text or ""
                     kb = InlineKeyboardBuilder()
@@ -5833,6 +5838,9 @@ class AdminBotService:
 
         reply_key = f"{group_id}:{message_id}"
         if suggested_reply:
+            if len(self._pending_radar_quick_replies) >= 200:
+                oldest_key = next(iter(self._pending_radar_quick_replies))
+                self._pending_radar_quick_replies.pop(oldest_key, None)
             self._pending_radar_quick_replies[reply_key] = suggested_reply
 
         kb = InlineKeyboardBuilder()
