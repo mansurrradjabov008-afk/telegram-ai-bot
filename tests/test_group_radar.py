@@ -356,6 +356,7 @@ async def test_userbot_reply_to_group_message():
 
     mock_client = AsyncMock()
     mock_entity = MagicMock(id=-100555)
+    mock_client.get_input_entity = AsyncMock(return_value=mock_entity)
     mock_client.get_entity = AsyncMock(return_value=mock_entity)
     mock_client.action = MagicMock()
     mock_client.send_message = AsyncMock(return_value=MagicMock(id=999))
@@ -369,3 +370,151 @@ async def test_userbot_reply_to_group_message():
 
     assert sent is not None
     mock_client.send_message.assert_called_with(mock_entity, "Assalomu alaykum, eshitaman!", reply_to=42)
+
+
+# ------------------ TEST 8: AI Analyze Radar Mention ------------------
+@pytest.mark.asyncio
+async def test_ai_analyze_radar_mention():
+    from services.ai_engine import AIEngine
+    ai = AIEngine()
+
+    # Case 1: False positive (Abu Mansur Moturidiy) -> should return is_relevant=False
+    res_false = await ai.analyze_radar_mention(
+        group_title="Diniy Ma'rifat",
+        sender_name="Said",
+        message_text="Abu Mansur Moturidiy asarlarini o'rganish kerak",
+        trigger_type="name_keyword",
+    )
+    assert res_false["is_relevant"] is False
+
+    # Case 2: Technical urgent issue -> should return urgency='urgent'
+    res_urgent = await ai.analyze_radar_mention(
+        group_title="DevOps Uz",
+        sender_name="Bobur",
+        message_text="Mansur aka server tushdi 500 error beryapti tezda qarang",
+        trigger_type="name_keyword",
+    )
+    assert res_urgent["is_relevant"] is True
+    assert res_urgent["urgency"] == "urgent"
+    assert "🚨" in res_urgent["urgency_label"]
+    assert len(res_urgent["suggested_reply"]) > 5
+
+    # Case 3: Question / Inquiry -> should return urgency='question'
+    res_q = await ai.analyze_radar_mention(
+        group_title="Startuplar",
+        sender_name="Nodir",
+        message_text="Mansur aka loyihani yangi versiyasi qachon chiqadi?",
+        trigger_type="name_keyword",
+    )
+    assert res_q["is_relevant"] is True
+    assert res_q["urgency"] == "question"
+    assert "❓" in res_q["urgency_label"]
+
+
+# ------------------ TEST 9: Radar 1-Tap Quick Reply Callback ------------------
+@pytest.mark.asyncio
+async def test_radar_quick_reply_callback():
+    from datetime import datetime
+    from aiogram import Bot
+    from aiogram.types import CallbackQuery, User, Message, Chat, Update
+    from bot.admin_bot import AdminBotService
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_ai = MagicMock()
+    mock_sched = MagicMock()
+
+    admin_bot = AdminBotService(
+        db_manager=mock_db,
+        ai_engine=mock_ai,
+        scheduler_service=mock_sched,
+        admin_id=12345,
+    )
+
+    mock_userbot = MagicMock()
+    mock_userbot.reply_to_group_message = AsyncMock(return_value=True)
+    admin_bot.set_userbot(mock_userbot)
+
+    admin_bot._pending_radar_quick_replies["-100555:42"] = "Hozir qarayman, kutib turing!"
+
+    radar_send_handler = None
+    for h in admin_bot.dp.callback_query.handlers:
+        if getattr(h.callback, "__name__", "") == "on_radar_quick_send":
+            radar_send_handler = h.callback
+            break
+    assert radar_send_handler is not None
+
+    fake_cb = MagicMock()
+    fake_cb.from_user.id = 12345
+    fake_cb.data = "radar_quick:-100555:42"
+    fake_cb.answer = AsyncMock()
+    fake_cb.message = MagicMock()
+    fake_cb.message.html_text = "🎯 Guruhda siz haqingizda gaplashildi!"
+    fake_cb.message.text = "🎯 Guruhda siz haqingizda gaplashildi!"
+    fake_cb.message.edit_text = AsyncMock()
+
+    await radar_send_handler(fake_cb)
+
+    mock_userbot.reply_to_group_message.assert_called_with(-100555, 42, "Hozir qarayman, kutib turing!")
+    fake_cb.message.edit_text.assert_called()
+
+
+# ------------------ TEST 10: Radar Natural Language Commands ------------------
+@pytest.mark.asyncio
+async def test_radar_natural_language_commands():
+    from datetime import datetime
+    from aiogram import Bot
+    from aiogram.types import Message, User, Chat, Update
+    from bot.admin_bot import AdminBotService
+    from config import settings
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.list_contacts = AsyncMock(return_value=[])
+    mock_db.add_radar_keyword = AsyncMock(return_value=True)
+    mock_db.remove_radar_keyword = AsyncMock(return_value=True)
+    mock_db.list_radar_keywords = AsyncMock(return_value=["server"])
+    mock_db.list_radar_muted_groups = AsyncMock(return_value=[])
+    mock_db.get_recent_radar_mentions = AsyncMock(return_value=[])
+
+    admin_bot = AdminBotService(
+        db_manager=mock_db,
+        ai_engine=MagicMock(),
+        scheduler_service=MagicMock(),
+        admin_id=12345,
+    )
+
+    fake_user = User(id=12345, is_bot=False, first_name="Mansur")
+    fake_chat = Chat(id=12345, type="private")
+
+    def make_update(text: str, update_id: int):
+        fake_msg = Message(
+            message_id=990 + update_id,
+            date=datetime.now(),
+            chat=fake_chat,
+            from_user=fake_user,
+            text=text,
+        )
+        return Update(update_id=update_id, message=fake_msg)
+
+    mock_bot = AsyncMock(spec=Bot)
+    mock_bot.send_message = AsyncMock()
+
+    # Command: "radarga depozit so'zini qo'sh"
+    up1 = make_update("radarga depozit so'zini qo'sh", 1)
+    await admin_bot.dp.feed_update(mock_bot, up1)
+    mock_db.add_radar_keyword.assert_called_with("depozit")
+
+    # Command: "radardan server so'zini o'chir"
+    up2 = make_update("radardan server so'zini o'chir", 2)
+    await admin_bot.dp.feed_update(mock_bot, up2)
+    mock_db.remove_radar_keyword.assert_called_with("server")
+
+    # Command: "radarni o'chir"
+    up3 = make_update("radarni o'chir", 3)
+    await admin_bot.dp.feed_update(mock_bot, up3)
+    assert getattr(settings, "RADAR_ENABLED") is False
+
+    # Command: "radarni yoq"
+    up4 = make_update("radarni yoq", 4)
+    await admin_bot.dp.feed_update(mock_bot, up4)
+    assert getattr(settings, "RADAR_ENABLED") is True
+

@@ -1439,3 +1439,94 @@ Return STRICT JSON ONLY:
             confidence=0.90,
         )
 
+    async def analyze_radar_mention(
+        self,
+        group_title: str,
+        sender_name: str,
+        message_text: str,
+        trigger_type: str,
+    ) -> Dict[str, Any]:
+        """
+        Deep AI Analysis of a group mention:
+        Determines relevance (filters false positives), urgency, concise summary, and smart suggested reply.
+        """
+        fallback_res = {
+            "is_relevant": True,
+            "urgency": "normal",
+            "urgency_label": "💬 Muloqot",
+            "summary": f"{sender_name} sizni guruhda tilga oldi.",
+            "suggested_reply": "Salom! Xabaringizni ko'rdim, tez orada batafsil javob beraman.",
+        }
+
+        # Check for obvious false positives heuristically first (e.g. historical scholar Abu Mansur Moturidiy)
+        lower_txt = message_text.lower()
+        if "moturidiy" in lower_txt or "maturidiy" in lower_txt or "mansur halloj" in lower_txt:
+            return {
+                "is_relevant": False,
+                "urgency": "casual",
+                "urgency_label": "📚 Tarixiy/Uchinchi shaxs",
+                "summary": "Tarixiy yoki uchinchi shaxs haqidagi ma'lumot (Mansur Radjabovga aloqador emas).",
+                "suggested_reply": "",
+            }
+
+        prompt = f"""You are the personal AI executive assistant for Mansur Radjabov (@mansurjon_07), an IT founder and software engineer.
+Mansur was mentioned or tagged in a Telegram group.
+
+Group Title: "{group_title}"
+Sender Name: "{sender_name}"
+Trigger: "{trigger_type}"
+Message Text: "{message_text}"
+
+Analyze this mention carefully and return valid JSON with:
+1. "is_relevant": boolean. True if the message is addressing or referring to Mansur Radjabov. False if it is mentioning an unrelated third party, a book, or historical name.
+2. "urgency": "urgent" (critical bugs, system down, urgent request), "question" (asking for info/code/opinion), "proposal" (meeting or business offer), or "casual" (general chitchat).
+3. "urgency_label": Short Uzbek badge like "🚨 Shoshilinch", "❓ Savol", "🤝 Taklif", or "💬 Muloqot".
+4. "summary": Exactly ONE crisp sentence in Uzbek explaining what the sender is saying or requesting from Mansur.
+5. "suggested_reply": A natural, warm, human-like 1-2 sentence response in Uzbek as if typed by Mansur himself in this group chat. Do NOT use generic robotic phrases. Sound like a sharp software engineer.
+
+Respond ONLY with valid JSON:
+{{
+  "is_relevant": true,
+  "urgency": "question",
+  "urgency_label": "❓ Savol",
+  "summary": "...",
+  "suggested_reply": "..."
+}}
+"""
+        try:
+            raw_json = await self.generate_json_response(prompt, temperature=0.2, timeout=12.0)
+            if raw_json:
+                clean_json = raw_json.strip()
+                if clean_json.startswith("```json"):
+                    clean_json = clean_json[7:]
+                if clean_json.startswith("```"):
+                    clean_json = clean_json[3:]
+                if clean_json.endswith("```"):
+                    clean_json = clean_json[:-3]
+                data = json.loads(clean_json.strip())
+                if isinstance(data, dict):
+                    return {
+                        "is_relevant": bool(data.get("is_relevant", True)),
+                        "urgency": str(data.get("urgency", "normal")),
+                        "urgency_label": str(data.get("urgency_label", "💬 Muloqot")),
+                        "summary": str(data.get("summary") or fallback_res["summary"]),
+                        "suggested_reply": str(data.get("suggested_reply") or fallback_res["suggested_reply"]),
+                    }
+        except Exception as e:
+            logger.debug(f"AI radar analysis fallback used: {type(e).__name__}")
+
+        # Heuristic urgency classification
+        if any(w in lower_txt for w in ["server", "tushdi", "ishlamayapti", "xato", "500", "error", "crash", "tezda", "zudlik", "shoshilinch"]):
+            fallback_res["urgency"] = "urgent"
+            fallback_res["urgency_label"] = "🚨 Shoshilinch"
+            fallback_res["summary"] = f"{sender_name} texnik muammo yoki xatolik haqida yozmoqda."
+            fallback_res["suggested_reply"] = "Hozir ko'rib chiqyapman, loglarni tashlab bering."
+        elif any(w in lower_txt for w in ["qachon", "qayerda", "bormi", "bila olasizmi", "qilamizmi", "?", "savol"]):
+            fallback_res["urgency"] = "question"
+            fallback_res["urgency_label"] = "❓ Savol"
+            fallback_res["summary"] = f"{sender_name} sizga savol bilan murojaat qildi."
+            fallback_res["suggested_reply"] = "Salom! Xabaringizni ko'rdim, birozdan so'ng to'liq javob qaytaraman."
+
+        return fallback_res
+
+

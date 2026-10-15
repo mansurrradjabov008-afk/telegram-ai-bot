@@ -867,10 +867,15 @@ class UserbotService:
             raise RuntimeError("Userbot client is not initialized.")
 
         logger.info(f"Userbot replying to group {group_id} msg {message_id} (chars={len(reply_text)})")
+        entity = None
         try:
-            entity = await self.client.get_entity(group_id)
-        except Exception:
             entity = await self.client.get_input_entity(group_id)
+        except Exception:
+            try:
+                entity = await self.client.get_entity(group_id)
+            except Exception as e:
+                logger.warning(f"Entity resolution failed for group {group_id}: {type(e).__name__}")
+                entity = group_id
 
         typing_duration = self.rate_limiter.calculate_typing_duration(reply_text)
         try:
@@ -881,6 +886,10 @@ class UserbotService:
             await asyncio.sleep(typing_duration)
 
         sent_msg = await self._send_with_floodwait(entity, reply_text, reply_to=message_id)
+        if not sent_msg:
+            # Fallback: send directly without reply_to if original message was deleted
+            sent_msg = await self._send_with_floodwait(entity, reply_text)
+
         if not sent_msg:
             raise RuntimeError(f"Guruhga ({group_id}) xabar yetkazilmadi (FloodWait yoki tarmoq xatosi).")
 

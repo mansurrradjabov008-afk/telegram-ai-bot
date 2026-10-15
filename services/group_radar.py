@@ -251,6 +251,25 @@ class GroupRadarService:
                 trigger_type=detected["trigger_type"],
             )
 
+            # Run Deep AI Cognitive Analysis
+            if self.ai_engine and hasattr(self.ai_engine, "analyze_radar_mention"):
+                try:
+                    ai_res = await self.ai_engine.analyze_radar_mention(
+                        group_title=detected["group_title"],
+                        sender_name=detected["sender_name"],
+                        message_text=detected["message_text"],
+                        trigger_type=detected["trigger_type"],
+                    )
+                    if isinstance(ai_res, dict):
+                        if not ai_res.get("is_relevant", True):
+                            logger.info(f"Radar ignored false-positive mention in {detected['group_title']}")
+                            return
+                        detected["ai_summary"] = ai_res.get("summary")
+                        detected["urgency_label"] = ai_res.get("urgency_label")
+                        detected["suggested_reply"] = ai_res.get("suggested_reply")
+                except Exception as ae:
+                    logger.debug(f"AI radar analysis skipped: {type(ae).__name__}")
+
             if not self._alert_callback:
                 return
 

@@ -47,6 +47,7 @@ from services.schedule_parser import (
 )
 from services.memory_categories import normalize_category, CANONICAL_CATEGORIES, CATEGORY_SYNONYMS
 from services.memory_injection import is_forbidden_topic
+from services.group_radar import generate_jump_link
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +413,7 @@ class AdminBotService:
         self._pending_outreach: Optional[Dict[str, Any]] = None
         self._pending_outreach_drafts: Dict[str, Dict[str, Any]] = {}
         self._last_active_contact: Optional[Dict[str, Any]] = None
+        self._pending_radar_quick_replies: Dict[str, str] = {}
 
         self._setup_handlers()
 
@@ -3470,6 +3472,77 @@ class AdminBotService:
                 return
             await cmd_start(message)
 
+        async def _handle_natural_radar_action(message: types.Message) -> bool:
+            """
+            Handles natural language radar commands:
+            - 'Radarga loyiha so'zini qo'sh' / 'Radarga kalit so'z qo'sh: server'
+            - 'Radardan server so'zini o'chir'
+            - 'Radarni yoq' / 'Radarni o'chir' / 'Radarni to'xtat'
+            - 'Radar holati' / 'Guruhlar radari'
+            """
+            raw_text = (message.text or "").strip()
+            if not raw_text:
+                return False
+
+            lower = raw_text.lower()
+            if not ("radar" in lower or "kuzatuvchi" in lower):
+                return False
+
+            # 1. Status inquiry
+            if any(p in lower for p in ["radar holati", "radar qanday", "radar haqida", "guruhlar radari", "radar ma'lumoti"]):
+                await _render_radar_panel(message, is_callback=False)
+                return True
+
+            # 2. Toggle on/off
+            if any(p in lower for p in ["radarni yoq", "radarni ishga tushir", "radarni faollashtir"]):
+                setattr(settings, "RADAR_ENABLED", True)
+                await safe_reply(
+                    message,
+                    "🟢 <b>Guruhlar radari faollashtirildi!</b>\n\n"
+                    "Guruhlarda siz haqingizda gaplashilganda, kimdir chaqirganda yoki xabaringizga javob berganda zudlik bilan xabar beraman.",
+                    parse_mode="HTML"
+                )
+                return True
+
+            if any(p in lower for p in ["radarni o'chir", "radarni ochir", "radarni to'xtat", "radarni tuxtat"]):
+                setattr(settings, "RADAR_ENABLED", False)
+                await safe_reply(
+                    message,
+                    "⏸ <b>Guruhlar radari vaqtincha to'xtatildi.</b>\n\n"
+                    "Guruhlardagi eslatmalar bo'yicha bildirishnomalar yuborilmaydi. Qayta yoqish uchun <i>\"radarni yoq\"</i> deb yozishingiz mumkin.",
+                    parse_mode="HTML"
+                )
+                return True
+
+            # 3. Add keyword: "Radarga [so'z]ni qo'sh" or "Radarga kalit so'z qo'sh: [so'z]"
+            add_match = re.search(r"(?:radarga\s+(?:kalit\s+so'z\s+)?qo'sh(?:\s*:)?\s*['\"]?(\w+)['\"]?|radarga\s+['\"]?(\w+)['\"]?(?:\s+so'zini|\s+kalitini)?\s+qo'sh)", lower)
+            if add_match:
+                kw = add_match.group(1) or add_match.group(2)
+                if kw:
+                    await self.db_manager.add_radar_keyword(kw)
+                    await safe_reply(
+                        message,
+                        f"✅ <b>\"{html.escape(kw)}\"</b> kalit so'zi guruhlar radariga qo'shildi!\n\n"
+                        f"Endi biror guruhda ushbu so'z ishlatilsa, men buni qayd etib sizga xabar beraman.",
+                        parse_mode="HTML"
+                    )
+                    return True
+
+            # 4. Remove keyword: "Radardan [so'z]ni o'chir" or "Radardan olib tashla: [so'z]"
+            del_match = re.search(r"(?:radardan\s+(?:kalit\s+so'zni\s+)?(?:o'chir|olib\s+tashla)(?:\s*:)?\s*['\"]?(\w+)['\"]?|radardan\s+['\"]?(\w+)['\"]?(?:\s+so'zini|\s+kalitini)?\s+(?:o'chir|olib\s+tashla))", lower)
+            if del_match:
+                kw = del_match.group(1) or del_match.group(2)
+                if kw:
+                    await self.db_manager.remove_radar_keyword(kw)
+                    await safe_reply(
+                        message,
+                        f"🗑 <b>\"{html.escape(kw)}\"</b> kalit so'zi radardan olib tashlandi.",
+                        parse_mode="HTML"
+                    )
+                    return True
+
+            return False
+
         async def _handle_natural_contact_action(message: types.Message) -> bool:
             """
             Parses natural language commands targeting contacts without requiring '@'.
@@ -3674,6 +3747,10 @@ class AdminBotService:
 
             handled_contact = await _handle_natural_contact_action(message)
             if handled_contact:
+                return
+
+            handled_radar = await _handle_natural_radar_action(message)
+            if handled_radar:
                 return
 
             lower_msg = (message.text or "").strip().lower()
@@ -5695,9 +5772,45 @@ class AdminBotService:
                 except Exception as e:
                     logger.warning(f"Error unmuting radar group: {type(e).__name__}")
 
+        @dp.callback_query(F.data.startswith("radar_quick:"))
+        async def on_radar_quick_send(callback: types.CallbackQuery):
+            if not self._is_admin(callback.from_user.id):
+                return
+            parts = callback.data.split(":")
+            if len(parts) >= 3:
+                try:
+                    group_id = int(parts[1])
+                    msg_id = int(parts[2])
+                    reply_key = f"{group_id}:{msg_id}"
+                    quick_text = self._pending_radar_quick_replies.get(reply_key)
+                    if not quick_text:
+                        await callback.answer("⚠️ Tavsiya etilgan javob muddati o'tgan.", show_alert=True)
+                        return
+
+                    if not self.userbot or not hasattr(self.userbot, "reply_to_group_message"):
+                        await callback.answer("❌ Userbot xizmati ulanmagan.", show_alert=True)
+                        return
+
+                    await callback.answer("Guruhga javob yuborilmoqda...")
+                    await self.userbot.reply_to_group_message(group_id, msg_id, quick_text)
+
+                    base_text = callback.message.html_text or callback.message.text or ""
+                    kb = InlineKeyboardBuilder()
+                    jump_link = generate_jump_link(None, group_id, msg_id)
+                    kb.row(types.InlineKeyboardButton(text="🔗 Guruhdagi xabarni ochish", url=jump_link))
+                    await callback.message.edit_text(
+                        f"{base_text}\n\n✅ <b>Guruhga javob muvaffaqiyatli yuborildi!</b>\n"
+                        f"💬 <i>\"{html.escape(quick_text)}\"</i>",
+                        reply_markup=kb.as_markup(),
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.warning(f"Error sending radar quick reply: {type(e).__name__}")
+                    await safe_reply(callback.message, "❌ Guruhga javob yuborishda xatolik yuz berdi.")
+
     async def send_radar_alert(self, detected: Dict[str, Any], existing_alert_msg_id: Optional[int] = None) -> Optional[int]:
         """
-        Sends or updates a Group Radar alert in the Admin Bot Cockpit.
+        Sends or updates a Group Radar alert in the Admin Bot Cockpit with AI cognitive insights.
         Returns the Telegram message ID of the sent/updated message.
         """
         if not self.bot or not self.admin_id:
@@ -5714,19 +5827,48 @@ class AdminBotService:
         jump_link = detected.get("jump_link", "")
         mentions_count = detected.get("mentions_count", 1)
 
+        ai_summary = html.escape(detected.get("ai_summary") or "")
+        urgency_label = html.escape(detected.get("urgency_label") or "")
+        suggested_reply = detected.get("suggested_reply") or ""
+
+        reply_key = f"{group_id}:{message_id}"
+        if suggested_reply:
+            self._pending_radar_quick_replies[reply_key] = suggested_reply
+
         kb = InlineKeyboardBuilder()
-        if jump_link:
-            kb.row(types.InlineKeyboardButton(text="🔗 Guruhga o'tish", url=jump_link))
+        # Row 1: 1-Tap Quick Action (if AI suggested a reply)
+        if suggested_reply:
+            kb.row(
+                types.InlineKeyboardButton(
+                    text="⚡ Shu javobni yuborish",
+                    callback_data=f"radar_quick:{group_id}:{message_id}",
+                )
+            )
+
+        # Row 2: Manual reply & Mute
         kb.row(
             types.InlineKeyboardButton(
-                text="✍️ Guruhga javob yozish",
-                callback_data=f"radar_reply:{group_id}:{message_id}"
+                text="✍️ O'zim yozaman",
+                callback_data=f"radar_reply:{group_id}:{message_id}",
             ),
             types.InlineKeyboardButton(
                 text="🔕 Radardan o'chirish",
-                callback_data=f"radar_mute:{group_id}"
+                callback_data=f"radar_mute:{group_id}",
             ),
         )
+
+        # Row 3: Direct jump link
+        if jump_link:
+            kb.row(types.InlineKeyboardButton(text="🔗 Guruhdagi xabarni ochish", url=jump_link))
+
+        # Build Rich AI Content Block
+        ai_block = ""
+        if urgency_label:
+            ai_block += f"⚡ <b>Muhimlik:</b> {urgency_label}\n"
+        if ai_summary:
+            ai_block += f"💡 <b>AI Xulosa:</b> <i>{ai_summary}</i>\n"
+        if suggested_reply:
+            ai_block += f"💬 <b>Tavsiya etilgan AI javobi:</b>\n<code>{html.escape(suggested_reply)}</code>\n"
 
         if existing_alert_msg_id and mentions_count > 1:
             text = (
@@ -5734,7 +5876,8 @@ class AdminBotService:
                 f"👥 <b>Guruh:</b> {group_title}\n"
                 f"👤 <b>Oxirgi kim:</b> {user_repr}\n"
                 f"🔍 <b>Sabab:</b> {trigger_label}\n"
-                f"💬 <b>Oxirgi xabar:</b> <i>\"{message_text}\"</i>"
+                f"📩 <b>Oxirgi xabar:</b> <i>\"{message_text}\"</i>\n\n"
+                f"{ai_block}"
             )
             try:
                 msg = await self.bot.edit_message_text(
@@ -5753,7 +5896,8 @@ class AdminBotService:
             f"👥 <b>Guruh:</b> {group_title}\n"
             f"👤 <b>Kim:</b> {user_repr}\n"
             f"🔍 <b>Sabab:</b> {trigger_label}\n"
-            f"💬 <b>Xabar:</b> <i>\"{message_text}\"</i>"
+            f"📩 <b>Xabar:</b> <i>\"{message_text}\"</i>\n\n"
+            f"{ai_block}"
         )
         msg = await safe_send(self.bot, self.admin_id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
         return msg.message_id if msg else None
