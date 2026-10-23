@@ -7,6 +7,7 @@ Implements 8-step message pipeline, debounce buffer, sensitive guard, and draft 
 
 import asyncio
 import html
+import inspect
 import logging
 import random
 import time
@@ -359,45 +360,20 @@ class UserbotService:
                 if old_id != sender_id:
                     await self.db_manager.delete_contact(old_id)
 
-        # STRICT WHITELIST CHECK: Only private chats with saved contacts are handled
+        # Auto-onboard unknown private senders with autonomous handling
         if not contact:
             logger.info(
-                f"🛡 [FILTER] Sender {peer_repr} ({first_name}) is not in /contacts. Pipeline ignored."
+                f"✨ [AUTO ONBOARD] New sender {peer_repr} ({first_name}) auto-registered into contacts in 'auto' mode."
             )
-            # Notify owner via cockpit notification callback (throttled to 1 alert per sender per hour)
-            now_ts = time.time()
-            last_alert = self._unknown_sender_notified.get(sender_id, 0)
-            if now_ts - last_alert > 3600:
-                self._unknown_sender_notified[sender_id] = now_ts
-                if self._notification_callback:
-                    try:
-                        safe_first = html.escape(first_name)
-                        safe_preview = html.escape(incoming_text[:120]) if incoming_text else "[Fayl / Ovozli xabar / Media]"
-                        user_ref = f"@{username} | ID: {sender_id}" if username else f"ID: {sender_id}"
-                        alert_msg = (
-                            f"🔔 <b>Yangi inson yozdi:</b>\n"
-                            f"👤 <b>{safe_first}</b> ({user_ref})\n"
-                            f"💬 <i>\"{safe_preview}\"</i>\n\n"
-                            f"💡 <i>Quyidagi tugmalar orqali 1 bosishda bazaga qo'shishingiz mumkin:</i>"
-                        )
-                        from aiogram.utils.keyboard import InlineKeyboardBuilder
-                        builder = InlineKeyboardBuilder()
-                        builder.button(text="⚡ Auto qo'shish", callback_data=f"quick_add:{sender_id}:auto")
-                        builder.button(text="📝 Draft qilish", callback_data=f"quick_add:{sender_id}:draft")
-                        builder.button(text="🔇 Mute", callback_data=f"quick_add:{sender_id}:mute")
-                        builder.adjust(3)
-                        markup = builder.as_markup()
-
-                        async def _send_notif():
-                            try:
-                                await self._notification_callback(alert_msg, reply_markup=markup)
-                            except TypeError:
-                                await self._notification_callback(alert_msg)
-
-                        asyncio.create_task(_send_notif())
-                    except Exception as e_notif:
-                        logger.warning(f"Failed to send unknown sender notification: {type(e_notif).__name__}")
-            return
+            contact = await self.db_manager.upsert_contact(
+                user_id=sender_id,
+                username=username,
+                full_name=first_name,
+                relationship_type="general",
+                addressing_style="siz",
+                custom_instructions="Avtomatik qo'shilgan",
+                mode="auto",
+            )
 
         # Step 2: Mode lookup
         mode = getattr(contact, "mode", "draft") or "draft"
@@ -515,7 +491,7 @@ class UserbotService:
         if existing_task and not existing_task.done():
             existing_task.cancel()
 
-        window = getattr(settings, "DEBOUNCE_WINDOW_SECONDS", 8.0)
+        window = getattr(settings, "DEBOUNCE_WINDOW_SECONDS", 2.0)
         self._debounce_tasks[sender_id] = asyncio.create_task(
             self._debounce_timer(sender_id, window)
         )
@@ -619,13 +595,53 @@ class UserbotService:
             except Exception as e:
                 logger.warning(f"Failed to fetch style context for {peer_repr}: {type(e).__name__}")
 
-        reply_text = await self.ai_engine.generate_reply(
-            incoming_text=combined_text,
-            sender_name=first_name,
-            contact_profile=contact,
-            history=history,
-            memory_context=memory_context,
-        )
+        # Step 5 & 6: Optimized Parallel AI Execution & Instant Keyword Guard
+        from services.sensitive_guard import check_sensitive_keywords_detailed
+        in_detail = check_sensitive_keywords_detailed(combined_text)
+        CRITICAL_SECURITY_CATEGORIES = {
+            "cards", "amounts", "money_payments", "personal_data",
+            "legal_official", "promises_commitments", "suspicious_instruction"
+        }
+        has_critical_incoming = any(c in CRITICAL_SECURITY_CATEGORIES for c in in_detail.get("categories", []))
+
+        async def _safe_generate_reply():
+            res = self.ai_engine.generate_reply(
+                incoming_text=combined_text,
+                sender_name=first_name,
+                contact_profile=contact,
+                history=history,
+                memory_context=memory_context,
+            )
+            if inspect.isawaitable(res):
+                return await res
+            return res
+
+        async def _safe_classify_intent():
+            if not hasattr(self.ai_engine, "classify_incoming_message"):
+                return None
+            res = self.ai_engine.classify_incoming_message(
+                incoming_text=combined_text,
+                sender_name=first_name,
+                contact_profile=contact,
+                history=history,
+            )
+            if inspect.isawaitable(res):
+                return await res
+            return res
+
+        reply_task = asyncio.create_task(_safe_generate_reply())
+        intent_task = asyncio.create_task(_safe_classify_intent()) if not has_critical_incoming else None
+
+        try:
+            if intent_task:
+                reply_text, intent_result = await asyncio.gather(reply_task, intent_task)
+            else:
+                reply_text = await reply_task
+                intent_result = None
+        except Exception as e_ai:
+            logger.warning(f"Error during parallel AI execution for {peer_repr}: {type(e_ai).__name__}")
+            reply_text = await reply_task if not reply_task.done() else reply_task.result()
+            intent_result = None
 
         if not reply_text:
             if hasattr(self.ai_engine, "_dynamic_smart_fallback"):
@@ -650,79 +666,79 @@ class UserbotService:
                         logger.warning(f"Failed to notify owner about empty AI reply: {type(e_n).__name__}")
                 return
 
-        # Step 6: Sensitive Guard check
-        guard_result = await check_sensitive(
-            incoming_text=combined_text,
-            proposed_reply=reply_text,
-            ai_engine=self.ai_engine,
-        )
-        is_sensitive = guard_result.is_sensitive
-        sensitive_reason = guard_result.primary_reason
+        # Check reply text with pure keyword layer (0ms)
+        out_detail = check_sensitive_keywords_detailed(reply_text)
+        has_critical_reply = any(c in CRITICAL_SECURITY_CATEGORIES for c in out_detail.get("categories", []))
 
-        # Tier 1 Guardrail: AI Intent Classification (SAFE_CHITCHAT vs ESCALATE_TO_BOSS)
-        # Distinguish hard critical security boundaries from routine chitchat:
-        intent_result = None
-        try:
-            intent_result = await self.ai_engine.classify_incoming_message(
+        is_sensitive = False
+        sensitive_reason = None
+
+        if has_critical_incoming:
+            is_sensitive = True
+            sensitive_reason = in_detail["reasons"][0] if in_detail["reasons"] else "Xavfsizlik chegarasi"
+        elif has_critical_reply:
+            is_sensitive = True
+            sensitive_reason = f"Javobda: {out_detail['reasons'][0]}" if out_detail["reasons"] else "Xavfsizlik chegarasi"
+        elif intent_result and intent_result.category == "ESCALATE_TO_BOSS":
+            is_sensitive = True
+            sensitive_reason = intent_result.reason or "Xo'jayin qarori talab etiladi"
+            logger.info(f"🚨 [ESCALATE INTENT] Message from {peer_repr} requires Boss decision: {sensitive_reason}")
+        elif intent_result and intent_result.category == "SAFE_CHITCHAT":
+            is_sensitive = False
+            sensitive_reason = None
+            logger.info(f"💬 [SAFE CHITCHAT AUTO] Routine inquiry from {peer_repr} safe to auto-reply.")
+        else:
+            # Fallback sensitive guard check if intent wasn't run
+            guard_result = await check_sensitive(
                 incoming_text=combined_text,
-                sender_name=first_name,
-                contact_profile=contact,
-                history=history,
+                proposed_reply=reply_text,
+                ai_engine=self.ai_engine,
             )
-            if intent_result.category == "ESCALATE_TO_BOSS":
-                is_sensitive = True
-                if not sensitive_reason:
-                    sensitive_reason = intent_result.reason or "Xo'jayin qarori talab etiladi"
-                logger.info(
-                    f"🚨 [ESCALATE INTENT] Message from {peer_repr} requires Boss decision: {sensitive_reason}"
-                )
-            elif intent_result.category == "SAFE_CHITCHAT" and not getattr(guard_result, "hard_sensitive", False):
-                # Routine conversational inquiry (e.g. casual "ko'rishamizmi?") with safe, non-binding reply
+            # Interpersonal banter/profanity alone must not force draft approval in auto mode
+            if guard_result.categories == ["profanity_conflict"]:
                 is_sensitive = False
                 sensitive_reason = None
-                logger.info(
-                    f"💬 [SAFE CHITCHAT AUTO] Routine inquiry from {peer_repr} safe to auto-reply (non-hard sensitive)."
-                )
-        except Exception as e:
-            logger.warning(f"Error during intent classification for {peer_repr}: {type(e).__name__}")
+            else:
+                is_sensitive = guard_result.is_sensitive
+                sensitive_reason = guard_result.primary_reason
 
-        # AUTO MODE AUTONOMY GUARANTEE:
-        # When contact is set to 'auto', routine coordination, casual meetings (library, cafe, meetup),
-        # routine questions ("nega javob bermayapsan"), and everyday chatter must auto-reply smoothly
-        # without bothering the Boss. Only true hard security risks (cards, money, passwords, lawsuits,
-        # prompt injections) or explicit escalation to Boss ("ESCALATE_TO_BOSS") will trigger draft approval.
-        if mode == "auto" and not getattr(guard_result, "hard_sensitive", False):
-            if not (intent_result and intent_result.category == "ESCALATE_TO_BOSS"):
+        # AUTONOMY GUARANTEE:
+        # Routine coordination, casual meetings (library, cafe, meetup), routine questions
+        # ("nega javob bermayapsan"), everyday chatter, and street banter/slang (ko'cha tili)
+        # must auto-reply smoothly without bothering the Boss. Only true hard security risks (cards, money,
+        # passwords, lawsuits, prompt injections) or explicit demands for the Boss in person will trigger draft approval.
+        wants_boss_in_person = any(w in combined_text.lower() for w in [
+            "mansurga ber", "mansur bilan gaplashaman", "mansurni o'zi", "mansurni ozi",
+            "shaxsan o'zi", "shaxsan ozi", "mansurni chaqir", "mansur kerak"
+        ])
+        if not has_critical_incoming and not has_critical_reply:
+            intent_escalates_critical = bool(
+                intent_result and intent_result.category == "ESCALATE_TO_BOSS" and
+                any(c in in_detail.get("categories", []) for c in CRITICAL_SECURITY_CATEGORIES)
+            )
+            if not wants_boss_in_person and not intent_escalates_critical:
                 if is_sensitive:
                     logger.info(
-                        f"⚡ [AUTO MODE AUTONOMY] Overriding soft sensitivity ({sensitive_reason}) for {peer_repr} "
-                        f"in auto mode. Auto-replying autonomously."
+                        f"⚡ [AUTONOMY] Overriding soft sensitivity ({sensitive_reason}) for {peer_repr}. "
+                        f"Auto-replying autonomously."
                     )
                     is_sensitive = False
                     sensitive_reason = None
 
         # Writing Style Honesty Guard (Phase 5, Rule D6)
-        # If incoming message asks whether AI/bot or owner:
-        # In draft mode -> route to draft with "Muhim - tasdiq kerak"
-        # In auto mode -> let Rule 11 of AI Engine naturally answer with human wit ("E qanaqa bot jigar...")
         if getattr(self, "style_service", None) and contact and getattr(contact, "user_id", None):
             try:
                 is_style_active = await self.style_service.is_style_enabled_for_contact(contact.user_id)
                 if is_style_active and self.style_service.check_honesty_question(combined_text):
-                    if mode != "auto":
-                        is_sensitive = True
-                        sensitive_reason = "Muhim - tasdiq kerak"
-                        logger.info(f"Honesty check triggered for {peer_repr} in draft mode. Routing to draft.")
-                    else:
-                        logger.info(f"Honesty question detected for {peer_repr} in auto mode. Allowing AI Rule 11 natural human comeback.")
+                    logger.info(f"Honesty question detected for {peer_repr}. Allowing AI Rule 11 natural human comeback.")
             except Exception as e:
                 logger.warning(f"Error during style honesty check for {peer_repr}: {type(e).__name__}")
 
         # Step 7: Auto mode and NOT sensitive
-        if mode == "auto" and not is_sensitive:
+        if not is_sensitive:
             if not settings.AUTO_REPLY_ENABLED:
                 logger.info("Auto-reply is globally disabled. Storing as draft instead.")
-                mode = "draft"
+                is_sensitive = True
             else:
                 # Check recent history: if owner replied manually after contact's message, cancel
                 replied_manually = await self.check_owner_manually_replied(peer=chat_id, after_message_id=last_msg_id)
@@ -733,11 +749,13 @@ class UserbotService:
                     )
                     return
 
-                # Typing action + random human-like delay
-                delay = random.uniform(
-                    getattr(settings, "HUMAN_DELAY_MIN", 3),
-                    getattr(settings, "HUMAN_DELAY_MAX", 8),
+                # Typing action + dynamic human typing delay scaled by length
+                base_delay = random.uniform(
+                    getattr(settings, "HUMAN_DELAY_MIN", 1.0),
+                    getattr(settings, "HUMAN_DELAY_MAX", 2.5),
                 )
+                length_addon = min(1.0, len(reply_text) * 0.02)
+                delay = round(base_delay + length_addon, 2)
                 try:
                     if self.client:
                         async with self.client.action(chat_id, "typing"):
@@ -781,8 +799,8 @@ class UserbotService:
                     asyncio.create_task(_bg_mem_auto(sender_id))
                 return
 
-        # Step 8: Draft mode OR Sensitive topic
-        if mode == "draft" or is_sensitive:
+        # Step 8: Only genuinely sensitive / critical topics trigger Boss approval draft
+        if is_sensitive:
             draft = await self.db_manager.create_draft(
                 contact_username=contact.username,
                 contact_user_id=contact.user_id,

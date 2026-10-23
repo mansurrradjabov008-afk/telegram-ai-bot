@@ -274,6 +274,11 @@ class GroupRadarService:
                 return
 
             now = time.time()
+            if len(self._recent_alerts) > 100:
+                self._recent_alerts = {
+                    gid: data for gid, data in self._recent_alerts.items()
+                    if now - data.get("timestamp", 0) < 3600
+                }
             recent = self._recent_alerts.get(group_id)
 
             existing_msg_id = None

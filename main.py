@@ -7,6 +7,10 @@ import asyncio
 import logging
 import signal
 import sys
+import os
+import shutil
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
 from rich.logging import RichHandler
 
 if sys.platform.startswith("win"):
@@ -15,6 +19,21 @@ if sys.platform.startswith("win"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+    # LAPTOP SAFETY GUARD: Prevent dual-polling high-CPU conflicts on Windows
+    if os.environ.get("ALLOW_LAPTOP_RUN") != "1":
+        sys.stderr.write(
+            "\n" + "=" * 70 + "\n"
+            "⚠️  XAVFSIZLIK TO'SIG'I (LAPTOP SAFETY GUARD)\n"
+            + "=" * 70 + "\n"
+            "Telegram AI Butler hozirda telefoningizda (Termux) 24/7 ishlamoqda.\n"
+            "Noutbukingiz protsessori qizib ketmasligi va Telegram tokenlari\n"
+            "to'qnash kelib (TelegramConflictError) telefoningizdagi botni\n"
+            "to'xtatib qo'ymasligi uchun noutbukda bot ishga tushishi bloklangan.\n\n"
+            "Agar test qilish uchun juda zarur bo'lsa, 'ALLOW_LAPTOP_RUN=1' o'rnating.\n"
+            + "=" * 70 + "\n\n"
+        )
+        sys.exit(0)
 
 from config import settings
 from database.connection import init_db
@@ -29,12 +48,25 @@ from services.group_radar import GroupRadarService
 from bot.admin_bot import AdminBotService
 from bot.userbot import UserbotService
 
-# Configure structured logging
+# Configure structured logging with automatic rotation (max 15MB total)
+log_handlers = [RichHandler(rich_tracebacks=True, tracebacks_show_locals=False)]
+try:
+    file_handler = RotatingFileHandler(
+        "butler_phone.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=2,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(logging.Formatter("[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"))
+    log_handlers.append(file_handler)
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True, tracebacks_show_locals=False)],
+    handlers=log_handlers,
 )
 # Constrain third-party loggers (Rule H3)
 for _lib in ["telethon", "httpx", "google", "google.auth", "urllib3", "aiogram"]:
@@ -100,19 +132,25 @@ async def main():
     digest_service.register_boss_notifier(admin_bot_service.send_notification)
     digest_service.set_userbot_client(lambda: userbot_service.client)
 
+    # 4.5 Start Web Keep-Alive (Zero-Sleep Cloud Server) early to satisfy Watchdog probes
+    try:
+        from services.web_keepalive import start_keepalive_server
+        await start_keepalive_server(
+            default_port=7860,
+            digest_service=digest_service,
+            db_manager=db_manager,
+        )
+    except Exception as e:
+        logger.warning(f"Could not start Keep-Alive web server: {type(e).__name__}")
+
     # 5. Start Scheduler and restore pending tasks
     scheduler_service.start()
     await scheduler_service.reload_pending_tasks_from_db()
     logger.info("✅ Scheduler service started with persistent SQLite job store.")
 
-    # Register Smart Digest daily job and run catch-up if needed
+    # Register Smart Digest daily job (scheduled daily at DIGEST_TIME)
     if getattr(settings, "DIGEST_V2_ENABLED", True):
         scheduler_service.register_smart_digest_job(
-            digest_service=digest_service,
-            notify_boss_callback=admin_bot_service.send_notification,
-            digest_time_str=getattr(settings, "DIGEST_TIME", "08:00"),
-        )
-        await scheduler_service.check_and_run_catchup_digest(
             digest_service=digest_service,
             notify_boss_callback=admin_bot_service.send_notification,
             digest_time_str=getattr(settings, "DIGEST_TIME", "08:00"),
@@ -163,7 +201,15 @@ async def main():
                 except Exception as log_err:
                     logger.warning(f"Log pruning warning: {log_err}")
 
-            # 5. Garbage Collection
+            # 5. Clear Telethon in-memory entity cache to prevent RAM growth
+            if userbot_service.client and hasattr(userbot_service.client, "_entity_cache"):
+                try:
+                    userbot_service.client._entity_cache.clear()
+                    logger.info("✅ Telethon in-memory entity cache recycled.")
+                except Exception:
+                    pass
+
+            # 6. Garbage Collection
             collected = gc.collect()
             logger.info(f"✅ Memory garbage collection complete ({collected} objects freed).")
 
@@ -177,7 +223,7 @@ async def main():
                     "• Butler 100% sog'lom va barqaror ishlamoqda."
                 )
         except Exception as e:
-            logger.error(f"Error during scheduled database maintenance: {type(e).__name__}: {e}")
+            logger.error(f"Error during scheduled database maintenance: {type(e).__name__}")
 
     scheduler_service.scheduler.add_job(
         _run_scheduled_maintenance,
@@ -185,10 +231,23 @@ async def main():
         id="daily_safe_db_backup",
         name="Daily Safe Database Backup & Maintenance",
         replace_existing=True,
+        misfire_grace_time=3600,
     )
     logger.info("✅ Daily safe database backup and maintenance scheduled at 04:00.")
 
     # 6. Initialize MTProto Userbot
+    session_file = Path("data") / settings.TELEGRAM_SESSION_NAME
+    session_backup = Path("data") / f"{settings.TELEGRAM_SESSION_NAME}.bak"
+    if session_file.exists() and session_file.stat().st_size > 0:
+        try:
+            shutil.copy2(session_file, session_backup)
+            logger.info("🛡️ Telegram session backup verified and preserved.")
+        except Exception as s_err:
+            logger.warning(f"Session backup warning: {s_err}")
+    elif (not session_file.exists() or session_file.stat().st_size == 0) and session_backup.exists() and session_backup.stat().st_size > 0:
+        logger.warning("🚨 Telegram session missing or empty! Restoring from verified backup...")
+        shutil.copy2(session_backup, session_file)
+
     has_userbot_creds = userbot_service.init_client()
     if has_userbot_creds:
         logger.info("Authenticating Telegram Userbot session...")
@@ -199,12 +258,16 @@ async def main():
     else:
         logger.warning("⚠️ Userbot credentials not configured in .env. Running in dry/standby mode.")
 
-    # 7. Start Web Keep-Alive (Zero-Sleep Cloud Server)
-    from services.web_keepalive import start_keepalive_server
-    try:
-        await start_keepalive_server(default_port=7860)
-    except Exception as e:
-        logger.warning(f"Could not start Keep-Alive web server: {type(e).__name__}")
+    # Spawn Smart Digest catch-up check in background now that Userbot is running
+    if getattr(settings, "DIGEST_V2_ENABLED", True):
+        asyncio.create_task(
+            scheduler_service.check_and_run_catchup_digest(
+                digest_service=digest_service,
+                notify_boss_callback=admin_bot_service.send_notification,
+                digest_time_str=getattr(settings, "DIGEST_TIME", "08:00"),
+            )
+        )
+
 
     # 8. Start Admin Bot and Userbot with Resilient Reconnect Loops
     async def _run_admin_bot_resilient():
@@ -238,6 +301,34 @@ async def main():
                 except Exception as e2:
                     logger.error(f"Userbot reconnect attempt failed: {type(e2).__name__}")
 
+    async def _userbot_heartbeat():
+        """
+        Actively probes Telethon MTProto connection every 60s.
+        If mobile network handover (Wi-Fi <-> 4G/5G) leaves a half-open dead socket,
+        this detects the stall and triggers a clean reconnection within 60s.
+        """
+        while True:
+            await asyncio.sleep(60)
+            if not (userbot_service.client and userbot_service._is_running):
+                continue
+            try:
+                if not userbot_service.client.is_connected():
+                    logger.warning("⚠️ [HEARTBEAT] Userbot disconnected. Reconnecting...")
+                    await userbot_service.client.connect()
+                else:
+                    await asyncio.wait_for(userbot_service.client.get_me(), timeout=12.0)
+            except (asyncio.TimeoutError, ConnectionError, OSError) as net_err:
+                logger.warning(f"🚨 [HEARTBEAT] Telethon MTProto socket error ({type(net_err).__name__}). Resetting connection...")
+                try:
+                    await userbot_service.client.disconnect()
+                    await asyncio.sleep(2)
+                    await userbot_service.client.connect()
+                    logger.info("✅ [HEARTBEAT] Telethon MTProto reconnected successfully.")
+                except Exception as r_err:
+                    logger.error(f"Failed to reset stalled connection: {r_err}")
+            except Exception as h_err:
+                logger.debug(f"Heartbeat tick: {h_err}")
+
     tasks = []
     if admin_bot_service.bot:
         logger.info("🤖 Admin Cockpit Bot polling starting...")
@@ -248,6 +339,7 @@ async def main():
 
     if userbot_service.client and userbot_service._is_running:
         tasks.append(asyncio.create_task(_run_userbot_resilient()))
+        tasks.append(asyncio.create_task(_userbot_heartbeat()))
 
     if not tasks:
         logger.info("ℹ️ No active bot tasks were started because credentials are pending in .env.")

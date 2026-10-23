@@ -38,10 +38,16 @@ class DigestService:
         self.summarizer = DigestSummarizer(self.ai_engine)
         self.formatter = DigestFormatter()
         self._is_run_in_progress: bool = False
+        self._run_start_time: float = 0.0
         self._notify_boss_callback: Optional[Callable] = None
         self._telethon_client: Optional[Any] = None
         self._client_getter: Optional[Callable] = None
         self.alert_keywords = ["urgent", "muhim", "diqqat", "shoshilinch", "xavf", "vazifa"]
+
+    def force_unlock(self):
+        """Forcibly clears concurrency lock."""
+        self._is_run_in_progress = False
+        self._run_start_time = 0.0
 
     def register_boss_notifier(self, callback: Callable):
         """Registers callback to notify owner/admin cockpit."""
@@ -348,19 +354,46 @@ class DigestService:
                 # Calculate lookback cutoff if last_msg_id is 0
                 cutoff_time = datetime.now(timezone.utc) - timedelta(hours=settings.DIGEST_LOOKBACK_HOURS)
 
-                # Fetch messages using iter_messages (Read-only, DOES NOT mark messages as read)
-                iter_kwargs: Dict[str, Any] = {"limit": settings.MAX_POSTS_PER_RUN}
+                # Fetch messages with strict per-source timeout (15s) and username fallback
+                iter_kwargs: Dict[str, Any] = {"limit": min(30, settings.MAX_POSTS_PER_RUN)}
                 if last_msg_id > 0:
                     iter_kwargs["min_id"] = last_msg_id
 
-                async for msg in telethon_client.iter_messages(source.peer_id, **iter_kwargs):
-                    if last_msg_id == 0 and getattr(msg, "date", None):
-                        msg_date = msg.date
-                        if msg_date.tzinfo is None:
-                            msg_date = msg_date.replace(tzinfo=timezone.utc)
-                        if msg_date < cutoff_time:
-                            break
+                async def _fetch_source_msgs() -> List[Any]:
+                    msgs_batch = []
+                    try:
+                        async for msg in telethon_client.iter_messages(source.peer_id, **iter_kwargs):
+                            if last_msg_id == 0 and getattr(msg, "date", None):
+                                msg_date = msg.date
+                                if msg_date.tzinfo is None:
+                                    msg_date = msg_date.replace(tzinfo=timezone.utc)
+                                if msg_date < cutoff_time:
+                                    break
+                            msgs_batch.append(msg)
+                            if len(msgs_batch) >= iter_kwargs["limit"]:
+                                break
+                    except Exception as inner_fetch_err:
+                        if isinstance(inner_fetch_err, FloodWaitError):
+                            raise inner_fetch_err
+                        if source.username and source.username.strip():
+                            target_u = f"@{source.username.lstrip('@')}"
+                            logger.info(f"Target peer_id {source.peer_id} fetch failed ({inner_fetch_err}), attempting username {target_u}...")
+                            async for msg in telethon_client.iter_messages(target_u, **iter_kwargs):
+                                msgs_batch.append(msg)
+                                if len(msgs_batch) >= iter_kwargs["limit"]:
+                                    break
+                        else:
+                            raise inner_fetch_err
+                    return msgs_batch
 
+                try:
+                    fetched_messages = await asyncio.wait_for(_fetch_source_msgs(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout (15s) fetching posts for source {source.title} ({source.peer_id}). Skipping.")
+                    source_status = "timeout_15s"
+                    fetched_messages = []
+
+                for msg in fetched_messages:
                     raw_msg = getattr(msg, "message", None)
                     if not isinstance(raw_msg, str):
                         raw_msg = getattr(msg, "text", None)
@@ -650,14 +683,23 @@ class DigestService:
         except Exception:
             pass
 
+        now = time.time()
         if self._is_run_in_progress:
-            return {
-                "status": "in_progress",
-                "message": "⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting.",
-                "messages": ["⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting."],
-            }
+            if self._run_start_time == 0.0:
+                self._run_start_time = now
+            elapsed = now - self._run_start_time
+            if elapsed < 90.0:
+                return {
+                    "status": "in_progress",
+                    "message": "⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting.",
+                    "messages": ["⚠️ <b>Smart Digest V2 hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting."],
+                }
+            else:
+                logger.warning(f"Resetting stale digest lock (> {elapsed:.1f}s elapsed).")
+                self._is_run_in_progress = False
 
         self._is_run_in_progress = True
+        self._run_start_time = now
         try:
             await notify("Kuzatuvdagi kanallardan so'nggi xabarlar tekshirilmoqda...")
             # 1. Run collection, cleaning, classification, and summarization
@@ -735,3 +777,4 @@ class DigestService:
             }
         finally:
             self._is_run_in_progress = False
+            self._run_start_time = 0.0

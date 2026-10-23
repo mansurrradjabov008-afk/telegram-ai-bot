@@ -71,6 +71,7 @@ class SchedulerService:
             id=job_id,
             args=[task.id, target_peer, message_text],
             replace_existing=True,
+            misfire_grace_time=3600,
         )
         logger.info(f"Scheduled task #{task.id} for {target_peer} at {iso_str}")
         return task
@@ -241,6 +242,7 @@ class SchedulerService:
             id=job_id,
             name="Daily Smart Digest V2",
             replace_existing=True,
+            misfire_grace_time=3600,
         )
         logger.info(f"Registered daily Smart Digest job at {hour:02d}:{minute:02d} ({settings.TIMEZONE}).")
 

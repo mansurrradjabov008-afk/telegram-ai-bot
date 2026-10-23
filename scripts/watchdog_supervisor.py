@@ -30,8 +30,8 @@ logger = logging.getLogger("WatchdogSupervisor")
 BASE_DIR = Path(__file__).resolve().parent.parent
 HEALTH_URL = "http://127.0.0.1:7860/health"
 POLL_INTERVAL_SECONDS = 15.0
-PROBE_TIMEOUT_SECONDS = 5.0
-MAX_CONSECUTIVE_FAILURES = 3
+PROBE_TIMEOUT_SECONDS = 8.0
+MAX_CONSECUTIVE_FAILURES = 5
 
 
 def check_liveness_probe() -> bool:
@@ -85,8 +85,8 @@ def run_supervisor():
         )
         logger.info(f"Butler instance started with PID: {proc.pid}")
 
-        # Allow initial startup window before checking health (10 seconds)
-        time.sleep(10.0)
+        # Allow initial startup window before checking health (20 seconds for Android CPU)
+        time.sleep(20.0)
 
         consecutive_failures = 0
 

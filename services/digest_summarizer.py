@@ -5,6 +5,8 @@ strictly based on cited posts, enforces Anti-Hallucination verification by code,
 deterministically builds Section D and sorts Section F by deadline.
 """
 
+import asyncio
+import inspect
 import json
 import logging
 from dataclasses import dataclass, field
@@ -135,15 +137,41 @@ class DigestSummarizer:
 
         temp = getattr(settings, "DIGEST_AI_TEMPERATURE", 0.0)
 
+        async def _call_engine(p: str) -> Optional[str]:
+            try:
+                res_call = self.ai_engine.generate_json_response(p, temperature=temp, timeout=12.0)
+            except TypeError:
+                res_call = self.ai_engine.generate_json_response(p, temperature=temp)
+            if inspect.iscoroutine(res_call):
+                try:
+                    res_call = await asyncio.wait_for(res_call, timeout=18.0)
+                except TypeError:
+                    res_retry = self.ai_engine.generate_json_response(p, temperature=temp)
+                    if inspect.iscoroutine(res_retry):
+                        res_call = await asyncio.wait_for(res_retry, timeout=18.0)
+                    else:
+                        res_call = res_retry
+            return res_call if isinstance(res_call, str) else None
+
         # Attempt 1
-        raw = await self.ai_engine.generate_json_response(prompt, temperature=temp)
+        try:
+            raw = await _call_engine(prompt)
+        except Exception as e1:
+            logger.warning(f"Summarization attempt 1 failed ({type(e1).__name__}): {e1}")
+            raw = None
+
         parsed = self._parse_summary_json(raw)
         if parsed is not None:
             return parsed
 
         # Retry once
         logger.warning(f"Summarization JSON parse failed. Retrying once...")
-        raw_retry = await self.ai_engine.generate_json_response(prompt, temperature=temp)
+        try:
+            raw_retry = await _call_engine(prompt)
+        except Exception as e2:
+            logger.warning(f"Summarization retry failed ({type(e2).__name__})")
+            raw_retry = None
+
         parsed_retry = self._parse_summary_json(raw_retry)
         if parsed_retry is not None:
             return parsed_retry
@@ -268,9 +296,20 @@ class DigestSummarizer:
         approved_items: List[DigestItem] = []
         discarded_posts: List[DigestPost] = []
 
-        for group in event_groups:
-            summary_resp = await self.summarize_event_group(group)
-            if summary_resp is None:
+        sem = asyncio.Semaphore(3)
+
+        async def _summarize_safe(grp: List[DigestPost]) -> Optional[AISummaryResponse]:
+            async with sem:
+                try:
+                    return await asyncio.wait_for(self.summarize_event_group(grp), timeout=20.0)
+                except Exception as g_err:
+                    logger.warning(f"Summarize group error/timeout: {type(g_err).__name__}: {g_err}")
+                    return None
+
+        summary_results = await asyncio.gather(*[_summarize_safe(g) for g in event_groups], return_exceptions=True)
+
+        for group, summary_resp in zip(event_groups, summary_results):
+            if isinstance(summary_resp, Exception) or summary_resp is None:
                 for p in group:
                     p.status = "discarded"
                     p.discard_reason = "summarization_ai_failed"

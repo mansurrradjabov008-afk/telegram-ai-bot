@@ -5,6 +5,7 @@ enforces topic taxonomy, precedence rules, extracts structured data for D & F,
 and validates results with retry-once and strict anti-hallucination checks.
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -236,12 +237,29 @@ class DigestClassifier:
         prompt = self.build_batch_prompt(batch)
         temp = getattr(settings, "DIGEST_AI_TEMPERATURE", 0.0)
 
+        async def _call_engine(p: str) -> str:
+            try:
+                res_call = self.ai_engine.generate_json_response(p, temperature=temp, timeout=15.0)
+            except TypeError:
+                res_call = self.ai_engine.generate_json_response(p, temperature=temp)
+            if inspect.iscoroutine(res_call):
+                try:
+                    res_call = await asyncio.wait_for(res_call, timeout=20.0)
+                except TypeError:
+                    res_retry = self.ai_engine.generate_json_response(p, temperature=temp)
+                    if inspect.iscoroutine(res_retry):
+                        res_call = await asyncio.wait_for(res_retry, timeout=20.0)
+                    else:
+                        res_call = res_retry
+            return res_call if isinstance(res_call, str) else ""
+
         # Attempt 1
-        res = self.ai_engine.generate_json_response(prompt, temperature=temp)
-        if inspect.iscoroutine(res):
-            raw_response = await res
-        else:
-            raw_response = res
+        try:
+            raw_response = await _call_engine(prompt)
+        except Exception as e1:
+            logger.warning(f"Classification attempt 1 failed ({type(e1).__name__}): {e1}")
+            raw_response = ""
+
         if not isinstance(raw_response, str):
             raw_response = ""
 
@@ -251,11 +269,12 @@ class DigestClassifier:
 
         # Retry once
         logger.warning(f"AI classification failed for batch {expected_ids}. Retrying once...")
-        res_retry = self.ai_engine.generate_json_response(prompt, temperature=temp)
-        if inspect.iscoroutine(res_retry):
-            raw_retry = await res_retry
-        else:
-            raw_retry = res_retry
+        try:
+            raw_retry = await _call_engine(prompt)
+        except Exception as e2:
+            logger.warning(f"Classification retry failed ({type(e2).__name__})")
+            raw_retry = ""
+
         if not isinstance(raw_retry, str):
             raw_retry = ""
 

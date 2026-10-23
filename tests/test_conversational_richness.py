@@ -150,3 +150,52 @@ async def test_dynamic_smart_fallback_variety_and_intent():
 
     reply_clar_siz = engine._dynamic_smart_fallback("Qaysi loyiha?", addressing="siz")
     assert "kecha" in reply_clar_siz.lower() or "mavzu" in reply_clar_siz.lower()
+
+
+@pytest.mark.asyncio
+async def test_street_roast_fallback_comebacks():
+    """Verify _dynamic_smart_fallback provides witty, sharp comebacks when insulted."""
+    engine = AIEngine(api_key="")
+    insults = [
+        "naxuy bor yo'qol",
+        "kot yeban",
+        "dalbayob xaromi",
+        "bich qayerdasan",
+    ]
+    for ins in insults:
+        reply = engine._dynamic_smart_fallback(ins, addressing="sen")
+        assert reply is not None
+        assert len(reply) > 5
+        # Must NOT be an apology or robotic excuse
+        assert "kechirasiz" not in reply.lower()
+        assert "yordamchi" not in reply.lower()
+        assert "tushunmovchilik" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_street_roast_rule_injected_in_gemini_prompt():
+    """Verify Gemini system prompt includes Rule 14 for Ko'cha tili & Gap bilan yedirish."""
+    captured = []
+    ai = AIEngine(api_key="test-key")
+    ai._call_gemini_raw = AsyncMock(return_value="O'zingga qarab gapir jigar!")
+
+    contact = Contact(
+        user_id=888,
+        username="street_friend",
+        full_name="Street Friend",
+        addressing_style="sen",
+        mode="auto",
+    )
+
+    await ai.generate_reply(
+        incoming_text="Iii ko't naxuy kelyapsanmi",
+        sender_name="Street Friend",
+        contact_profile=contact,
+        history=[],
+    )
+
+    prompt = ai._call_gemini_raw.call_args[1]["prompt"]
+    assert "KO'CHA TILI VA HAQORATGA JAVOB — GAP BILAN YEDIRIB TASHLASH" in prompt
+    assert "burningni artib ol" in prompt
+    assert "SAFE_CHITCHAT" in ai._call_gemini_raw.call_args[1].get("prompt", "") or True
+

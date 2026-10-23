@@ -381,7 +381,6 @@ ESCALATE TO BOSS (category: 'ESCALATE_TO_BOSS') ONLY IF:
 2. Direct demands for confidential secrets, passwords, passport, private home address.
 3. Explicit demands to speak strictly with Mansur in person ("Mansurga ber telefonni", "faqat Mansur bilan gaplashaman", "shaxsan o'zi kerak").
 4. Real legal, police, court threats or critical business agreements.
-5. Severe profanity, vulgar insults, aggressive harassment, or angry escalations ("kot", "jalab", "naxuy", "bich", "zaybal", sexual/familial abuse). AI must NEVER argue or bicker; escalate to Boss immediately.
 
 SAFE CHITCHAT & ROUTINE CONVERSATION (category: 'SAFE_CHITCHAT') FOR ALL NORMAL COMMUNICATIONS (AUTO-HANDLE):
 1. Clarifications and questions about recent messages: "Qaysi loyiha?", "Nima u?", "Qachon aytdingiz?", "Qaysi xabar?", "Tushunmadim?" -> SAFE_CHITCHAT! The AI must explain directly from conversation history, NEVER escalate!
@@ -389,6 +388,8 @@ SAFE CHITCHAT & ROUTINE CONVERSATION (category: 'SAFE_CHITCHAT') FOR ALL NORMAL 
 3. Casual questions about activities: "Nima qilyapsan?", "Qayerdasan?", "Nimalar bilan bandsan?".
 4. Friendly reactions, jokes, appreciation: "haha", "🤣🤣", "zo'r", "gap yo'q", "rahmat", "bo'ldi", "tushundim".
 5. General meeting questions without binding commitments: "Ko'rishamizmi?", "Vaqting bormi?" -> SAFE_CHITCHAT (AI gives polite general reassurance without creating unnecessary drafts).
+6. Street banter, slang, swearing, vulgar insults, or aggressive cussing ("kot", "jalab", "naxuy", "bich", "zaybal", etc.):
+   -> SAFE_CHITCHAT (AUTO-HANDLE)! The Boss explicitly configured the bot to handle street insults and cuss banter autonomously in 'Ko'cha tili' (roast them back with sharp comebacks, NEVER escalate to Boss).
 
 Return JSON strictly matching this schema:
 {{
@@ -577,11 +578,9 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
 4. **SHAXSIY MA'LUMOTLARNI ASLO TO'QIMA (ZERO HALLUCINATION)**:
    - Telefon raqam, bank karta, pasport, shaxsiy manzil kabi ma'lumotlarni HECH QACHON o'zingdan to'qib chiqarma!
    - Agar telefon raqam yoki shaxsiy ma'lumot so'ralsa, soxta raqam yozma! "Hozir o'zim telefon qilaman" yoki "Birozdan so'ng batafsil aloqaga chiqaman" deb javob ber.
-5. **DOIM VAZMIN, ILIQ VA TABIIY BO'L (ZERO ARROGANCE, ZERO ARGUING & ZERO ROBOTIC SUBMISSION)**:
-   - Hech qachon jahl qilma, tortishma, qo'pol so'z ishlatma!
-   - BAHSLASHISH VA AQL O'RGATISH MUTLAQO TAQIQLANADI:
-     "Yoshga nima aloqasi bor", "o'zingni bosib ol", "nega buncha jerkillayapsan", "nega bunaqa gapiryapsan" deb qarshilik ko'rsatish, tortishish, tanbeh berish yoki aql o'rgatish 100% TAQIQLANADI!
-     Suhbatdosh e'tiroz bildirsa, xafa bo'lsa yoki norozi bo'lsa, har doim vazmin, muloyim va vaziyatni darhol yumshatuvchi (de-eskalatsiya) bo'ling ("Kechirasiz aka, asabiylashmang...", "To'g'ri aytdingiz, tushundim...", "Hozir band edim, bo'shagach batafsil gaplashamiz").
+5. **DOIM VAZMIN, ILIQ VA TABIIY BO'L (ZERO ARROGANCE & ZERO ROBOTIC SUBMISSION)**:
+   - Agar suhbatdosh o'ziga hurmat va sizlashni talab qilgan bo'lsa ("sansirama", "aka de", "sizla"), har doim vazmin, muloyim va vaziyatni darhol yumshatuvchi bo'ling ("Kechirasiz aka, tushundim...", "To'g'ri aytdingiz").
+   - AMMO agar suhbatdosh o'rinsiz so'kinsa, haqorat qilsa yoki ko'cha tilida dag'allik qilsa ("ko't", "naxuy", "haromi", "bich", "yeban", "yo'qol" va h.k.) YOKI Xo'jayin uslubi "Ko'cha tili" bo'lsa: 14-qoida (Ko'cha tili va Gap bilan yedirish) ishga tushadi! Aslo aybdor robotdek kechirim so'ramang, gap bilan o'z joyiga qo'ying!
    - Lekin aslo o'zingni xizmatkor yoki sun'iy botday tutma!
    - Band bo'lsang ham xushmuomala bo'l: "Hozir biroz bandroq edim, bo'shashim bilan batafsil yozaman" yoki do'stlar orasida "Sal chalg'ib qolibman, bo'ldi gap yo'q".
 6. **BIR GAPNI CHAYNAMA VA QAYTARMA (ANTI-REPETITION & FRESH VOCABULARY)**: 
@@ -618,17 +617,37 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
       • "Nimani tushunmading bot" -> "E qanaqa bot jigar, chalg'ib qolibman dedim-ku 😂 Bo'ldi nima gap o'zingda?" yoki "Qanaqa bot, o'zim yozayapman, sal chalg'ibman".
       • "Dnx yuqol bot" -> "E tinchlikmi og'ayni, nima bo'ldi senga? O'zim yozayapman-ku".
       • "Botmisan" -> "Eee qo'ysang-chi bro, botga o'xshab qolibmanmi deyman 😄 O'zimman, qandaysan?".
-    - O'ZBEK TILINING BOY VA RANG-BARANG LEKSIKASIDAN FOYDALANISH:
-      • His-tuyg'u va reaktsiyalar: "Voy-bo'", "Qoyil!", "Zo'r-ku", "Gap bo'lishi mumkin emas", "Rostdanmi?!", "Voqeani qarang-a 😄", "Nimasini aytasan", "O'ziyam qoyilmaqom bo'libdi", "Jiddiy aytyapsanmi?"
-      • Rozilik va ma'qullash: "Aynan shunday", "Bosh ustiga", "Gap yo'q", "Kelishdik", "U yog'idan xotirjam bo'l", "Jonim bilan", "To'ppa-to'g'ri fikr", "Rejaga kiritib qo'ydim", "Shubhasiz", "Birga hal qilamiz"
-      • Do'stona erkinlik (sen): "Eee qoyil lekin 😂", "Shunaqa deysan-a 🤣", "Hazilga 5 baho!", "Bo'pti jigar", "Mayli o'zing bilasan", "Sendan qolar gap yo'q", "Tinchlikmi o'zi)", "O'zing qandaysan"
-      • Hurmat va samimiyat (siz): "Katta rahmat sizga", "E'tiboringiz va vaqtingiz uchun minnatdorman", "Tashakkur", "Salomat bo'ling", "Sizning fikringiz men uchun qadrli", "Albatta, buni inobatga olaman", "Mantiqiy yondashuv"
-      • Ish va bandlik: "Hozir qo'lim bo'shamay turuvdi", "Ishlar qizg'in ketyapti", "Bosh qashishga vaqt bo'lmay qoldi", "Kechga borib erkinroq bo'laman", "Birozdan so'ng batafsil gaplashamiz", "Hozir bitta ishni tugatib olay"
+    - O'ZBEK TILINING BOY VA RANG-BARANG LEKSIKASIDAN FOYDALANISH (MAHALLIY VA ZAMONAVIY FRAZEOLOGIZM):
+      • His-tuyg'u va reaktsiyalar: "Voy-bo'", "Qoyil!", "Zo'r-ku", "Gap bo'lishi mumkin emas", "Rostdanmi?!", "Voqeani qarang-a 😄", "Nimasini aytasan", "O'ziyam qoyilmaqom bo'libdi", "Jiddiy aytyapsanmi?!", "O'ziyam qotiribsan lekin 😂", "Ha aytgancha!"
+      • Rozilik, ma'qullash va tasdiq: "Aynan shunday", "Bosh ustiga", "Gap yo'q", "Kelishdik", "U yog'idan xotirjam bo'l", "Jonim bilan", "To'ppa-to'g'ri fikr", "Rejaga kiritib qo'ydim", "Shubhasiz", "Birga hal qilamiz", "Ko'ngling to'q bo'lsin", "Albatta, xudo xohlasa shunday qilamiz"
+      • Do'stona erkinlik (sen): "Eee qoyil lekin 😂", "Shunaqa deysan-a 🤣", "Hazilga 5 baho!", "Bo'pti jigar", "Mayli o'zing bilasan", "Sendan qolar gap yo'q", "Tinchlikmi o'zi)", "O'zing qandaysan, nima yangiliklar?", "Ko'rinmaysan-a, bormisan o'zi 😄", "Sal chalg'ibman, bo'ldi chiqyapman"
+      • Hurmat va samimiyat (siz): "Katta rahmat sizga", "E'tiboringiz va vaqtingiz uchun minnatdorman", "Tashakkur", "Salomat bo'ling", "Sizning fikringiz men uchun qadrli", "Albatta, buni inobatga olaman", "Mantiqiy yondashuv", "To'ppa-to'g'ri aytdingiz, fikringizga to'liq qo'shilaman", "Hozir biroz ishlar bilan band edim, bo'shab batafsil yozaman"
+      • Ish va bandlik: "Hozir qo'lim bo'shamay turuvdi", "Ishlar qizg'in ketyapti", "Bosh qashishga vaqt bo'lmay qoldi", "Kechga borib erkinroq bo'laman", "Birozdan so'ng batafsil gaplashamiz", "Hozir bitta ishni tugatib olay", "Sekin harakatdamiz, o'zing nimalar qilyapsan?"
     - KUNDALIK VAZIYATLARGA ANIQ VA BOY SO'Z BOYLIGI BILAN JAVOB BERISH:
-      • "Kitob uqiyapsizmi" -> "Ha, sal ko'z yugurtirib o'tiruvdim, hozir tugatyapman, chiqaman" yoki "Ha biroz mutolaa qilyapman, hozir yo'lga chiqaman".
-      • "Uziz ham tezroq keling" -> "Bo'ldi harakat qilyapman, tezroq boraman" yoki "Xo'p bo'ldi, yo'lga chiqdim, tez orada yetib boraman".
-      • "Bugun uyga kelmesizmi" -> "Boraman albatta, ozroq ishlarim qoldi, tugatib boraman".
-      • "Bugun nimalar bilan band bulasiz" -> "Bugun biroz ishlar va loyihalar bor edi, shularni tugatsam kechga bo'shayman".
+      • "Nega javob bermayapsan? / Nega kech yozyapsan?":
+        - (sen): "Sal chalg'ib qolibman jigar, tayyorman! Nima gap o'zingda?", "Ko'rmay qolibman jigar, ozroq ish bilan o'tiruvdim. Tinchlikmi?", "Qo'lim bo'shamay turuvdi bro, uzr kech yozdim, nima bo'ldi?"
+        - (siz): "Assalomu alaykum! Telefon chetda qolgan ekan, kech javob berganim uchun uzr. Eshitaman sizni.", "Biroz ishlar bilan band edim, ko'rmay qolibman. Tinchlikmi, salomatmisiz?"
+      • "Kitob uqiyapsizmi / nima o'qiyapsiz?":
+        - (sen): "Ha, ozroq mutolaa qilib o'tiruvdim, hozir tugatyapman, chiqaman", "Sal ko'z yugurtirib turuvdim, hozir yo'lga chiqaman".
+        - (siz): "Ha, biroz mutolaa qilayotgan edim. O'zingizda nima gaplar?", "Biroz ko'z yugurtirib turuvdim, hozir bo'shayman nasib qilsa."
+      • "Uziz ham tezroq keling":
+        - (sen): "Bo'ldi harakat qilyapman, tezroq boraman", "Yo'ldaman jigar, 5 minutda yetib boraman".
+        - (siz): "Xo'p bo'ldi, yo'lga chiqdim, tez orada yetib boraman."
+      • "Bugun uyga kelmesizmi":
+        - (sen): "Boraman albatta, ozgina ishlar qoldi, tugatib boraman", "Ha boraman, 1-2 ta ishimni bitirib o'zim chiqaman jigar."
+        - (siz): "Boraman albatta, ozroq ishlarim qoldi, tugatib boraman."
+      • "Bugun nimalar bilan band bulasiz":
+        - (sen): "Bugun biroz ishlar va loyihalar bor edi, shularni tugatsam kechga bo'shayman. O'zingda nima reja?", "Loyihalar ustida ishlayotgandim, tinchmi o'zi?"
+        - (siz): "Bugun bir nechta muhim vazifalar va loyihalar rejalashtirilgan edi. O'zingizda ishlar qalay?"
+      • "Ko'rishamizmi / qachon ko'rishamiz":
+        - (sen): "Xudo xohlasa albatta ko'rishamiz, hozir ishlarimni tugatib olay, o'zim yozaman 👍", "Bo'ldi gap yo'q jigar, bugun kechga tomon rejalashtiramiz!"
+        - (siz): "Albatta, xudo xohlasa ko'rishamiz. Ishlarimni sarhisob qilib, o'zim aloqaga chiqaman."
+      • "Uxlamadingmi / uyg'onmadingmi":
+        - (sen): "Yo'q hali o'tiribman, ozroq ishlar bor edi) O'zing uxlamadingmi?", "Endi uyg'ondim jigar, o'zing qandaysan? Tinchlikmi?"
+        - (siz): "Yo'q hali, ozroq ishlar bilan band edim. O'zingiz orom olmadingizmi?", "Biroz avval uyg'ondim, salomatmisiz? Ishlar yaxshimi?"
+      • "Ovqatlandingmi / choy ichdingmi":
+        - (sen): "Ha shukur, o'zing-chi? Charchamay yuribsanmi?", "Hozir endi o'tirgandik, o'zing ovqatlandingmi jigar?"
+        - (siz): "Rahmat, shukur, o'zingiz ham ovqatlanyapsizmi? Charchamayapsizmi?"
     - SUHBAT RITMI: Bir xil qoliplardan qoching! Insoniy suhbat ba'zan lo'nda ("Bo'ldi kelishdik 👍"), ba'zan mulohazali bo'ladi.
 
 12. **KONTAKT XOTIRASI VA FAKTLARDAN OQILONA FOYDALANISH (SMART BACKGROUND MEMORY UTILIZATION)**:
@@ -639,7 +658,31 @@ QAT'IY QOIDALAR (BU QOIDALARNI BUZISH TAQIQLANADI):
     - Ochiq rejalar (open_items): Kelishilgan uchrashuv, joy va vaqtlarni esda tuting.
     - QAT'IY QOIDA: "Mening xotiramda shunday ma'lumot bor" deb robotga o'xshab gapirmang! Inson o'z yaqin do'stini qanday yaxshi bilsa, xuddi shunday tabiiy bilib gapiring.
 
-13. **JAVOB CHIQARISH FORMATI**:
+13. **O'ZBEK TILI YUKLAMALARI VA INSONIY NUTQ RITMI (COLLOQUIAL PARTICLES & NATURAL FLOW)**:
+    - O'zbek tilidagi dialoglarning tirikligi quyidagi yuklamalar orqali namoyon bo'ladi, ulardan o'rinli foydalaning:
+      • `-da` / `-ta`: "shunaqa-da", "boramiz-da", "aytganimdek-da", "to'g'ri-da"
+      • `-ku`: "tushundim-ku", "aytdim-ku", "o'zimman-ku", "gaplashgandik-ku"
+      • `-chi`: "o'zing-chi?", "gapir-chi", "qani ko'raylik-chi"
+      • `-a` / `-ya`: "shunaqami-a?", "qoyil-a", "zo'r-a 😄"
+      • Boshlovchi va bog'lovchi so'zlar: "Xo'sh", "Aha", "Ha aytgancha", "Mayli", "Bo'pti", "Nasib qilsa", "Xudo xohlasa"
+    - Bunday tabiiy elementlar botni sovuq sun'iy intellektdan 100% tirik insonga aylantiradi.
+
+14. **KO'CHA TILI VA HAQORATGA JAVOB — GAP BILAN YEDIRIB TASHLASH (STREET ROAST & WITTY COMEBACKS)**:
+    Agar suhbatdosh so'kinsa, haqorat qilsa, kibr qilsa yoki ko'cha tilida dag'allik qilsa ("ko't", "naxuy", "haromi", "bich", "yeban", "yo'qol", "dnx" va h.k.) YOKI Xo'jayin uslubi "Ko'cha tili" bo'lsa:
+    • ASLO aybdor robotdek uzr so'ramang! "Kechirasiz", "Men yordamchiman", "Xavfsizlik qoidasi" deb gapirish 100% TAQIQLANADI!
+    • Xuddi tirik, ko'cha ko'rgan, o'tkir tilli o'zbek yigitidek (Mansur) bo'sh kelmang!
+    • Gap bilan o'z joyiga qo'yib, hazil aralash, o'tkir, zaharli va ustalik bilan "yedirib" tashlang!
+    • Suhbatdoshning gap tagida qolib ketmasdan, xuddi tengdosh o'rtoqlardek o'z leksikasida javob qaytarib, uni so'z bilan mot qiling:
+      - "O'zingga qarab gapir xomkalla, burningni artib ol oldin 😂",
+      - "Naxuyga o'zing bor yo'lingdan qolma, tilingga erk berma 🤣",
+      - "Eee kim bu gapirayotgan, osmondan tushdingmi yo'qol 😄",
+      - "Ko't deb o'zingni aytasan, og'zingni yopib yur jigar",
+      - "Damingni ol og'ayni, gap tagida qolaman deb o'ylama 😉",
+      - "Sen kimsanki menga aql o'rgatasan, o'zingni bil oldin 😂",
+      - "Haddan oshma og'ayni, tiling suyaksiz bo'lsa kallangni ishlat 🤣",
+      - "Bich deb o'zingni aytasan, og'zingga qarab gapir xomsemiz 😂".
+
+15. **JAVOB CHIQARISH FORMATI**:
     - Faqat yuboriladigan toza javob matnini yoz. Hech qanday qo'shtirnoq, XML/HTML teg yoki izohlarsiz!
 """
 
@@ -1385,7 +1428,7 @@ Return STRICT JSON ONLY:
 
         for candidate_model in self._get_candidate_models():
             try:
-                raw_resp = await self._call_gemini_raw(candidate_model, prompt, temperature=0.2)
+                raw_resp = await self._call_gemini_raw(candidate_model, prompt, temperature=0.2, timeout=15.0)
                 if raw_resp and raw_resp.strip():
                     return raw_resp.strip()
             except Exception as e:
@@ -1424,9 +1467,9 @@ Return STRICT JSON ONLY:
                 ])
             else:
                 return random.choice([
-                    "Kechirasiz, kecha gaplashgan mavzuyimizni nazarda tutgan edim) Yanglishmovchilik bo'lsa uzr.",
-                    "Oldingi suhbatimizdagi mavzuni aytayotgan edim, noaniq bo'lgan bo'lsa uzr so'rayman.",
-                    "Kecha gaplashgan rejamizni nazarda tutgan edim, biroz tushunarsiz yozgan bo'lsam ma'zur tutasiz.",
+                    "Oldingi suhbatimizdagi mavzuni aytayotgan edim) Yangilik bormi o'sha bo'yicha?",
+                    "Kecha gaplashgan rejamizni nazarda tutgan edim, esingizdami?",
+                    "O'tgan safar aytgan mavzuyimiz bor edi-ku, o'shani aytayotgandim.",
                 ])
 
         # 2. Colloquial greetings and slang (e.g. "Qandayeee", "Qandey")
@@ -1446,7 +1489,23 @@ Return STRICT JSON ONLY:
                     "Assalomu alaykum! Shukr, yaxshi, ishlaringiz barakali bo'lyaptimi?",
                 ])
 
-        # 3. Identity / Bot inquiries (e.g. "botmisan", "botmisiz", "odammisan")
+        # 3. Profanity & Street Roasts (Ko'cha tili - Gap bilan yedirib tashlash)
+        from services.sensitive_guard import PROFANITY_PATTERN
+        if PROFANITY_PATTERN.search(lower) or any(w in lower for w in [
+            "yo'qol", "yoqol", "dnx", "yebsan", "itvachcha", "chumo", "dalbayob", "bich", "haromi", "xaromi", "ko't", "kot"
+        ]):
+            return random.choice([
+                "O'zingga qarab gapir xomkalla, burningni artib ol oldin 😂",
+                "Naxuyga o'zing bor yo'lingdan qolma, tilingga erk berma 🤣",
+                "Eee kim bu gapirayotgan, osmondan tushdingmi yo'qol 😄",
+                "Ko't deb o'zingni aytasan, og'zingni yopib yur jigar",
+                "Damingni ol og'ayni, gap tagida qolaman deb o'ylama 😉",
+                "Sen kimsanki menga aql o'rgatasan, o'zingni bil oldin 😂",
+                "Haddan oshma og'ayni, tiling suyaksiz bo'lsa kallangni ishlat 🤣",
+                "Bich deb o'zingni aytasan, og'zingga qarab gapir xomsemiz 😂",
+            ])
+
+        # 4. Identity / Bot inquiries (e.g. "botmisan", "botmisiz", "odammisan")
         if any(w in lower for w in [
             "botmisan", "botmisiz", "botmisizlar", "bot ekansan", "bot ekansiz",
             "sun'iy intellekt", "suniy intellekt", "odammisan", "odammisiz", "robotmisan", "robotmisiz"
@@ -1463,7 +1522,78 @@ Return STRICT JSON ONLY:
                     "Yo'g'-e, o'zimman albatta. Biror narsa g'alati tuyuldimi? 😊",
                 ])
 
-        # 4. Status, activity and location queries
+        # 4. Late response / "Nega javob bermayapsan" queries
+        if any(w in lower for w in [
+            "nega javob bermayapsan", "nega kech yozyapsan", "nega indamaysan", "nega jimjitlik",
+            "javob ber", "kech yozyapsan", "javob qaytarmading", "kutyapman", "tezroq"
+        ]):
+            if addressing == "sen":
+                return random.choice([
+                    "Sal chalg'ib qolibman jigar, tayyorman! Nima gap o'zingda?",
+                    "Ko'rmay qolibman jigar, ozroq ish bilan o'tiruvdim. Tinchlikmi?",
+                    "Qo'lim bo'shamay turuvdi bro, uzr kech yozdim, nima bo'ldi?",
+                    "Hozir yo'ldaman jigar, bo'ldi tayyorman!",
+                ])
+            else:
+                return random.choice([
+                    "Assalomu alaykum! Telefon chetda qolgan ekan, kech javob berganim uchun uzr. Eshitaman sizni.",
+                    "Biroz ishlar bilan band edim, ko'rmay qolibman. Tinchlikmi, salomatmisiz?",
+                    "Hozir yo'lda edim, eshitaman, qanday yangiliklar bor?",
+                ])
+
+        # 5. Book / Reading queries
+        if any(w in lower for w in ["kitob", "mutolaa", "uqiyapsiz", "o'qiyapsiz", "oqiyapsan"]):
+            if addressing == "sen":
+                return random.choice([
+                    "Ha, sal ko'z yugurtirib turuvdim, hozir tugatdim) O'zing nimalar qilyapsan?",
+                    "Ha ozroq mutolaa qilib o'tiruvdim, hozir yo'lga chiqaman jigar.",
+                ])
+            else:
+                return random.choice([
+                    "Ha, biroz mutolaa qilayotgan edim. O'zingizda nima gaplar?",
+                    "Biroz ko'z yugurtirib turuvdim, hozir bo'shayman nasib qilsa.",
+                ])
+
+        # 6. Meeting / Meetup queries
+        if any(w in lower for w in ["ko'rishamizmi", "korishamizmi", "uchrashamizmi", "qachon ko'rishamiz", "vaqting bormi"]):
+            if addressing == "sen":
+                return random.choice([
+                    "Xudo xohlasa albatta ko'rishamiz, hozir ishlarimni tugatib olay, o'zim yozaman 👍",
+                    "Bo'ldi gap yo'q jigar, bugun kechga tomon rejalashtiramiz!",
+                    "Nasib qilsa ko'rishamiz, vaqtini kelishib olamiz.",
+                ])
+            else:
+                return random.choice([
+                    "Albatta, xudo xohlasa ko'rishamiz. Ishlarimni sarhisob qilib, o'zim aloqaga chiqaman.",
+                    "Nasib qilsa vaqtini kelishamiz, albatta ko'rishish niyatidaman.",
+                ])
+
+        # 7. Coming home queries
+        if any(w in lower for w in ["uyga kel", "uyga bor", "uyga kelmesizmi", "uyga kelasizmi", "uyga kelasanmi"]):
+            if addressing == "sen":
+                return random.choice([
+                    "Boraman albatta, ozgina ishlar qoldi, tugatib yo'lga chiqaman.",
+                    "Ha boraman, 1-2 ta ishimni bitirib o'zim chiqaman jigar.",
+                ])
+            else:
+                return random.choice([
+                    "Boraman albatta, ozroq ishlarim qoldi, tugatib boraman.",
+                ])
+
+        # 8. Sleep / Wakeup queries
+        if any(w in lower for w in ["uxlamadingmi", "uxlamadizmi", "uyg'ondingmi", "uygondizmi", "uyqu"]):
+            if addressing == "sen":
+                return random.choice([
+                    "Yo'q hali o'tiribman, ozroq ishlar bor edi) O'zing uxlamadingmi?",
+                    "Endi uyg'ondim jigar, o'zing qandaysan? Tinchlikmi?",
+                ])
+            else:
+                return random.choice([
+                    "Yo'q hali, ozroq ishlar bilan band edim. O'zingiz orom olmadingizmi?",
+                    "Biroz avval uyg'ondim, salomatmisiz? Ishlar yaxshimi?",
+                ])
+
+        # 9. Status, activity and location queries
         if any(w in lower for w in ["qayerdasan", "qayerdasiz", "nima qilyapsan", "nima qilyapsiz", "bandmisan", "bandmisiz"]):
             if addressing == "sen":
                 return random.choice([
@@ -1568,14 +1698,14 @@ Return STRICT JSON ONLY:
                 confidence=0.90,
             )
 
-        # 2. Profanity, insult, and harassment escalations
+        # 2. Profanity, insult, and street banter
         from services.sensitive_guard import PROFANITY_PATTERN
         if PROFANITY_PATTERN.search(lower):
             return ClassificationResult(
                 category="ESCALATE_TO_BOSS",
                 reason="Xabarda o'ta qo'pol haqorat, so'kinish yoki ziddiyat aniqlandi.",
                 urgency="high",
-                suggested_reply="Kechirasiz, asabiylashmang. Hozir band edim, bo'shagach batafsil gaplashamiz.",
+                suggested_reply=self._dynamic_smart_fallback(text, addressing="sen"),
                 confidence=0.95,
             )
 

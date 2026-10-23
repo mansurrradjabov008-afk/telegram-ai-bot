@@ -935,34 +935,59 @@ class AdminBotService:
             else:
                 active_msg = await safe_reply(target_msg, loading_text, parse_mode="HTML") or target_msg
 
+            _last_progress_time = 0.0
+            _last_progress_text = ""
             async def on_progress(step_text: str):
+                nonlocal _last_progress_time, _last_progress_text
+                now_t = time.time()
+                if step_text == _last_progress_text or (now_t - _last_progress_time < 2.0):
+                    return
+                _last_progress_time = now_t
+                _last_progress_text = step_text
                 try:
-                    await active_msg.edit_text(f"⏳ <b>JARVIS Tahlili:</b> <i>{html.escape(step_text)}</i>", parse_mode="HTML")
+                    await safe_edit(active_msg, f"⏳ <b>JARVIS Tahlili:</b> <i>{html.escape(step_text)}</i>", parse_mode="HTML")
                 except Exception:
                     pass
 
             try:
-                res = await self.digest_service.run_smart_digest(
-                    trigger="manual",
-                    topic_filter=topic_filter,
-                    progress_callback=on_progress,
-                )
+                try:
+                    res = await asyncio.wait_for(
+                        self.digest_service.run_smart_digest(
+                            trigger="manual",
+                            topic_filter=topic_filter,
+                            progress_callback=on_progress,
+                        ),
+                        timeout=75.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("run_smart_digest timed out after 75s. Triggering instant executive briefing fallback.")
+                    if self.digest_service:
+                        self.digest_service.force_unlock()
+                    res = {
+                        "status": "fallback",
+                        "messages": [],
+                    }
+
                 status = res.get("status")
                 messages = res.get("messages", [])
 
                 if status == "in_progress":
-                    progress_text = "⚠️ <b>Smart Digest hozirda tayyorlanmoqda!</b> Iltimos, jarayon tugashini kuting."
+                    progress_text = (
+                        "⚠️ <b>Smart Digest hozirda tayyorlanmoqda!</b>\n\n"
+                        "<i>Jarayon davom etmoqda. Agar jarayon to'xtab qolgan deb hisoblasangiz, quyidagi tugma orqali qulfni tozalashingiz mumkin.</i>"
+                    )
+                    builder = InlineKeyboardBuilder()
+                    builder.button(text="🔄 Qayta tekshirish", callback_data="digest:open")
+                    builder.button(text="🔓 Qulfni tozalash", callback_data="digest:unlock")
+                    builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
+                    builder.adjust(2, 1)
                     if is_callback:
-                        builder = InlineKeyboardBuilder()
-                        builder.button(text="🔄 Qayta tekshirish", callback_data="digest:open")
-                        builder.button(text="🔙 Bosh menyu", callback_data="menu:main")
-                        builder.adjust(1, 1)
                         await active_msg.edit_text(progress_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                     else:
                         try:
-                            await active_msg.edit_text(progress_text, reply_markup=None, parse_mode="HTML")
+                            await active_msg.edit_text(progress_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                         except Exception:
-                            await safe_reply(target_msg, progress_text, reply_markup=None, parse_mode="HTML")
+                            await safe_reply(target_msg, progress_text, reply_markup=builder.as_markup(), parse_mode="HTML")
                     return
 
                 if status in ["no_sources", "error"] or not messages or all("topilmadi" in m for m in messages):
@@ -3974,6 +3999,14 @@ class AdminBotService:
             elif action == "stats":
                 await callback.answer()
                 await _render_digest_stats(callback.message, is_callback=True)
+            elif action == "unlock":
+                if self.digest_service:
+                    self.digest_service.force_unlock()
+                    await self.db_manager.cleanup_stale_digest_runs()
+                    await callback.answer("🔓 Qulf tozalandi! Qayta ishga tushirilmoqda...", show_alert=True)
+                    await _execute_digest(callback.message, is_callback=True, force_recent=True)
+                else:
+                    await callback.answer("Digest xizmati mavjud emas.")
 
         @dp.callback_query(F.data.startswith("digest_debug:page:"))
         async def handle_digest_debug_page(callback: types.CallbackQuery):
@@ -5486,15 +5519,17 @@ class AdminBotService:
                 "1️⃣ <b>Qisqa va londa</b> — Juda qisqa, ortiqcha so'zlarsiz, aniq javoblar.\n"
                 "2️⃣ <b>Samimiy va do'stona</b> — Iliq, do'stona va xushmuomala ohang.\n"
                 "3️⃣ <b>Rasmiy va hurmatli</b> — Jiddiy, rasmiy va hurmat saqlagan holda.\n"
-                "4️⃣ <b>Standart (Tozalash)</b> — Qo'shimcha ko'rsatmalarsiz sof statistik uslub."
+                "4️⃣ <b>Ko'cha tili (Banter & Roast)</b> — O'zbekona ko'cha tili, do'stona hazil, agar haqorat/so'kinish kelsa gap bilan 'yedirib' tashlash.\n"
+                "5️⃣ <b>Standart (Tozalash)</b> — Qo'shimcha ko'rsatmalarsiz sof statistik uslub."
             )
             builder = InlineKeyboardBuilder()
             builder.button(text="⚡ Qisqa va londa", callback_data="style:preset:short")
             builder.button(text="🤝 Samimiy va do'stona", callback_data="style:preset:friendly")
             builder.button(text="👔 Rasmiy va hurmatli", callback_data="style:preset:formal")
+            builder.button(text="🔥 Ko'cha tili", callback_data="style:preset:street")
             builder.button(text="🗑 Standart (Tozalash)", callback_data="style:preset:clear")
             builder.button(text="🔙 Uslub paneli", callback_data="style:panel")
-            builder.adjust(1, 1, 1, 1, 1)
+            builder.adjust(2, 2, 2)
             await callback.answer()
             await safe_edit(callback.message, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -5507,6 +5542,7 @@ class AdminBotService:
                 "short": "Juda qisqa, londa va aniq javob ber, ortiqcha gap yozma.",
                 "friendly": "Samimiy, do'stona va iliq ohangda yoz.",
                 "formal": "Rasmiy, jiddiy va hurmat bilan javob yoz.",
+                "street": "O'zbekona haqiqiy ko'cha tili va do'stona ohang. Hech qanday rasmiyatchiliksiz, tirik insonga o'xshab yoz. Agar suhbatdosh haqorat qilsa, so'kinsa yoki kibr qilsa, bo'sh kelma: gap bilan o'z joyiga qo'yib, o'tkir, zaharli, hazil aralash 'yedirib' tashla, gap tagida qolib ketma.",
             }
             if preset_type == "clear":
                 await self.db_manager.delete_style_note("global")

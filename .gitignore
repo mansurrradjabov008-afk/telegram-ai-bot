@@ -16,3 +16,20 @@ temp_isolated.db
 docs/log_scan_report.txt
 *.apk
 wheels/
+
+# Logs and runtime artifacts
+*.log
+*.txt
+*.png
+*.jpg
+*.jpeg
+*.mp4
+platform-tools/
+check_*.py
+diag.sh
+diag_out.txt
+update_output.log
+butler_*.log
+phone_*.log
+screen_*.png
+termux_*.png
